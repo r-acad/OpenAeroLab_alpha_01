@@ -218,8 +218,14 @@ end
 const BON = PBCav.omega_bound_on(cfg)
 const bio = BON ? open(joinpath(OUT, "omega_bound_history.csv"), "w") : nothing
 bio === nothing || println(bio, PBCav.OMEGA_BOUND_HISTORY_HEADER)
+const REJECTION_KEYS = PBCav.REJECTION_REASONS
+const rejection_io = open(joinpath(OUT, "rejection_history.csv"), "w")
+println(rejection_io, join(("step", "t", "dt", "total_rejections", string.(REJECTION_KEYS)...), ","))
 const BSTEPS = Ref(0); const BLAST = Ref(0)
 function app_step(s, r, led)
+    counts = (get(led.rejections, key, 0) for key in REJECTION_KEYS)
+    println(rejection_io, join((r.step, r.t, r.dt, sum(values(led.rejections)), counts...), ","))
+    flush(rejection_io)
     if BON                                           # the driver's census hook, first (it only reads)
         n = 0; c = nothing
         if PBCav.pb_maxabs(w.turb.wcut; backend=BACKEND) > 0
@@ -253,6 +259,7 @@ const R = try
 finally
     close(hio)
     bio === nothing || close(bio)
+    close(rejection_io)
 end
 # Keep a complete, mesh-checked restart for the next polar angle and for a longer
 # continuation of an incomplete point. Write atomically so a killed worker cannot
