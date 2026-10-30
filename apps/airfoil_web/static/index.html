@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Airfoil Lab | Julia analysis</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/babylon.js" defer></script>
+  <script src="/static/babylon_view.js" defer></script>
+  <script src="/static/app.js" defer></script>
+  <script src="/static/lbm.js" defer></script>
+  <script src="/static/campaign.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="masthead">
+      <div class="brand-mark" aria-hidden="true"><span></span></div>
+      <div class="brand-copy"><h1>Airfoil Lab</h1><span>Julia section analysis</span></div>
+      <div class="header-meta">
+        <div id="operation-feedback" class="operation-feedback hidden" role="status" aria-live="polite"><span class="operation-spinner" aria-hidden="true"></span><span id="operation-label">Working…</span><span class="operation-track" aria-hidden="true"></span></div>
+        <span id="server-state" class="status-pill"><i></i> Connecting</span>
+        <label class="header-control">Wire
+          <select id="transport"><option value="msgpack">MessagePack</option><option value="bson">Binary JSON</option></select>
+        </label>
+        <label class="header-control">Theme
+          <select id="theme-mode" aria-label="Color theme"><option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+        </label>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="setup-column panel" aria-label="Analysis setup">
+        <div class="setup-title"><span class="eyebrow">Setup</span><strong>Operating point</strong></div>
+        <div class="setup-groups">
+          <section class="setup-group" aria-labelledby="airfoil-heading">
+            <h2 id="airfoil-heading">Airfoil</h2>
+            <div class="form-grid">
+              <label class="field"><span>Source</span>
+                <select id="source-kind">
+                  <option value="naca4">NACA 4 digit</option>
+                  <option value="rae2822">RAE 2822</option>
+                  <option value="oat15a">ONERA OAT15A</option>
+                  <option value="uiuc">UIUC database</option>
+                  <option value="cavitation_reference">Cavitation references</option>
+                </select>
+              </label>
+              <div id="naca-picker"><label class="field"><span>Designation</span><input id="naca-code" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="2412" placeholder="2412"></label></div>
+              <div id="cav-reference-picker" class="hidden"><label class="field"><span>Reference case</span><select id="cav-reference-select" disabled aria-label="Cavitation reference case"></select></label></div>
+            </div>
+            <div id="cav-reference-meta" class="hidden">
+              <p id="cav-reference-status" class="hint" role="status">Reference cases have not been loaded.</p>
+              <details class="advanced-cfd"><summary>Case and boundary conditions</summary><p id="cav-reference-note" class="hint"></p><a id="cav-reference-link" class="hint hidden" target="_blank" rel="noopener noreferrer">Reference source</a></details>
+            </div>
+            <div id="uiuc-picker" class="hidden">
+              <label class="field"><span>Search catalog</span><input id="airfoil-search" type="search" placeholder="Name or airfoil ID" autocomplete="off"></label>
+              <label class="field"><span>Airfoil</span><select id="airfoil-select" aria-label="UIUC airfoil selection"></select></label>
+              <p id="catalog-status" class="hint" role="status">Catalog not loaded yet.</p>
+              <div id="airfoil-meta" class="airfoil-meta hidden"><strong id="airfoil-name"></strong><p id="airfoil-description"></p><a id="airfoil-link" target="_blank" rel="noopener noreferrer" class="hidden">View source</a></div>
+            </div>
+            <div id="gurney-group" class="gurney-group">
+              <label class="check-line" title="A Gurney flap: a zero-thickness plate perpendicular to the chord at the trailing edge, with sharp corners; in the low-speed CFD a baffle (an interior wall) on the section's own C+H mesh"><input id="gurney-enabled" type="checkbox"><span>Gurney flap</span></label>
+              <div id="gurney-controls" class="form-grid hidden">
+                <label class="field"><span>Plate height h/c</span><input id="gurney-height" type="number" min="0.001" max="0.05" step="0.001" value="0.01" title="Plate height h/c, perpendicular to the chord at the TE, zero thickness, sharp (0.001 to 0.05)"></label>
+                <label class="field"><span>Side</span><select id="gurney-mode" title="One side: the plate stands on that trailing-edge point and extends h away from the airfoil. Symmetric: a T, h/2 above and h/2 below the trailing edge."><option value="lower" selected>Lower (pressure) side</option><option value="upper">Upper side</option><option value="symmetric">Symmetric T (h/2 above, h/2 below)</option></select></label>
+                <label class="field"><span>Mesh refinement at the flap tip</span><select id="gurney-refine" title="Rows are added around the plate tip and along its wake. Rows clustered at the plate root move into the flap-height recirculation region. The finite-thickness trailing-edge H block uses fewer cross rows while retaining its interfaces and first edge cells. Tip cells become about 1/4 (Standard) or 1/6 (Fine) of the section's own mesh cells. Off: the section's own C+H mesh."><option value="standard" selected>Standard (tip cells 1/4)</option><option value="fine">Fine (tip cells 1/6)</option><option value="off">Off (the section's own mesh)</option></select></label>
+              </div>
+              <p id="gurney-note" class="hint hidden">Plate height h/c, perpendicular to the chord at the TE, zero thickness, sharp.</p>
+              <p id="gurney-range" class="hint hidden"></p>
+              <div id="lbm-spoiler-group" class="hidden">
+                <label class="check-line" title="LBM 3D only: a flat plate hinged on the upper surface, deflected from the local surface tangent, over the full span. Its thickness is the LBM plate thickness (lattice cells)."><input id="lbm-spoiler" type="checkbox"><span>Spoiler (LBM 3D)</span></label>
+                <div id="lbm-spoiler-controls" class="form-grid hidden">
+                  <label class="field"><span>Hinge x/c</span><input id="lbm-spoiler-hinge" type="number" value="0.7" min="0.2" max="0.95" step="0.01" title="Hinge on the upper surface at this x/c (0.2 to 0.95)"></label>
+                  <label class="field"><span>Length l/c</span><input id="lbm-spoiler-length" type="number" value="0.1" min="0.01" max="0.3" step="0.005" title="Plate length from the hinge (0.01 to 0.3 chords)"></label>
+                  <label class="field"><span>Deflection, &deg;</span><input id="lbm-spoiler-deflection" type="number" value="30" min="10" max="90" step="1" title="Angle from the local upper-surface tangent (10 to 90 deg)"></label>
+                </div>
+                <p id="lbm-spoiler-note" class="hint hidden">Spoiler: rear face from the hinge, front face down to the surface; the cove under the plate is fluid.</p>
+              </div>
+              <label class="check-line" title="DEVELOPMENT, NOT VALIDATED: move the CFD mesh lines onto JXfoil's wake path (from the trailing edge) and stagnation streamline at the analysis angle of attack. Low-speed CFD with a Gurney flap, or the compressible CFD on a finite trailing edge (both on the C+H mesh). Off: the mesh is exactly as before."><input id="streamline-align" type="checkbox"><span>Align mesh with streamlines (JXfoil, development)</span></label>
+              <div id="streamline-controls" class="form-grid hidden">
+                <label class="field"><span>Streamline path</span><select id="streamline-mode" title="Viscous: JXfoil's coupled solution, through the inviscid flow around its displacement body (the viscous lift). Inviscid: XFOIL's own wake definition."><option value="viscous" selected>Viscous (JXfoil, displacement body)</option><option value="inviscid">Inviscid (XFOIL wake definition)</option></select></label>
+                <label class="field"><span>Mesh admission</span><select id="streamline-admission" title="Demo: convex cells, conforming C/H interfaces and an unchanged wall first spacing are required; every quality gate's change is reported, none refuses. Strict: every gate that passed still passes and no failing gate gets worse (the morph is reduced or refused otherwise)."><option value="demo" selected>Demo (report gate changes)</option><option value="strict">Strict (no gate may get worse)</option></select></label>
+                <label class="check-line" title="When JXfoil's viscous solution is refused (not converged, or trailing-edge separation over 0.10 c), use the inviscid path, labelled as a fallback, instead of refusing the point."><input id="streamline-fallback" type="checkbox"><span>Inviscid fallback if viscous is refused</span></label>
+              </div>
+              <p id="streamline-note" class="hint hidden">Development, not validated.</p>
+            </div>
+          </section>
+
+          <section class="setup-group" aria-labelledby="flow-heading">
+            <h2 id="flow-heading">Flow</h2>
+            <div class="form-grid">
+              <label class="field"><span>Mach</span><input id="mach" type="number" value="0" min="0" max="5" step="0.01"></label>
+              <label class="field"><span>Reynolds</span><input id="reynolds" type="number" value="300000" min="1" step="10000"></label>
+              <label class="field"><span>Angle, &deg;</span><input id="alpha" type="number" value="4" min="-30" max="30" step="any"></label>
+              <label class="field"><span>Transition Ncrit</span><input id="ncrit" type="number" value="9" min="0.1" max="20" step="0.5"></label>
+            </div>
+            <label id="sigma-field" class="field hidden"><span>Cavitation number &sigma;</span><input id="sigma" type="number" value="1.0" min="0.01" max="20" step="0.1"></label>
+            <label class="field"><span>Transition</span><select id="transition-mode"><option value="default">Native defaults / XFOIL natural</option><option value="forced">Prescribed trips</option></select></label>
+            <div id="trip-controls" class="form-grid hidden">
+              <label class="field"><span>Upper trip x/c</span><input id="trip-upper" type="number" value="0.05" min="0" max="1" step="0.01"></label>
+              <label class="field"><span>Lower trip x/c</span><input id="trip-lower" type="number" value="0.05" min="0" max="1" step="0.01"></label>
+            </div>
+            <p id="flow-hint" class="hint">Ncrit applies to XFOIL and JXfoil boundary layers.</p>
+          </section>
+
+          <section class="setup-group" aria-labelledby="solver-heading">
+            <h2 id="solver-heading">Solver</h2>
+            <label class="field"><span>Backend</span>
+              <select id="backend"><option value="jxfoil">JXfoil (Julia clone)</option><option value="xfoil">XFOIL executable</option><option value="transonic">Compressible CFD</option><option value="cavitation">Species / cavitation CFD</option><option value="both">JXfoil + compressible CFD</option><option value="cfd_both">Both CFD backends</option><option value="xfoil_cfd_both">Air comparison: XFOIL + both CFD</option><option value="lowspeed">Low-speed CFD (pressure-based, new)</option><option value="xfoil_lowspeed">XFOIL + low-speed CFD</option><option value="lbm">LBM 3D (LUDWIG)</option></select>
+            </label>
+            <label class="check-line"><input id="show-reference" type="checkbox" checked><span>Show matching validation reference</span></label>
+            <p id="backend-note" class="hint">JXfoil provides coefficients and surface pressure. Flow fields require CFD.</p>
+            <div id="lowspeed-controls" class="hidden">
+              <p class="experimental-note">Low-speed CFD is the new incompressible pressure-based solver (version 2, in development, not yet validated): fully turbulent k-omega SST in free air, on the CPU (8 threads) by default or, opt-in, on the GPU. Mach is ignored.</p>
+              <div class="form-grid">
+                <label class="field"><span>Low-speed mesh</span><select id="lowspeed-resolution" title="Sharp-trailing-edge free-air C-mesh built by the solver at Run; it appears in the Flow view before the first iteration."><option value="demo" selected>Demo (fast) · 23,040 cells</option></select></label>
+                <label class="field"><span>Freestream Tu, %</span><input id="lowspeed-tu" type="number" value="1" min="0.0001" max="19" step="any"></label>
+                <label class="field"><span>Freestream μt/μ</span><input id="lowspeed-mut-ratio" type="number" value="10" min="0.0001" max="10000" step="any"></label>
+              </div>
+              <label class="check-line" title="Opt-in: run the low-speed CFD on the GPU (CUDA) with the solver's adopted CUDA free-air speed settings. The run queues for the machine's shared GPU lock and waits while another owner holds it; the CPU stays the default."><input id="lowspeed-gpu" type="checkbox"><span>Run on GPU (CUDA)</span></label>
+              <p id="lowspeed-gpu-note" class="hint hidden">GPU (CUDA), opt-in: the mesh is built on the CPU and shown first; the run then waits for the shared GPU lock (the job status says who holds it) and marches on the GPU with the solver's adopted CUDA speed settings (Float64). The CPU remains the default.</p>
+              <p id="lowspeed-note" class="hint">Defaults: Tu 1%, μt/μ 10 (freestream turbulence for a fast steady start). About 15-25 minutes per angle on this machine (alpha 0 about 35; each angle may run up to 60 minutes); the loads settle well before the steady stop.</p>
+            </div>
+            <div id="lbm-controls" class="hidden">
+              <p class="experimental-note">LBM 3D (LUDWIG) runs the workspace's lattice-Boltzmann solver (D3Q27 cumulant, one level or several with periodic-Y AMR) on the section extruded along the span, with periodic span faces, on the GPU through the shared GPU lock. Development path, not validated for airfoils. Mach is not an input.</p>
+              <div class="form-grid">
+                <label class="field"><span>Span / chord</span><input id="lbm-span-ratio" type="number" value="0.25" min="0.05" max="2" step="0.0625" title="The extrusion length in chords; snapped to whole blocks of the coarsest level (8 cells, times 2 per extra level)"></label>
+                <label class="field"><span>Cells per chord</span><input id="lbm-cells" type="number" value="128" min="16" max="512" step="8" title="Lattice resolution: the finest level's cells per chord"></label>
+                <label class="field"><span>Convective times</span><input id="lbm-ctu" type="number" value="5" min="0.05" max="50" step="0.5" title="Run length in c/U (lattice steps = cells per chord / 0.08 per convective time)"></label>
+                <label class="field"><span>Mid-plane frames</span><input id="lbm-frames" type="number" value="60" min="2" max="400" step="1" title="Mid-span slices written by the solver (the video frames)"></label>
+                <label class="field"><span>Upstream, c</span><input id="lbm-upstream" type="number" value="2" min="0.5" max="10" step="0.5"></label>
+                <label class="field"><span>Downstream, c</span><input id="lbm-downstream" type="number" value="3" min="1" max="20" step="0.5"></label>
+                <label class="field"><span>Above / below, c</span><input id="lbm-height" type="number" value="2" min="0.5" max="10" step="0.5" title="Domain extent above and below the body (slip walls with a freestream sponge)"></label>
+                <label class="field"><span>Plate thickness, cells</span><input id="lbm-plate-cells" type="number" value="2" min="1.5" max="8" step="0.5" title="Gurney and spoiler plate thickness in lattice cells: the immersed boundary needs at least about 1.5-2 cells"></label>
+                <label class="field"><span>Refinement levels</span><select id="lbm-levels" title="Grid levels (periodic-Y AMR): cells per chord is the finest level's; each coarser level halves it. Available when the app's LBM solver snapshot has periodic-Y AMR."><option value="1">1 (uniform)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+                <label class="field"><span>Top / bottom walls</span><select id="lbm-z-walls" title="The domain's top and bottom faces. Slip: an exact specular reflection (the subgrid models WALE and SVV keep a small non-mirrored ghost, 1 to 3.4e-4 U, so it is nearly, not exactly, a symmetry plane). No-slip: stationary walls; they grow a boundary layer along each wall from the inlet, which may or may not be wanted, depending on what the case represents. Either wall type makes the domain a tunnel, not free air: the lift depends on the domain height (blockage and streamline curvature), more so for small heights."><option value="slip" selected>Slip</option><option value="no_slip" disabled title="needs the solver update (lbm-zwalls)">No-slip (needs the solver update)</option></select></label>
+              </div>
+              <label class="check-line" id="lbm-level-visc-line" title="Experimental. The solver's legacy rule gives each coarse level 4^(L-l) x the physical viscosity (measured 4.005 x one level up). This option cuts it to the physical value where the stability floor tau >= 0.501 allows: at 128 cells per chord and Re 2e4, 1.3 x and 2.6 x physical on the two coarse levels of three. Its app-length stability screen (24 c/U) did not pass: the growth of the C_L fluctuation amplitude differed from the legacy twin's (1.5 x against 0.96 x); no numerical instability was seen. In that screen the peak velocity on the coarsest level after 8 c/U was 9-20 % above the legacy twin's. Results with it are not validated. Off by default; it has no effect with one level."><input id="lbm-level-visc" type="checkbox" disabled><span>Physical viscosity on coarse levels (experimental)</span></label>
+              <label class="check-line" title="Inactive in the current solver: the LBM wall-model switch does nothing in the solver as shipped (its audit found several defects), so this changes nothing. Not validated. Off by default."><input id="lbm-wall-model" type="checkbox"><span>Wall model (inactive in the current solver: not validated)</span></label>
+              <p id="lbm-estimate" class="hint"></p>
+              <p id="lbm-note" class="hint"></p>
+            </div>
+            <details id="advanced-cfd" class="advanced-cfd">
+              <summary>Advanced CFD controls</summary>
+              <label class="field toggle-field"><span>GPU (CUDA)</span><input id="cfd-gpu" type="checkbox" checked></label>
+              <div id="advanced-air">
+              <label id="cfd-time-mode-field" class="field"><span>Time integration</span><select id="cfd-time-mode"><option value="steady">Steady pseudo-time</option><option value="physical">Physical time</option></select></label>
+              <div id="physical-time-controls" class="form-grid hidden">
+                <label class="field"><span>Duration, CTU</span><input id="cfd-duration-ctu" type="number" min="0.001" max="10000" step="any" value="100"></label>
+                <label class="field"><span>Discard first, CTU</span><input id="cfd-burnin-ctu" type="number" min="0" max="10000" step="any" value="50"></label>
+                <label class="field"><span>Statistics block, CTU</span><input id="cfd-block-ctu" type="number" min="0.001" max="1000" step="any" value="5"></label>
+              </div>
+              <div class="form-grid">
+                <label class="field"><span>CFD steps</span><input id="cfd-steps" type="number" value="500000" min="100" step="1000"></label>
+                <label id="cfd-rk-field" class="field toggle-field"><span>Conservative RK weights</span><input id="cfd-rk" type="checkbox" checked></label>
+                <label id="cfd-auto-stop-field" class="field toggle-field"><span>Smart stop</span><input id="cfd-auto-stop" type="checkbox" checked></label>
+                <label class="field"><span>Scaled mass ceiling</span><input id="cfd-mass-ceiling" type="number" value="0.1" min="0.000001" max="1000" step="any"></label>
+              </div>
+              <p id="cfd-time-note" class="hint">Smart stop checks residuals and load history over two windows, then waits 20,000 more iterations.</p>
+              <label id="gas-mesh-field" class="field"><span id="gas-mesh-label">CFD mesh profile</span>
+                <select id="cfd-mesh" title="TE topology selects C+H for finite edges or C for sharp edges. Legacy spacing profiles apply to Legacy A-plus."><option value="aplus_nested_refined" selected>Refined shared mesh</option><option value="cavitation_aplus_farfield">Legacy A-plus spacing</option><option value="legacy_sharp_cmesh">Legacy sharp C mesh</option></select>
+              </label>
+                <label class="field"><span>Mesh resolution</span><select id="cfd-resolution" title="Standard uses curvature-aware leading-edge spacing. Actual block dimensions and total cells appear after Create mesh."><option value="standard">Standard</option><option value="fine">Fine</option><option value="very_fine">Very fine</option></select></label>
+              <label id="base-faces-field" class="field"><span>Trailing-edge base faces per side</span><input id="cfd-n-base" type="number" value="4" min="1" max="8" step="1"></label>
+              <label class="field"><span>CFD trailing-edge thickness / chord (0 = native)</span><input id="trailing-edge-thickness" type="number" min="0" max="0.05" step="0.0001" placeholder="Native geometry"></label>
+              <p class="hint">Mesh contours use equations for NACA sections and a smooth C² reconstruction for coordinate files.</p>
+              <div id="gas-physics-fields" class="form-grid">
+                <label id="cfd-sfd-field" class="field"><span>SFD filter precision</span><select id="cfd-sfd-storage"><option value="float64" selected>Float64</option><option value="float32">Float32 (legacy)</option></select></label>
+                <label class="field"><span>Air viscosity</span><select id="cfd-viscosity-model"><option value="sutherland" selected>Sutherland</option><option value="constant_dynamic">Constant dynamic (RAE workshop)</option><option value="constant_kinematic">Constant kinematic</option></select></label>
+                <label id="cfd-temperature-field" class="field"><span>Freestream T (K)</span><input id="cfd-temperature" type="number" value="288.15" min="100" max="2000" step="any"></label>
+              </div>
+              </div>
+              <div id="advanced-cav" class="hidden">
+                <div class="form-grid">
+                  <label class="field"><span>Fluid</span><select id="cav-fluid"><option value="water">Water / vapor</option><option value="air">Isothermal air (low Mach)</option></select></label>
+                  <label class="field"><span>Domain</span><select id="cav-domain"><option value="tunnel">Tunnel</option><option value="free_fluid">Free fluid (far boundaries)</option><option value="underwater">Nonlinear free surface (experimental)</option></select></label>
+                  <label id="cav-air-mode-field" class="field hidden"><span>Air time integration</span><select id="cav-air-mode"><option value="steady">Steady</option><option value="physical">Physical time</option></select></label>
+                  <label id="cav-depth-field" class="field hidden"><span>Depth / chord</span><input id="cav-depth" type="number" value="1" min="0.01" step="0.1"></label>
+                  <label id="cav-chord-field" class="field hidden"><span>Physical chord, m</span><input id="cav-chord" type="number" value="1" min="0.001" step="any"></label>
+                </div>
+                <p id="cav-domain-note" class="hint">Tunnel walls reproduce the cavitation validation setup. Free fluid has far boundaries and no air/water free surface.</p>
+                <div id="cav-fs-controls" class="hidden">
+                  <label class="field"><span>Free-surface formulation</span><select id="cav-fs-formulation"><option value="incompressible_projection" selected>Incompressible projection (experimental)</option><option value="barotropic_explicit">Barotropic explicit (acoustic startup)</option></select></label>
+                  <p class="experimental-note">Experimental inviscid startup: nonlinear water/air/vapor interface with gravity. No SST, viscosity, energy equation or phase change. Results do not qualify cavitation, drag or stall parity.</p>
+                  <p id="cav-fs-formulation-note" class="hint">Projection advances the nonlinear interface on a convective/gravity timestep. Pressure loads remain experimental.</p>
+                  <div class="form-grid">
+                    <label class="field"><span>Speed, m/s</span><input id="cav-speed" type="number" value="3" min="0.001" step="any"></label>
+                    <label class="field"><span>Physical duration, s</span><input id="cav-fs-duration" type="number" value="0.1" min="0.000001" step="any"></label>
+                    <label class="field"><span>Maximum steps</span><input id="cav-fs-max-steps" type="number" value="2000" min="1" step="1"></label>
+                    <label class="field"><span>Free-surface grid</span><select id="cav-fs-resolution"><option value="coarse">Coarse (64 × 16)</option><option value="standard" selected>Standard (96 × 24)</option><option value="fine">Fine (128 × 32)</option></select></label>
+                  </div>
+                  <details class="advanced-cfd"><summary>Water and air extent</summary><div class="form-grid">
+                    <label class="field"><span>Water depth / chord</span><input id="cav-water-depth" type="number" value="4" min="0.1" step="any"></label>
+                    <label class="field"><span>Air height / chord</span><input id="cav-air-height" type="number" value="2" min="0.1" step="any"></label>
+                    <label class="field" title="Initial vapor nuclei only; this experimental worker does not create vapor through a phase-change model."><span>Initial vapor fraction</span><input id="cav-fs-vapor" type="number" value="0.000001" min="0" max="0.01" step="any"></label>
+                  </div></details>
+                </div>
+                <div id="cav-conventional-controls" class="form-grid">
+                  <label class="field"><span>Warmup steps</span><input id="cav-warm-steps" type="number" value="300000" min="0" step="10000"></label>
+                  <label id="cav-duration-field" class="field"><span>Duration, CTU</span><input id="cav-duration" type="number" value="10" min="0.001" step="any"></label>
+                  <label class="field"><span>Output frames</span><input id="cav-frames" type="number" value="30" min="2" max="500" step="1"></label>
+                  <label id="cav-channel-field" class="field"><span>Channel height / chord</span><input id="cav-channel" type="number" value="1.28" min="0.2" step="0.01"></label>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section class="setup-group" aria-labelledby="sweep-heading">
+            <h2 id="sweep-heading">Alpha sweep</h2>
+            <label class="switch-line"><span>Compute multiple angles</span><input id="sweep-enabled" type="checkbox" role="switch"></label>
+            <div id="sweep-controls" class="sweep-grid hidden">
+              <label class="field"><span>Start, &deg;</span><input id="alpha-start" type="number" value="-4" min="-30" max="30" step="0.25"></label>
+              <label class="field"><span>Stop, &deg;</span><input id="alpha-stop" type="number" value="12" min="-30" max="30" step="0.25"></label>
+              <label class="field"><span>Step, &deg;</span><input id="alpha-step" type="number" value="2" step="0.25"></label>
+            </div>
+            <p id="sweep-count" class="hint hidden"></p>
+          </section>
+
+          <section class="setup-group" aria-labelledby="recent-heading">
+            <h2 id="recent-heading">Recent results</h2>
+            <label class="field"><span>Saved job</span><select id="recent-select" aria-label="Recent saved results" disabled><option value="">No saved results loaded</option></select></label>
+            <div class="recent-actions"><button id="recent-open" type="button" class="secondary-button" disabled>Open saved result</button><button id="recent-refresh" type="button" class="secondary-button">Refresh list</button></div>
+            <p id="recent-status" class="hint" role="status">The latest 20 jobs saved under runs/ reopen with their fields, Cp, polar and history, also after a server restart.</p>
+          </section>
+        </div>
+        <div class="run-panel">
+          <button id="run-button" type="button" class="primary-button">Run analysis <span aria-hidden="true">&#8599;</span></button>
+          <details id="run-status" class="run-status" aria-live="polite">
+            <summary><span id="job-title">Ready to analyze</span><span id="job-percent">0%</span></summary>
+            <div class="run-status-body"><p id="job-message">Select an airfoil and flow conditions, then run the Julia solvers.</p><span id="job-id" class="mono"></span></div>
+          </details>
+          <div id="job-progress" class="progress-track" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-bar"></div></div>
+          <p id="form-error" class="error-message hidden" role="alert"></p>
+        </div>
+      </aside>
+
+      <main class="results-column">
+        <div class="results-toolbar">
+          <div class="toolbar-title"><h2>Results</h2><label class="check-line coordinate-grid-option" title="Show coordinate grid in geometry, curvature and 2D result charts"><input id="field-grid" type="checkbox" checked><span>Grid</span></label></div>
+          <div class="toolbar-selects">
+            <label class="field compact"><span>Backend</span><select id="result-backend" disabled></select></label>
+            <label class="field compact"><span title="Angle of attack">&alpha;</span><select id="result-alpha" aria-label="Result angle of attack" disabled></select></label>
+            <button id="download-result" type="button" class="secondary-button" title="Download result JSON" disabled>Save JSON</button>
+          </div>
+        </div>
+
+        <div class="display-tabs" role="tablist" aria-label="Analysis displays">
+          <button id="tab-button-geometry" class="display-tab is-active" type="button" role="tab" data-tab-target="geometry" aria-controls="tab-geometry" aria-selected="true">Geometry</button>
+          <button id="tab-button-results" class="display-tab" type="button" role="tab" data-tab-target="results" aria-controls="tab-results" aria-selected="false">Results</button>
+          <button id="tab-button-field" class="display-tab" type="button" role="tab" data-tab-target="field" aria-controls="tab-field" aria-selected="false">Flow field</button>
+          <button id="tab-button-polar" class="display-tab" type="button" role="tab" data-tab-target="polar" aria-controls="tab-polar" aria-selected="false">Polar</button>
+          <button id="tab-button-diagnostics" class="display-tab" type="button" role="tab" data-tab-target="diagnostics" aria-controls="tab-diagnostics" aria-selected="false">Diagnostics</button>
+          <button id="tab-button-log" class="display-tab" type="button" role="tab" data-tab-target="log" aria-controls="tab-log" aria-selected="false">Run log <span id="log-count" class="mono">0</span></button>
+          <button id="tab-button-campaign" class="display-tab" type="button" role="tab" data-tab-target="campaign" aria-controls="tab-campaign" aria-selected="false">Campaign</button>
+        </div>
+
+        <div class="tab-stack">
+          <section id="tab-geometry" class="tab-pane is-active" role="tabpanel" aria-labelledby="tab-button-geometry" data-tab-panel="geometry">
+            <div class="panel pane-panel geometry-panel">
+              <div class="chart-heading"><div><h3 id="geometry-title">Airfoil geometry</h3><p id="geometry-status">Loading selected airfoil…</p></div><span id="geometry-axis-label">x/c &middot; y/c</span></div>
+              <div class="geometry-controls">
+                <label class="header-control">Display <select id="geometry-display"><option value="outline">Geometry</option><option value="mesh">Geometry + mesh</option><option value="curvature">Curvature porcupine</option><option id="native-result-geometry" value="native" disabled hidden>Native result geometry</option></select></label>
+                <label id="cfd-te-topology-field" class="header-control" title="Auto creates a connected C+H mesh for a finite trailing edge, and a C mesh for a sharp trailing edge. No silent A-plus fallback.">TE topology <select id="cfd-te-topology"><option value="auto" selected>Auto: C+H blunt / C sharp</option><option value="aplus">Legacy A-plus</option></select></label>
+                <span id="underwater-mesh-note" class="hint hidden">Native TE · annular development mesh</span>
+                <label id="curvature-scale-field" class="header-control hidden" title="Normal distance / chord = scale × signed outward curvature × chord. Leave blank for automatic scaling.">κ scale <input id="curvature-scale" type="number" min="0" step="any" placeholder="Auto" aria-label="Curvature normal distance scale"></label>
+                <fieldset id="curvature-mapping-field" class="name-options curvature-options hidden" aria-describedby="curvature-mapping-help"><legend>κ mapping</legend><label><input type="radio" name="curvature-mapping" value="linear" checked>Linear</label><label><input type="radio" name="curvature-mapping" value="log">Log</label></fieldset>
+                <label class="header-control">Resolution <select id="preview-resolution" title="Standard C+H uses curvature-aware leading-edge spacing. Actual mesh dimensions and total cells appear after generation."><option value="standard">Standard</option><option value="fine">Fine</option><option value="very_fine">Very fine</option></select></label>
+                <button id="create-mesh" class="secondary-button" type="button">Create mesh</button><button id="refine-mesh" class="secondary-button" type="button">Refine mesh</button>
+              </div>
+              <p id="curvature-mapping-help" class="hint curvature-help hidden">Log uses signed log1p(|κc|), preserving zero and concavity. The probe shows the original κc.</p>
+              <div class="view-tools" data-view="geometry"><details class="view-help"><summary title="Mouse and keyboard controls">Controls</summary><p>Wheel: zoom at cursor<br>Left drag: zoom window<br>Right/middle or Shift/Ctrl drag: pan<br>Double click or F/Home: fit<br>Esc: cancel zoom window</p></details><button type="button" data-action="zoom-out" title="Zoom out">&minus;</button><button type="button" data-action="zoom-in" title="Zoom in">+</button><button type="button" data-action="center" title="Fit the airfoil">Fit</button><button type="button" data-action="te" title="Trailing-edge close-up (with a Gurney plate: the plate and the base)">TE</button><button type="button" data-action="le" title="Leading-edge close-up (centred on the stagnation point when JXfoil streamlines are present)">LE</button><label class="check-line view-check" title="Draw the JXfoil wake path and stagnation streamline of a streamline-aligned mesh"><input id="geometry-streamlines" type="checkbox" checked><span>JXfoil streamlines</span></label></div>
+              <div id="geometry-chart" class="chart spatial-view empty-chart">Loading the selected geometry.</div>
+              <div id="curvature-chart" class="chart spatial-view hidden empty-chart">Curvature will appear with the geometry.</div>
+            </div>
+          </section>
+
+          <section id="tab-results" class="tab-pane" role="tabpanel" aria-labelledby="tab-button-results" data-tab-panel="results" hidden>
+            <div class="results-pane-grid">
+              <section class="panel pane-panel cp-panel"><div class="chart-heading"><h3>Surface pressure</h3><span>Cp &middot; x/c</span></div><div id="cp-chart" class="chart empty-chart">Surface pressure appears when the backend provides it.</div><p id="reference-note" class="hint hidden"></p></section>
+              <section class="panel pane-panel points-panel"><div class="chart-heading"><div><h3>Computed points</h3><p>Solver provenance and convergence for each result</p></div></div><div class="table-wrap"><table><thead><tr><th>Backend</th><th>&alpha; (&deg;)</th><th>C<sub>L</sub></th><th>C<sub>D</sub></th><th>C<sub>M,c/4</sub></th><th>Status</th></tr></thead><tbody id="points-body"><tr><td colspan="6" class="table-empty">No computed points yet.</td></tr></tbody></table></div><div id="result-notes" class="result-notes"></div></section>
+            </div>
+          </section>
+
+          <section id="tab-field" class="tab-pane" role="tabpanel" aria-labelledby="tab-button-field" data-tab-panel="field" hidden>
+            <section class="panel pane-panel field-panel">
+              <div class="chart-heading"><div><h3>Flow field</h3><p>Inspect spatial quantities from CFD</p></div><div class="toolbar-selects">
+                <label class="field compact"><span>Quantity</span><select id="field-kind" disabled><option value="">No field data</option></select></label>
+                <label class="field compact"><span>View</span><select id="field-renderer"><option value="2d">2D</option><option value="3d">3D Babylon</option></select></label>
+              </div></div>
+              <div class="viewer-options"><label class="check-line"><input id="field-mesh-overlay" type="checkbox"><span>Mesh overlay</span></label><label class="check-line" title="Draw the JXfoil wake path and stagnation streamline of a streamline-aligned mesh"><input id="field-streamlines" type="checkbox" checked><span>Show JXfoil streamlines</span></label><fieldset class="name-options"><legend>Airfoil name</legend><label><input type="radio" name="airfoil-label" value="show" checked> Show</label><label><input type="radio" name="airfoil-label" value="hide"> Hide</label></fieldset></div>
+              <div class="view-tools" data-view="field"><details class="view-help"><summary title="Mouse and keyboard controls">Controls</summary><p>Wheel: zoom at cursor<br>Left drag: zoom window<br>Right/middle or Shift/Ctrl drag: pan<br>Double click or F/Home: fit<br>Esc: cancel zoom window</p></details><button type="button" data-action="zoom-out" title="Zoom out">&minus;</button><button type="button" data-action="zoom-in" title="Zoom in">+</button><button type="button" data-action="center" title="Fit near the airfoil">Fit</button><button type="button" data-action="te" title="Trailing-edge close-up (with a Gurney plate: the plate and the base)">TE</button><button type="button" data-action="le" title="Leading-edge close-up (centred on the stagnation point when JXfoil streamlines are present)">LE</button></div>
+              <div id="field-view" class="field-view spatial-view empty-chart">Choose CFD to inspect a flow field.</div>
+              <div id="babylon-view" class="babylon-view hidden" aria-label="Interactive Babylon.js flow view"></div>
+              <div id="field-legend" class="field-legend hidden"></div>
+            </section>
+          </section>
+
+          <section id="tab-polar" class="tab-pane" role="tabpanel" aria-labelledby="tab-button-polar" data-tab-panel="polar" hidden>
+            <section class="panel pane-panel polar-panel">
+              <div class="chart-heading"><div><h3>Polar</h3><p>Coefficients versus angle of attack</p><p id="polar-note" class="polar-note hidden"></p></div></div>
+              <div class="polar-grid"><div><h4>Lift &middot; C<sub>L</sub></h4><div id="polar-cl" class="polar-chart empty-chart">Enable an alpha sweep to build a polar.</div></div><div><h4>Drag &middot; C<sub>D</sub></h4><div id="polar-cd" class="polar-chart empty-chart">Enable an alpha sweep to build a polar.</div></div><div><h4>Moment &middot; C<sub>M,c/4</sub></h4><div id="polar-cm" class="polar-chart empty-chart">Enable an alpha sweep to build a polar.</div></div></div>
+            </section>
+          </section>
+
+          <section id="tab-diagnostics" class="tab-pane" role="tabpanel" aria-labelledby="tab-button-diagnostics" data-tab-panel="diagnostics" hidden>
+            <section id="convergence-panel" class="panel pane-panel convergence-panel hidden" aria-label="CFD iteration history">
+              <div class="chart-heading"><div><h3>Live CFD diagnostics</h3><p id="convergence-state">Waiting for CFD iterations.</p><p id="sampling-state" class="hidden"></p></div></div>
+              <div class="convergence-grid">
+                <div><h4 id="history-residual-title">Mass residual (scaled L&#8734;) &middot; log&#8321;&#8320;</h4><div id="history-residual" class="history-chart empty-chart">Waiting for mass residuals.</div></div>
+                <div><h4>Lift &middot; C<sub>L</sub></h4><div id="history-cl" class="history-chart empty-chart">Waiting for lift history.</div></div>
+                <div><h4>Drag &middot; C<sub>D</sub></h4><div id="history-cd" class="history-chart empty-chart">Waiting for drag history.</div></div>
+              </div>
+              <p id="diagnostics-axis-note" class="hint">Live updates every 0.5 s. Wheel: zoom · drag: box zoom · right drag: pan · double click: fit. Horizontal axis: solver iteration. Residual shows volume-scaled continuity mass flux divergence.</p>
+            </section>
+            <div class="panel diagnostics-empty">Live CFD diagnostics appear during compressible CFD runs.</div>
+          </section>
+
+          <section id="tab-campaign" class="tab-pane" role="tabpanel" aria-labelledby="tab-button-campaign" data-tab-panel="campaign" hidden>
+            <section class="panel pane-panel campaign-panel" aria-label="Reference comparison campaign">
+              <div class="chart-heading"><div><h3>NACA reference campaign</h3><p>Re = 3 million · Mach 0.10 · −15° to +15° in 1° steps</p></div><a class="secondary-button" href="/api/campaign/files/all_points.csv" download>Point table</a></div>
+              <p id="campaign-state" role="status">Open this tab to inspect the background GPU queue.</p>
+              <div id="campaign-active" class="campaign-active hidden"><span id="campaign-current"></span><progress id="campaign-progress" max="1" value="0" aria-label="Current CFD iteration progress"></progress><span id="campaign-values" class="mono"></span></div>
+              <p id="campaign-summary" class="hint"></p>
+              <section class="campaign-current-evidence" aria-label="Current recovery and stall reference evidence"><div id="campaign-evidence" class="campaign-evidence-grid"><p>Waiting for current diagnostic evidence.</p></div></section>
+              <section class="campaign-development" aria-label="Experimental solver development tests">
+                <div class="campaign-development-heading"><h4>Solver development tests <span>Experimental · not qualified</span></h4><p id="campaign-development-summary" class="hint">Inspecting controlled numerical tests.</p></div>
+                <div class="table-wrap campaign-development-table"><table><thead><tr><th>Test / arm</th><th>Status</th><th>Accepted iterations</th><th>CL</th><th>CD</th><th>Mass residual</th><th>Net mass</th></tr></thead><tbody id="campaign-development-rows"><tr><td colspan="7">Waiting for test status.</td></tr></tbody></table></div>
+              </section>
+              <div class="table-wrap campaign-table"><table><thead><tr><th>NACA</th><th>Mesh</th><th>XFOIL tripped</th><th>XFOIL natural</th><th>Transonic</th><th>Species air</th><th>Polar</th></tr></thead><tbody id="campaign-rows"><tr><td colspan="7">Waiting for campaign status.</td></tr></tbody></table></div>
+              <p id="campaign-qualification" class="hint">CFD process completion and aerodynamic convergence are reported separately.</p>
+            </section>
+          </section>
+          <section id="tab-log" class="tab-pane" role="tabpanel" aria-labelledby="tab-button-log" data-tab-panel="log" hidden>
+            <section class="panel pane-panel log-panel" aria-label="Solver process log">
+              <div class="log-heading"><div><h3>Solver log</h3><p id="log-state" role="status">Run an analysis to see Julia and CFD progress here.</p></div><div class="log-actions"><button id="log-follow" type="button" class="secondary-button hidden">Jump to latest</button><a id="log-download" class="secondary-button hidden" download="airfoil-job.log">Download full log</a></div></div>
+              <div id="log-view" class="log-view mono" role="log" aria-label="Live solver process output" aria-live="off"><p id="log-empty" class="log-empty">Process messages will appear as the job runs.</p></div>
+              <p id="log-warning" class="log-warning hidden"></p>
+            </section>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

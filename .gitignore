@@ -1,0 +1,12 @@
+# Local configuration and generated output
+/cases_to_run.yaml
+/src/LocalPreferences.toml
+/third_party/JXfoil/LocalPreferences.toml
+/CASES/*
+!/CASES/TEMPLATE_starter/
+/apps/airfoil_web/runs/
+/TEMP_DELETEABLE/
+*.log
+*.pid
+__pycache__/
+*.pyc

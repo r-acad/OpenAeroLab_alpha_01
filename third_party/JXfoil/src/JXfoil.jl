@@ -1,0 +1,71 @@
+module JXfoil
+
+export Airfoil,
+    BLClosureState,
+    BLFlowParams,
+    BLKinematicState,
+    BLModelParams,
+    BLPrimaryState,
+    BLSecondaryState,
+    CaseResult,
+    axset,
+    bldif_residuals,
+    blmid_cfm,
+    blsecondary_state,
+    blkin_state,
+    blvar_closure,
+    cfl,
+    cft,
+    dampl,
+    dampl2,
+    dil,
+    dilw,
+    dit,
+    hct,
+    hkin,
+    hsl,
+    hst,
+    initial_ctau,
+    load_airfoil,
+    naca4_airfoil,
+    xfoil_naca4_airfoil,
+    parse_xfoil_panel_dump,
+    parse_xfoil_plot_blocks,
+    solve_inviscid_case,
+    parse_xfoil_polar,
+    parse_xfoil_polar_table,
+    parse_xfoil_viscous_state_dump,
+    SolverProvenance,
+    CoupledIterationSample,
+    CoupledSolveTrace,
+    solve_viscous_case,
+    SurfaceMarchResult,
+    SurfaceStations,
+    ViscousCaseResult,
+    CoupledCaseResult,
+    solve_coupled_case,
+    solve_coupled_polar,
+    solve_coupled_case_viscal,
+    solve_coupled_polar_viscal,
+    solve_coupled_case_viscal_trace,
+    save_airfoil_geometry_figure,
+    save_airfoil_gallery_figure,
+    save_operating_point_summary_figure,
+    save_convergence_trace_figure,
+    save_polar_comparison_figure,
+    save_pathological_polar_layout_figure,
+    save_low_re_frontier_comparison_figure,
+    save_low_re_campaign_overview_figure,
+    save_uiuc_raw_kulfan_comparison_figure,
+    save_uiuc_raw_kulfan_shift_figure
+
+include("airfoil_io.jl")
+include("inviscid_solver.jl")
+include("viscous_closure.jl")
+include("viscous_interval.jl")
+include("viscous_solver.jl")
+include("xfoil_blsys.jl")
+include("xfoil_io.jl")
+include("makie_plots.jl")
+
+end
