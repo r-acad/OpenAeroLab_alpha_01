@@ -877,6 +877,7 @@ function run_case(case::AbstractDict, backend::AbstractString, outdir::AbstractS
     alphas = _alpha_values(case)
     mkpath(outdir)
     points = Dict{String,Any}[]
+    warmdir = nothing
     for (i, alpha) in enumerate(alphas)
         dir = joinpath(outdir, backend, @sprintf("%03d_alpha_%+.3f", i, alpha))
         mkpath(dir)
@@ -884,10 +885,11 @@ function run_case(case::AbstractDict, backend::AbstractString, outdir::AbstractS
                                    backend, i, length(alphas), alpha))
         try
             point = backend == "lbm" ? _lbm_point(case,path,flow,alpha,dir,progress,log) :
-                    backend == "lowspeed" ? _lowspeed_point(case,path,flow,alpha,dir,progress,log) :
+                    backend == "lowspeed" ? _lowspeed_point(case,path,flow,alpha,dir,progress,log,warmdir) :
                     backend == "transonic" ? _transonic_point(case,path,flow,alpha,dir,progress,log) :
                                                _cavitation_point(case,path,flow,alpha,dir,progress,log)
             push!(points, point)
+            backend == "lowspeed" && isfile(joinpath(dir, "state_checkpoint.jls")) && (warmdir = dir)
             progress(Dict("event"=>"point_complete", "backend"=>backend, "alpha_deg"=>alpha,
                           "point"=>points[end]))
             _deliver_log(log, @sprintf("Completed %s point %d/%d at alpha %.3f deg",

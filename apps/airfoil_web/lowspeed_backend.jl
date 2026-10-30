@@ -211,7 +211,7 @@ function lowspeed_paired_geometry(case, path::AbstractString, outdir::AbstractSt
 end
 
 "The worker's input for one point (or, with mesh_only, for Create mesh: the same knobs, so the same mesh node for node)."
-function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false)
+function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false, warm_start=nothing)
     cfg = Dict{String,Any}("snapshot"=>snap, "commit"=>head, "foil"=>replace(String(foil), '\\'=>'/'),
         "mesh"=>ls["mesh"], "le_ds"=>ls["le_ds"], "resolution"=>ls["resolution"], "tu"=>ls["tu"], "mut_ratio"=>ls["mut_ratio"],
         "dt"=>0.25, "steady_tol"=>1e-6, "turb_steady_tol"=>1e-7, "max_steps"=>ls["max_steps"], "wall_cap"=>ls["wall_cap"],
@@ -223,6 +223,7 @@ function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false
         merge!(cfg["knobs"], Dict{String,Any}(
             "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_LAW"=>"96,1.16,5"))
     end
+    warm_start === nothing || (cfg["warm_start"] = String(warm_start))
     mesh_only && (cfg["mesh_only"] = true)
     cfg
 end
@@ -255,13 +256,15 @@ function preview_lowspeed_mesh(path::AbstractString, flow::AbstractDict, outdir:
     (mesh=mesh, metadata=metadata)
 end
 
-function _lowspeed_point(case, path, flow, alpha, dir, progress, log)
+function _lowspeed_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing)
     _lowspeed_ch_selected(flow) && return _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log)   # C+H path
     snap, head = _lowspeed_snapshot_check()
     ls = lowspeed_configuration(flow)
     foil, geometry = _lowspeed_geometry(case, path, dir, snap)
     isempty(geometry["change"]) || _deliver_log(log, geometry["change"] * ".")
-    cfg = _lowspeed_input(snap, head, foil, ls, alpha, dir)
+    warm = warmdir === nothing ? nothing : joinpath(warmdir, "state_checkpoint.jls")
+    cfg = _lowspeed_input(snap, head, foil, ls, alpha, dir;
+                          warm_start=warm !== nothing && isfile(warm) ? warm : nothing)
     cfg_path = joinpath(dir, "input.toml")
     open(io -> TOML.print(io, cfg), cfg_path, "w")
     _deliver_log(log, @sprintf("Starting low-speed CFD (PBCav %s, pressure-based incompressible, fully turbulent SST, Tu %.3g%%, mu_t/mu %.3g) %s; %s; wall cap %.0f s.",
@@ -310,8 +313,10 @@ function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
     notes = String[
         "Low-speed CFD: version 2's incompressible pressure-based solver (PBCav, commit $(meta["commit"])), IN DEVELOPMENT and NOT YET VALIDATED.",
         "Fully turbulent k-omega SST (SST-2003m; no transition model): freestream Tu $(round(100*ls["tu"]; sigdigits=3))%, mu_t/mu $(ls["mut_ratio"]). XFOIL comparisons should use fixed transition near the leading edge.",
-        "Free air: far-field velocity with a point-vortex correction, pressure outlet; Mach is ignored (incompressible). Steady pseudo-time (backward Euler, dt 0.25 c/U) to the solver's own steady stop.",
-        "Mesh: $(ls["mesh_label"]). This coarse demonstration mesh fails some of the PBCav mesh audit's reference gates ($(isempty(meta["mesh_gate_failures"]) ? "none" : join(meta["mesh_gate_failures"], "; "))); grid independence is not established.",
+        "Free air: far-field velocity with a point-vortex correction, pressure outlet; Mach is ignored (incompressible). Adaptive backward-Euler pseudo-time (requested maximum dt 0.25 c/U) to the solver's own steady stop.",
+        isempty(String(get(meta,"warm_start_source",""))) ? "Kutta potential-flow start." :
+            "Started from the previous polar angle's checked full solver state; source $(meta["warm_start_source"]).",
+        "Mesh: $(ls["mesh_label"]). PBCav mesh audit reference gates: $(isempty(meta["mesh_gate_failures"]) ? "all pass" : join(meta["mesh_gate_failures"], "; ")). Grid independence is not established.",
         isempty(geometry["change"]) ? "The CFD geometry is the source section (sharp trailing edge)." : geometry["change"] * ". XFOIL uses the source section; account for the difference when comparing.",
         "Fields: the 'mach' column holds the speed |U|/U_inf (incompressible); density and temperature are 1; nut is mu_t/mu; vorticity from the solver's least-squares gradients."]
     fields = Dict{String,Any}("kind"=>"samples", "samples"=>samples, "sample_shape"=>[meta["sampled_ni"], meta["sampled_nj"]],
@@ -332,11 +337,13 @@ function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
             "loads_history_csv"=>joinpath(dir, "loads_history.csv"), "mesh_full"=>joinpath(dir, "mesh_full.msgpack"),
             "mesh_preview"=>joinpath(dir, "mesh_preview.msgpack"), "field_csv"=>joinpath(dir, "field_samples.csv"),
             "field_full"=>joinpath(dir, "field_full.msgpack"), "result_toml"=>joinpath(dir, "result.toml"),
+            "state_checkpoint"=>isfile(joinpath(dir,"state_checkpoint.jls")) ? joinpath(dir,"state_checkpoint.jls") : nothing,
             "input_toml"=>joinpath(dir, "input.toml"), "log"=>joinpath(dir, "solver.log")),
         "diagnostics"=>Dict{String,Any}("solver"=>meta["solver"], "commit"=>meta["commit"], "snapshot"=>meta["snapshot"],
             "solver_outcome"=>outcome, "steps"=>meta["steps"], "max_steps"=>meta["max_steps"], "wall_cap_s"=>fnum(meta["wall_cap"]),
+            "warm_start_source"=>get(meta,"warm_start_source",""),
             "march_wall_seconds"=>fnum(meta["march_wall_seconds"]), "point_wall_seconds"=>elapsed, "threads"=>meta["threads"],
-            "time_mode"=>"steady", "clock"=>"steady pseudo-time (backward Euler, dt 0.25 c/U)",
+            "time_mode"=>"steady", "clock"=>"steady adaptive pseudo-time (backward Euler, maximum dt 0.25 c/U)",
             "convergence_guard"=>Dict("status"=>steady ? "solver_steady_stop" : "not_converged", "reason"=>convergence),
             "residual_scaled"=>fnum(meta["steady_residual"]), "residual_kind"=>"PBCav steady residual (momentum)",
             "steady_residual"=>fnum(meta["steady_residual"]), "steady_tol"=>fnum(meta["steady_tol"]),

@@ -30,6 +30,7 @@ include(joinpath(SNAP, "src", "pbcav", "PBCav.jl")); using .PBCav
 using KernelAbstractions
 using Printf
 using SHA
+using Serialization
 include(joinpath(@__DIR__, "protocol.jl")); using .AirfoilWire
 include(joinpath(@__DIR__, "full_field_artifact.jl")); using .FullFieldArtifact
 
@@ -147,10 +148,47 @@ const cfg = PBCav.freeair_config(k; backend=BACKEND)
 println(PBCav.freeair_config_line(cfg, fs, k))
 const st = PBCav.allocate_state(MESH; backend=BACKEND)
 const w = PBCav.pbwork(MESH, bc, cfg)
-const G0, J0, JG = PBCav.kutta_circulation(MESH, bc, cfg, fs; work=w)
-const ps = PBCav.vortex_projection_start!(st, MESH, bc, cfg, fs, G0; work=w)
-@printf("PB FREEAIR START: projection FCG %d, rel %.2e, max |div F|/V %.3e -> %.3e, start kutta: G_K %.6f (potential C_L %.5f), trailing-edge velocity jump %.4e -> %.4e\n",
-        ps.fcg, ps.rel, ps.div_before, ps.div_after, G0, 2G0/(fs.U*fs.chord), J0, JG)
+const FOIL_SHA = bytes2hex(sha256(read(CFG["foil"])))
+function start_state!()
+    path = get(CFG, "warm_start", nothing)
+    if path !== nothing
+        try
+            saved = open(deserialize, path)
+            saved["commit"] == CFG["commit"] || error("solver commit differs")
+            saved["mesh_hashes"] == collect(BLOCKS.hashes) || error("mesh differs")
+            saved["foil_sha256"] == FOIL_SHA || error("foil differs")
+            saved["reynolds"] == k["PB_RE"] || error("Reynolds number differs")
+            saved["tu"] == k["PB_SST_TU_INF"] || error("turbulence intensity differs")
+            saved["mut_ratio"] == k["PB_SST_MUT_RATIO"] || error("freestream eddy viscosity differs")
+            abs(saved["alpha_deg"] - k["PB_ALPHA"]) <= 1.5 || error("incidence change exceeds 1.5 degrees")
+            all(isfinite, (saved["gamma"], saved["dt"], saved["dt_prev"])) || error("nonfinite restart scalar")
+            saved["dt_prev"] > 0 || error("invalid previous time step")
+            for f in PBCav.STATE_FIELDS
+                data = saved[string(f)]
+                size(data) == size(getfield(st, f)) || error("state size differs for $f")
+                all(isfinite, data) || error("nonfinite state in $f")
+            end
+            for f in PBCav.STATE_FIELDS
+                copyto!(getfield(st, f), saved[string(f)])
+            end
+            st.t = 0.0; st.nstep = 0
+            st.dt = min(cfg.dt, max(1e-4, saved["dt"]))
+            st.dt_prev = saved["dt_prev"]
+            G = saved["gamma"]
+            PBCav.set_farfield!(bc, MESH, fs, G; backend=BACKEND)
+            @printf("PB FREEAIR START: checked warm state from alpha %.3f deg, dt %.5g, Gamma %.6g\n", saved["alpha_deg"], st.dt, G)
+            return G, NaN, NaN, String(path)
+        catch err
+            println("PB FREEAIR START: warm state refused (", sprint(showerror, err), "); using Kutta start")
+        end
+    end
+    G, J0, JG = PBCav.kutta_circulation(MESH, bc, cfg, fs; work=w)
+    ps = PBCav.vortex_projection_start!(st, MESH, bc, cfg, fs, G; work=w)
+    @printf("PB FREEAIR START: projection FCG %d, rel %.2e, max |div F|/V %.3e -> %.3e, start kutta: G_K %.6f (potential C_L %.5f), trailing-edge velocity jump %.4e -> %.4e\n",
+            ps.fcg, ps.rel, ps.div_before, ps.div_after, G, 2G/(fs.U*fs.chord), J0, JG)
+    G, J0, JG, ""
+end
+const G0, J0, JG, WARM_SOURCE = start_state!()
 flush(stdout)
 const pv = PBCav.PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=G0)
 const MAXS = k["PB_MAX_STEPS"]
@@ -216,6 +254,23 @@ finally
     close(hio)
     bio === nothing || close(bio)
 end
+# Keep a complete, mesh-checked restart for the next polar angle and for a longer
+# continuation of an incomplete point. Write atomically so a killed worker cannot
+# pass a partial state to the next point.
+if R.outcome != :NOT_REACHED
+    checkpoint = Dict{String,Any}(
+        "commit"=>CFG["commit"], "mesh_hashes"=>collect(BLOCKS.hashes),
+        "foil_sha256"=>FOIL_SHA, "reynolds"=>k["PB_RE"],
+        "tu"=>k["PB_SST_TU_INF"], "mut_ratio"=>k["PB_SST_MUT_RATIO"],
+        "alpha_deg"=>k["PB_ALPHA"], "gamma"=>pv.G,
+        "dt"=>st.dt, "dt_prev"=>st.dt_prev)
+    for f in PBCav.STATE_FIELDS
+        checkpoint[string(f)] = Array(getfield(st, f))
+    end
+    tmp = joinpath(OUT, "state_checkpoint.jls.tmp")
+    open(io -> serialize(io, checkpoint), tmp, "w")
+    mv(tmp, joinpath(OUT, "state_checkpoint.jls"); force=true)
+end
 const SD = PBCav.surface_distribution(R.lw, MESH, fs)
 PBCav.write_surface_csv(joinpath(OUT, "surface.csv"), SD)
 const L = R.loads; const H = R.hist
@@ -272,7 +327,9 @@ result = Dict{String,Any}(
     "outcome"=>string(R.outcome), "exit_code"=>PBCav.freeair_exit_code(R.outcome), "steps"=>R.nstep, "max_steps"=>MAXS,
     "t_ctu"=>R.t, "march_wall_seconds"=>R.wall, "worker_wall_seconds"=>time() - T_START,
     "cl"=>L.CL, "cd"=>L.CD, "cm"=>L.CM, "cd_pressure"=>L.CDp, "cd_friction"=>L.CDf, "cl_pressure"=>CLp, "cl_friction"=>CLf,
-    "gamma"=>pv.G, "gamma_kutta_start"=>G0, "gamma_defect"=>isempty(H) ? NaN : H[end].Gamma_defect,
+    "gamma"=>pv.G, "gamma_start"=>G0, "gamma_kutta_start"=>isempty(WARM_SOURCE) ? G0 : NaN,
+    "warm_start_source"=>WARM_SOURCE,
+    "gamma_defect"=>isempty(H) ? NaN : H[end].Gamma_defect,
     "steady_residual"=>isempty(H) ? NaN : H[end].steady, "steady_k"=>isempty(H) ? NaN : H[end].steady_k,
     "steady_w"=>isempty(H) ? NaN : H[end].steady_w, "steady_tol"=>k["PB_STEADY_TOL"], "turb_steady_tol"=>k["PB_TURB_STEADY_TOL"],
     "flux_net"=>R.fluxes.net, "mass_step_err_max"=>R.ledger.step_err_max, "rejections"=>string(R.tally),
