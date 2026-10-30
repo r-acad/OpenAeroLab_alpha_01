@@ -16,11 +16,11 @@ include("reference_data.jl")
 using .AirfoilReferenceData
 include("cfd_backend.jl")
 using .CFDBackend
-include("nearby_references.jl")
+include(joinpath("references", "nearby_references.jl"))
 using .AirfoilNearbyReferences
 # Streamline-aligned meshes (development, 24 Oct 2026): the JXfoil paths are computed here (CFDBackend's workers never
 # load JXfoil) and handed to the solver worker as a hashed file (streamline_backend.jl).
-include("streamline_alignment.jl")
+include(joinpath("mesh", "streamline_alignment.jl"))
 using .AirfoilStreamlineAlignment
 const STREAMLINE_CACHE = Dict{Any,Any}()
 const STREAMLINE_LOCK = ReentrantLock()
@@ -75,7 +75,7 @@ const MIME = Dict(
     ".csv"=>"text/csv; charset=utf-8", ".txt"=>"text/plain; charset=utf-8",
     ".log"=>"text/plain; charset=utf-8", ".msgpack"=>"application/msgpack",
 )
-include("campaign_status.jl")
+include(joinpath("api", "campaign_status.jl"))
 
 _header(req::HTTP.Request, name::String) = get(Dict(lowercase(String(k))=>String(v) for (k,v) in req.headers), lowercase(name), "")
 _fmt(req; default=:msgpack) = try

@@ -13,7 +13,7 @@ include(joinpath(@__DIR__, "mass_diagnostics.jl"))
 using .CFDMassDiagnostics
 include(joinpath(@__DIR__, "equation_residuals.jl"))
 using .EquationResidualProbe
-include(joinpath(@__DIR__, "time_statistics.jl"))
+include(joinpath(@__DIR__, "diagnostics", "time_statistics.jl"))
 using .CFDTimeStatistics
 
 const ROOT = normpath(joinpath(@__DIR__, "..", ".."))
@@ -24,12 +24,12 @@ const IS_WORKER = abspath(PROGRAM_FILE) == abspath(@__FILE__) &&
 include(joinpath(SRC, "cmesh", "cmesh_gen.jl"))
 include(joinpath(SRC, "cmesh", "cmesh_metrics.jl"))
 include(joinpath(@__DIR__, "transonic_mesh.jl"))
-include(joinpath(@__DIR__, "stall_layer_mesh.jl"))
+include(joinpath(@__DIR__, "mesh", "stall_layer_mesh.jl"))
 include(joinpath(@__DIR__, "ch_mesh.jl"))
 # Gurney flap (23 Oct 2026; a baffle in the low-speed CFD since 28 Oct 2026): the pure geometry module, the regional base audit and the backend hooks; inert when off.
 include(joinpath(@__DIR__, "gurney.jl"))
-include(joinpath(@__DIR__, "gurney_mesh_audit.jl"))   # the regional base audit (the plate-insertion mesh and its corner table were retired on 28 Oct 2026)
-include(joinpath(@__DIR__, "gurney_backend.jl"))
+include(joinpath(@__DIR__, "mesh", "gurney_mesh_audit.jl"))   # the regional base audit
+include(joinpath(@__DIR__, "backends", "gurney_backend.jl"))
 
 # Load solver methods before calling the worker. Julia 1.12 world-age rules do not permit
 # defining these modules inside _transonic_worker and immediately invoking their methods.
@@ -1762,19 +1762,19 @@ function _transonic_worker(cfg_path::AbstractString)
     println("CMESH2D worker complete")
 end
 
-include(joinpath(@__DIR__,"species_backend.jl"))
-include(joinpath(@__DIR__,"underwater_backend.jl"))
-include(joinpath(@__DIR__,"ch_transonic_backend.jl"))
+include(joinpath(@__DIR__,"backends","species_backend.jl"))
+include(joinpath(@__DIR__,"backends","underwater_backend.jl"))
+include(joinpath(@__DIR__,"backends","ch_transonic_backend.jl"))
 include(joinpath(@__DIR__,"ch_transonic_worker.jl"))
 include(joinpath(@__DIR__,"gpu_lock.jl"))           # the shared GPU lock (the low-speed GPU option; 24 Oct 2026)
-include(joinpath(@__DIR__,"lowspeed_backend.jl"))
-include(joinpath(@__DIR__,"lowspeed_ch_backend.jl"))
-include(joinpath(@__DIR__,"streamline_backend.jl"))   # streamline-aligned meshes (development, opt-in; 24 Oct 2026)
-include(joinpath(@__DIR__,"ch_streamline.jl"))       # ... and their compressible C+H form (development, opt-in; 24 Oct 2026)
-include(joinpath(@__DIR__,"lbm_geometry.jl"))        # LBM 3D (LUDWIG): section, extrusion, STL, lattice replica (27 Oct 2026)
-include(joinpath(@__DIR__,"lbm_case.jl"))            # ... its settings, estimates and generated case
-include(joinpath(@__DIR__,"lbm_render.jl"))          # ... its numeric mid-plane fields (colour scales, video frames)
-include(joinpath(@__DIR__,"lbm_backend.jl"))         # ... and its orchestration (worker: lbm_worker.jl)
+include(joinpath(@__DIR__,"lowspeed","lowspeed_backend.jl"))
+include(joinpath(@__DIR__,"lowspeed","lowspeed_ch_backend.jl"))
+include(joinpath(@__DIR__,"backends","streamline_backend.jl"))
+include(joinpath(@__DIR__,"mesh","ch_streamline.jl"))
+include(joinpath(@__DIR__,"lbm","lbm_geometry.jl"))
+include(joinpath(@__DIR__,"lbm","lbm_case.jl"))
+include(joinpath(@__DIR__,"lbm","lbm_render.jl"))
+include(joinpath(@__DIR__,"lbm","lbm_backend.jl"))
 
 end # module CFDBackend
 

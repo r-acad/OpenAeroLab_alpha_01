@@ -29,7 +29,7 @@
 # =====================================================================================================================
 module AirfoilStreamlineAlignment
 
-const WORKSPACE_ROOT = normpath(joinpath(@__DIR__, "..", ".."))
+const WORKSPACE_ROOT = normpath(joinpath(@__DIR__, "..", "..", ".."))
 const JXFOIL_ROOT = joinpath(WORKSPACE_ROOT, "third_party", "JXfoil")
 isfile(joinpath(JXFOIL_ROOT, "src", "JXfoil.jl")) || error("JXfoil source tree was not found at $JXFOIL_ROOT")
 JXFOIL_ROOT in LOAD_PATH || pushfirst!(LOAD_PATH, JXFOIL_ROOT)

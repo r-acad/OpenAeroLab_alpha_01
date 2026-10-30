@@ -1,6 +1,6 @@
 # App integration of the explicit, physical-time, nonlinear water/air worker.
 # Included inside CFDBackend. Preview is host-only and never initializes CUDA.
-include(joinpath(@__DIR__,"underwater_worker.jl"))
+include(joinpath(@__DIR__,"..","underwater_worker.jl"))
 
 const UNDERWATER_PROJECTION_SCOPE="Experimental incompressible three-constituent nonlinear free surface; conservative volume/momentum transport and adjoint pressure projection; no viscosity, SST, phase change, acoustic waves or stall validation"
 
@@ -65,7 +65,7 @@ function _underwater_point(case,path,flow,alpha,dir,progress,log)
     _deliver_log(log,scope)
     _deliver_log(log,"Physical-time startup: chord=$(cfg["chord_m"]) m, speed=$(cfg["speed_m_s"]) m/s, depth=$(cfg["submergence_chords"]) chord; duration=$(cfg["duration_seconds"]) s, maximum $(cfg["max_steps"]) steps. Mach, Reynolds and sigma are not model inputs.")
     julia=joinpath(Sys.BINDIR,Base.julia_exename())
-    worker=joinpath(@__DIR__,projection ? "underwater_projection_worker.jl" : "underwater_worker.jl")
+    worker=joinpath(@__DIR__,"..",projection ? "underwater_projection_worker.jl" : "underwater_worker.jl")
     cmd=`$julia --project=$SRC --startup-file=no -t 2 $worker $config_path`
     ok=_log_process(cmd,joinpath(dir,"solver.log"),progress,log,"cavitation",Float64(alpha);
         physical_seconds_per_ctu=cfg["chord_m"]/cfg["speed_m_s"],

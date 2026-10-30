@@ -3,7 +3,7 @@ module AirfoilJXBackend
 using Dates
 using Downloads
 using SHA
-include("cavitation_reference_cases.jl")
+include(joinpath(@__DIR__, "references", "cavitation_reference_cases.jl"))
 using .AirfoilCavitationCases
 
 const WORKSPACE_ROOT = normpath(joinpath(@__DIR__, "..", ".."))

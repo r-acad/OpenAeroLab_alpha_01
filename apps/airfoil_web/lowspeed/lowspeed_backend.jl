@@ -8,9 +8,9 @@
 "The pinned PBCav snapshots (a detached worktree each; never edited) and their commits, with the manifest of each. The pin
 in force is AIRFOIL_LOWSPEED_PIN (default s1030). AIRFOIL_LOWSPEED_SNAPSHOT overrides the path of the snapshot for a test (no
 manifest check); the commit is then read from that worktree and recorded."
-const LOWSPEED_VENDOR_SNAPSHOT = normpath(joinpath(@__DIR__, "..", "..", "solvers", "pbcav_s1030"))
+const LOWSPEED_VENDOR_SNAPSHOT = normpath(joinpath(@__DIR__, "..", "..", "..", "solvers", "pbcav_s1030"))
 const LOWSPEED_LEGACY_ROOT = normpath(get(ENV, "LUDWIG_LEGACY_SNAPSHOT_ROOT",
-    joinpath(@__DIR__, "..", "..", "..", "02_PRIVATE_PROJECT_DEVELOPMENT", "legacy_snapshots")))
+    joinpath(@__DIR__, "..", "..", "..", "..", "02_PRIVATE_PROJECT_DEVELOPMENT", "legacy_snapshots")))
 const LOWSPEED_PINS = Dict(
     # 30 Oct 2026: opt-in flap tip, root and wake redistribution (PB_BAFFLE_REFINE); all other knobs keep their defaults
     "s1030"=>(snapshot=LOWSPEED_VENDOR_SNAPSHOT, commit="a43013d1", manifest="lowspeed_snapshot_manifest_s1030.toml"),
@@ -105,7 +105,7 @@ function _lowspeed_snapshot_verify(snap::AbstractString, override::Bool, what::A
     vendored = normpath(snap) == LOWSPEED_VENDOR_SNAPSHOT
     gitfile = joinpath(snap, ".git")
     head = if vendored
-        String(TOML.parsefile(joinpath(@__DIR__, pin.manifest))["commit"])
+        String(TOML.parsefile(joinpath(@__DIR__, "..", pin.manifest))["commit"])
     elseif isfile(gitfile)
         gd = strip(replace(read(gitfile, String), "gitdir:" => ""))
         strip(read(joinpath(gd, "HEAD"), String))
@@ -115,7 +115,7 @@ function _lowspeed_snapshot_verify(snap::AbstractString, override::Bool, what::A
     if !override
         startswith(head, pin.commit) || throw(ArgumentError("the $what snapshot $snap is at $head, not the pinned $(pin.commit)"))
         # every solver file must still have the content recorded when the snapshot was pinned (the pin's manifest)
-        m = TOML.parsefile(joinpath(@__DIR__, pin.manifest))
+        m = TOML.parsefile(joinpath(@__DIR__, "..", pin.manifest))
         m["commit"] == head || throw(ArgumentError("the snapshot manifest $(pin.manifest) is for $(m["commit"]), the snapshot is at $head"))
         changed = [f for (f, h) in m["sha256"] if !(vendored &&
             (startswith(f, "src/pbcav/test/") || startswith(basename(f), "test_"))) &&
@@ -228,7 +228,7 @@ function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false
     cfg
 end
 "The worker script (AIRFOIL_LOWSPEED_WORKER overrides it for a development test only)."
-lowspeed_worker_path() = get(ENV, "AIRFOIL_LOWSPEED_WORKER", joinpath(@__DIR__, "lowspeed_worker.jl"))
+lowspeed_worker_path() = get(ENV, "AIRFOIL_LOWSPEED_WORKER", normpath(joinpath(@__DIR__, "..", "lowspeed_worker.jl")))
 _lowspeed_cmd(snap, cfg_path) = Cmd(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --threads=$LOWSPEED_THREADS --project=$(joinpath(snap, "src", "pbcav")) $(lowspeed_worker_path()) $cfg_path`;
     env=filter(kv -> !startswith(first(kv), "PB_") && !any(p -> startswith(first(kv), p), ("TOPO_", "TEM_", "CAV_MOVIE_")), copy(ENV)))
 

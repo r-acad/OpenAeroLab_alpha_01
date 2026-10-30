@@ -154,7 +154,7 @@ function _lowspeed_ch_input(snap, head, foil, ls, knobs, alpha, dir; mesh_only::
     streamline === nothing || (cfg["streamline"] = streamline)
     cfg
 end
-lowspeed_ch_worker_path() = get(ENV, "AIRFOIL_LOWSPEED_CH_WORKER", joinpath(@__DIR__, "lowspeed_ch_worker.jl"))
+lowspeed_ch_worker_path() = get(ENV, "AIRFOIL_LOWSPEED_CH_WORKER", normpath(joinpath(@__DIR__, "..", "lowspeed_ch_worker.jl")))
 _lowspeed_ch_cmd(snap, cfg_path) = Cmd(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --threads=$LOWSPEED_THREADS --project=$(joinpath(snap, "src", "pbcav")) $(lowspeed_ch_worker_path()) $cfg_path`;
     env=filter(kv -> !startswith(first(kv), "PB_") && !any(p -> startswith(first(kv), p), ("TOPO_", "TEM_", "CAV_MOVIE_")), copy(ENV)))
 

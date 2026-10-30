@@ -36,8 +36,8 @@
 # =====================================================================================================================
 using TOML, Printf, Dates
 include(joinpath(@__DIR__, "gpu_lock.jl"))
-include(joinpath(@__DIR__, "lbm_case.jl"))
-include(joinpath(@__DIR__, "lbm_render.jl"))
+include(joinpath(@__DIR__, "lbm", "lbm_case.jl"))
+include(joinpath(@__DIR__, "lbm", "lbm_render.jl"))
 using .AirfoilGPULock: holder, utc_now, LOCK_DIR, OWNER_FILE, default_poll
 using .AirfoilLBMCase
 using .AirfoilLBMRender

@@ -31,9 +31,9 @@ using Printf, SHA, TOML, Dates
 export lbm_settings, lbm_estimate, lbm_case_yaml, LBM_DEFAULTS
 
 "The solver snapshots the app can drive (see the header). `io`: the lbm-io-opts keys and the --case selector exist."
-const LBM_VENDOR_SNAPSHOT = normpath(joinpath(@__DIR__, "..", "..", "solvers", "lbm_lbmtau"))
+const LBM_VENDOR_SNAPSHOT = normpath(joinpath(@__DIR__, "..", "..", "..", "solvers", "lbm_lbmtau"))
 const LBM_LEGACY_ROOT = normpath(get(ENV, "LUDWIG_LEGACY_SNAPSHOT_ROOT",
-    joinpath(@__DIR__, "..", "..", "..", "02_PRIVATE_PROJECT_DEVELOPMENT", "legacy_snapshots")))
+    joinpath(@__DIR__, "..", "..", "..", "..", "02_PRIVATE_PROJECT_DEVELOPMENT", "legacy_snapshots")))
 const LBM_PROFILES = Dict{String,NamedTuple}(
     # "lbmzw" (28 Oct): the merged solver with the corrected top/bottom walls, advanced.boundary.z_walls
     # "slip" | "no_slip" (branch lbm-zwalls, two independent reviews MERGE, GPU gates passed; merged into the main line as
@@ -72,11 +72,11 @@ function lbm_profile(name::AbstractString=lbm_profile_name())
     haskey(LBM_PROFILES, name) || throw(ArgumentError("unknown LBM solver profile $(repr(name)) (known: $(join(sort(collect(keys(LBM_PROFILES))), ", ")))"))
     LBM_PROFILES[name]
 end
-const LBM_MAIN_CHECKOUT = normpath(joinpath(@__DIR__, "..", ".."))
+const LBM_MAIN_CHECKOUT = normpath(joinpath(@__DIR__, "..", "..", ".."))
 "The snapshot of a profile (AIRFOIL_LBM_SNAPSHOT overrides the path for a development test only)."
 lbm_snapshot(name::AbstractString=lbm_profile_name()) = normpath(get(ENV, "AIRFOIL_LBM_SNAPSHOT", lbm_profile(name).snapshot))
 lbm_commit(name::AbstractString=lbm_profile_name()) = lbm_profile(name).commit
-lbm_manifest(name::AbstractString=lbm_profile_name()) = joinpath(@__DIR__, lbm_profile(name).manifest)
+lbm_manifest(name::AbstractString=lbm_profile_name()) = joinpath(@__DIR__, "..", lbm_profile(name).manifest)
 lbm_io(name::AbstractString=lbm_profile_name()) = lbm_profile(name).io
 "Does a profile's solver take several refinement levels with the periodic span (periodic-Y AMR)?"
 lbm_pamr(name::AbstractString=lbm_profile_name()) = get(lbm_profile(name), :pamr, false) === true
@@ -104,7 +104,7 @@ const LBM_LEVELS_MAX = 4
 # The first path's names, kept for its worker and tests.
 const LBM_SNAPSHOT_DEFAULT = LBM_PROFILES["lbmapp"].snapshot
 const LBM_COMMIT_PINNED = LBM_PROFILES["lbmapp"].commit
-const LBM_MANIFEST = joinpath(@__DIR__, LBM_PROFILES["lbmapp"].manifest)
+const LBM_MANIFEST = joinpath(@__DIR__, "..", LBM_PROFILES["lbmapp"].manifest)
 "The solver files whose content is pinned (relative to the snapshot root): the LBM driver and every directory main.jl includes."
 const LBM_PINNED_DIRS = ("src/collision", "src/geometry", "src/solver", "src/io", "src/forces")
 const LBM_PINNED_FILES = ("src/main.jl", "src/dependencies.jl", "src/preset_bootstrap.jl", "src/Project.toml",
@@ -414,7 +414,7 @@ function lbm_case_yaml(s::AbstractDict, alpha_app::Real; stl::AbstractString="lb
     N = s["cells_per_chord"]; span_len = s["span_cells"]/N
     nm = join(fill("1.0", 7), ", ")
     lines = String[
-        "# Airfoil Lab LBM 3D case, generated $(Dates.format(Dates.now(Dates.UTC), "yyyy-mm-ddTHH:MM:SS"))Z by the app (apps/airfoil_web/lbm_case.jl).",
+        "# Airfoil Lab LBM 3D case, generated $(Dates.format(Dates.now(Dates.UTC), "yyyy-mm-ddTHH:MM:SS"))Z by the app (apps/airfoil_web/lbm/lbm_case.jl).",
         "# $(note)",
         "# Section extruded along Y by $(s["span_cells"]) finest cells = $(_f(span_len)) c, spanwise periodic ($(L == 1 ? "single level" : "$(L) levels, periodic-Y AMR")$(pamr && L == 1 ? ", periodic_y_amr" : "")), chord 1 m.",
         "# basic.alpha = -alpha: LUDWIG's positive alpha raises the trailing edge (lbm_geometry.jl).",

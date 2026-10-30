@@ -278,7 +278,7 @@ function _ch_transonic_point(case,path,flow,alpha,dir,progress,log)
     cfg_path=joinpath(dir,"input.toml")
     open(cfg_path,"w") do io;TOML.print(io,cfg);end
     julia=joinpath(Sys.BINDIR,Base.julia_exename())
-    worker=joinpath(@__DIR__,"cfd_backend.jl")
+    worker=joinpath(@__DIR__,"..","cfd_backend.jl")
     cmd=`$julia --project=$SRC --startup-file=no -t auto $worker --ch-transonic-worker $cfg_path`
     ok=_log_process(cmd,joinpath(dir,"solver.log"),progress,log,"transonic",Float64(alpha);
         residual_kind="convective continuity L-infinity; all six equations retained")

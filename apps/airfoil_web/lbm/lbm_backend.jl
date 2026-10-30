@@ -18,7 +18,7 @@ using .AirfoilLBMCase
 
 const LBM_LABEL = "LBM 3D (LUDWIG)"
 const LBM_THREADS = 8
-lbm_worker_path() = get(ENV, "AIRFOIL_LBM_WORKER", joinpath(@__DIR__, "lbm_worker.jl"))
+lbm_worker_path() = get(ENV, "AIRFOIL_LBM_WORKER", normpath(joinpath(@__DIR__, "..", "lbm_worker.jl")))
 
 "Validated LBM settings of a request (ArgumentError with the reason). Called by the server's request validation."
 function lbm_configuration(flow::AbstractDict)

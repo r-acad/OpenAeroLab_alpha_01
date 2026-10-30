@@ -6,7 +6,7 @@
 # deliberately tags *every* outer face as characteristic FARFIELD.
 
 include(joinpath(@__DIR__, "nested_refined_mesh.jl"))
-include(joinpath(@__DIR__, "mesh_volume_redistribution.jl"))
+include(joinpath(@__DIR__, "mesh", "mesh_volume_redistribution.jl"))
 
 "Sharp C mesh with locally concentrated surface columns around the leading edge."
 function _sharp_nose_mesh(af::CMeshGen.AirfoilPts; n_foil::Int, n_wake::Int,

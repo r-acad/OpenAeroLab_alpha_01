@@ -4,7 +4,7 @@ using SHA
 export catalog, preset, geometry_path, geometry_coordinates
 
 const ROOT=normpath(get(ENV,"LUDWIG_PRIVATE_ROOT",
-    joinpath(@__DIR__,"..","..","..","02_PRIVATE_PROJECT_DEVELOPMENT")))
+    joinpath(@__DIR__,"..","..","..","..","02_PRIVATE_PROJECT_DEVELOPMENT")))
 const CALTECH_URL="https://authors.library.caltech.edu/records/g98f0-2kd42"
 const LEROUX_URL="https://doi.org/10.1063/1.1865692"
 const CALTECH_GEOMETRY="tools/naca66mod_t09_f020_a08_blunt.dat"

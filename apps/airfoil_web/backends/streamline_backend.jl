@@ -17,8 +17,8 @@
 # finite trailing edge, no plate)
 # (Create mesh and Run run the same worker code on the same file, so they build the same nodes; the mesh SHA-256 shows it).
 # =====================================================================================================================
-const STREAMLINE_MORPH_MODULE = joinpath(@__DIR__, "mesh_streamline_morph.jl")
-const STREAMLINE_QUALITY_MODULE = normpath(joinpath(@__DIR__, "..", "..", "src", "cmesh", "cmesh_quality_metrics.jl"))
+const STREAMLINE_MORPH_MODULE = normpath(joinpath(@__DIR__, "..", "mesh", "mesh_streamline_morph.jl"))
+const STREAMLINE_QUALITY_MODULE = normpath(joinpath(@__DIR__, "..", "..", "..", "src", "cmesh", "cmesh_quality_metrics.jl"))
 "The server's JXfoil path step: (source, flow, alpha, dir; mode, fallback) -> Dict with path, sha256, source, source_label."
 const STREAMLINE_PROVIDER = Ref{Any}(nothing)
 const STREAMLINE_DEV_LABEL = "Streamline-aligned mesh (JXfoil, development, not validated)"

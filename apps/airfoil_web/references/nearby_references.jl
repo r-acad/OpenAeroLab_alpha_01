@@ -7,7 +7,7 @@ module AirfoilNearbyReferences
 using SHA
 
 const DATA_DIR = joinpath(normpath(get(ENV, "LUDWIG_PRIVATE_ROOT",
-    joinpath(@__DIR__, "..", "..", "..", "02_PRIVATE_PROJECT_DEVELOPMENT"))),
+    joinpath(@__DIR__, "..", "..", "..", "..", "02_PRIVATE_PROJECT_DEVELOPMENT"))),
     "apps", "airfoil_web", "validation", "data", "naca0012_wind_tunnel_cl")
 const SETS = [
     (file="CL_Gregory_expdata.dat", sha256="0b7381a45412de50fcf0e0dddf67f1e8e35ba1a278bd4734fb7f16ad08df1f74",

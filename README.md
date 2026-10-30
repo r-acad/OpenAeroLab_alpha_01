@@ -39,7 +39,7 @@ result's convergence and mesh diagnostics before drawing physical conclusions.
 - `src/`: solver source and command line entry point.
 - `apps/airfoil_web/`: Airfoil Lab app and static assets.
 - `tools/`: tools required by the production cavitation driver.
-- `solvers/`: checksum pinned source versions used by app backends.
+- `solvers/`: checksum pinned LBM and pressure-solver snapshots used by app backends; the other solvers live under `src/` and `third_party/`.
 - `third_party/JXfoil/`: bundled JXfoil package.
 - `CASES/TEMPLATE_starter/`: case input template.
 
