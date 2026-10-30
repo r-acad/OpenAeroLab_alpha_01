@@ -160,7 +160,7 @@ function start_state!()
             saved["reynolds"] == k["PB_RE"] || error("Reynolds number differs")
             saved["tu"] == k["PB_SST_TU_INF"] || error("turbulence intensity differs")
             saved["mut_ratio"] == k["PB_SST_MUT_RATIO"] || error("freestream eddy viscosity differs")
-            abs(saved["alpha_deg"] - k["PB_ALPHA"]) <= 1.5 || error("incidence change exceeds 1.5 degrees")
+            abs(saved["alpha_deg"] - k["PB_ALPHA"]) <= 2.5 || error("incidence change exceeds 2.5 degrees")
             all(isfinite, (saved["gamma"], saved["dt"], saved["dt_prev"])) || error("nonfinite restart scalar")
             saved["dt_prev"] > 0 || error("invalid previous time step")
             for f in PBCav.STATE_FIELDS

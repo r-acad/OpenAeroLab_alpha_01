@@ -52,8 +52,8 @@ lowspeed_hardware(ls) = get(ls, "gpu", false) ?
 const LOWSPEED_MESHES = Dict(
     "demo"=>(mesh="192,72,3e-5,1.20,80,64", le_ds=0.0,
               label="Demo (fast): 192 foil x 72 normal cells + 2 x 64 wake, 23,040 cells, first wall spacing 3e-5 c"),
-    "fine"=>(mesh="384,128,3e-6,1.18,80,96", le_ds=2e-4,
-              label="Fine stall study: 384 foil x 96 remapped normal cells + 2 x 96 wake, first wall spacing 3e-6 c, leading-edge interval 2e-4 c"),
+    "fine"=>(mesh="384,128,7e-6,1.18,80,96", le_ds=2e-4,
+              label="Fine stall study: 384 foil x 128 remapped normal cells + 2 x 96 wake, first wall spacing 7e-6 c, leading-edge interval 2e-4 c"),
     # API-only smoke mesh for the app's own tests; coarse wall (y+ >> 1 at high Re): not a result mesh.
     "smoke"=>(mesh="64,40,1e-3,1.30,40,16", le_ds=0.0,
                label="Smoke test only: 64 foil x 40 normal cells + 2 x 16 wake, 3,840 cells, first wall spacing 1e-3 c"))
@@ -221,7 +221,7 @@ function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false
     get(ls, "gpu", false) && merge!(cfg["knobs"], Dict{String,Any}(LOWSPEED_GPU_KNOBS))   # the GPU (opt-in); absent: unchanged
     if ls["resolution"] == "fine"
         merge!(cfg["knobs"], Dict{String,Any}(
-            "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_LAW"=>"96,1.16,5"))
+            "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_LAW"=>"128,1.12,5"))
     end
     warm_start === nothing || (cfg["warm_start"] = String(warm_start))
     mesh_only && (cfg["mesh_only"] = true)

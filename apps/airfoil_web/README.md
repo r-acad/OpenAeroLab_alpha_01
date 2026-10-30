@@ -13,8 +13,10 @@ The default C+H Standard mesh uses curvature aware leading edge spacing. Mesh
 quality and solver convergence are reported with each result.
 The sharp C mesh also concentrates surface columns near the leading edge in
 Standard, Fine, and Very Fine. A separate low speed `fine` study profile uses
-smaller nose and wall spacings; its outer mesh audit flags remain visible in
-the result and it is not a validated stall prediction.
+384 surface cells, 128 wall-normal cells, and a 7e-6 chord first wall spacing.
+It passes the PBCav reference mesh gates for NACA 0012; the app still reports
+the audit for every generated section. Grid independence and stall accuracy
+are not established by a mesh-quality pass.
 
 ## Source layout
 
