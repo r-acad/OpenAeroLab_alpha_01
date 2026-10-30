@@ -172,7 +172,14 @@ function start_state!()
                 copyto!(getfield(st, f), saved[string(f)])
             end
             st.t = 0.0; st.nstep = 0
-            st.dt = min(cfg.dt, max(1e-4, saved["dt"]))
+            # A two-degree incidence jump changed the far-field BC enough that a
+            # 0.25 c/U first attempt required ten pressure-solve rejections before
+            # the accepted step reached 2.44e-4 c/U (12 deg after 10 deg, Fine
+            # NACA 0012, Re=6M). Start near that measured safe step; the march's
+            # normal regrowth restores its chosen step without failed solves.
+            incidence_jump = abs(saved["alpha_deg"] - k["PB_ALPHA"])
+            first_step_cap = incidence_jump >= 1.5 ? 2.5e-4 : cfg.dt
+            st.dt = min(cfg.dt, max(1e-4, saved["dt"]), first_step_cap)
             st.dt_prev = saved["dt_prev"]
             G = saved["gamma"]
             PBCav.set_farfield!(bc, MESH, fs, G; backend=BACKEND)
