@@ -17,6 +17,11 @@ Standard, Fine, and Very Fine. A separate low speed `fine` study profile uses
 It passes the PBCav reference mesh gates for NACA 0012; the app still reports
 the audit for every generated section. Grid independence and stall accuracy
 are not established by a mesh-quality pass.
+The pressure worker writes `rejection_history.csv` with the accepted step,
+time step, and cumulative rejection counts by reason. A checked warm start
+that changes incidence by at least 1.5 degrees begins at a small time step;
+normal step growth resumes after accepted steps. The full steady residuals,
+not stable-looking force coefficients, decide whether a polar point converged.
 
 ## Source layout
 
