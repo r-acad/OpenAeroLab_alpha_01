@@ -61,7 +61,7 @@ function _windows_folder(path,title,runtime)
     end
 end
 
-function choose_folder(req,runtime; picker=_windows_folder)
+function choose_folder(req,runtime; picker=_native_folder)
     path,title = _validate_request(req)
     trylock(DIALOG_LOCK) || throw(ArgumentError("A folder dialog is already open; finish or cancel it first"))
     try
@@ -98,7 +98,7 @@ function _windows_file(path,title,runtime,mode)
     end
 end
 
-function choose_file(req,runtime;mode="open",picker=_windows_file)
+function choose_file(req,runtime;mode="open",picker=_native_file)
     path,title=_validate_request(req)
     trylock(DIALOG_LOCK) || throw(ArgumentError("A file dialog is already open; finish or cancel it first"))
     try
@@ -107,5 +107,48 @@ function choose_file(req,runtime;mode="open",picker=_windows_file)
         unlock(DIALOG_LOCK)
     end
 end
+
+"System pickers use argument arrays: titles and paths are never shell code."
+function _desktop_selection(path,title,mode)
+    command = if Sys.isapple()
+        script=joinpath(@__DIR__,"native_dialog.applescript")
+        folder=isdir(path) ? path : isdir(dirname(path)) ? dirname(path) : homedir()
+        filename=mode=="save"&&!isempty(path)&&!isdir(path) ? basename(path) : "Aero study.ludwig-study"
+        `osascript $script $mode $folder $title $filename`
+    elseif Sys.which("zenity")!==nothing
+        args=String[Sys.which("zenity"),"--file-selection","--title=$title"]
+        !isempty(path) && push!(args,"--filename=$path")
+        mode=="folder" ? push!(args,"--directory") : mode=="save" ? append!(args,["--save","--confirm-overwrite","--file-filter=Study | *.ludwig-study"]) : push!(args,"--file-filter=Study | *.ludwig-study")
+        Cmd(args)
+    elseif Sys.which("kdialog")!==nothing
+        flag=mode=="folder" ? "--getexistingdirectory" : mode=="save" ? "--getsavefilename" : "--getopenfilename"
+        args=String[Sys.which("kdialog"),"--title",title,flag,isempty(path) ? homedir() : path]
+        mode!="folder" && push!(args,"*.ludwig-study|OpenAeroLab Study")
+        Cmd(args)
+    else
+        throw(ArgumentError("No desktop file picker is installed. Install zenity or kdialog, or enter the destination path directly / use the browser file selector."))
+    end
+    output=IOBuffer();errors=IOBuffer()
+    process=run(pipeline(ignorestatus(command),stdout=output,stderr=errors);wait=false)
+    if timedwait(()->process_exited(process),600;pollint=.1)==:timed_out
+        kill(process);wait(process);throw(ArgumentError("File selection timed out"))
+    end
+    chosen=strip(String(take!(output)))
+    # AppleScript returns an empty selection for cancellation. GTK/Qt use exit 1.
+    cancelled=(success(process)&&isempty(chosen))||(!Sys.isapple()&&process.exitcode==1&&isempty(String(take!(errors))))
+    !success(process)&&!cancelled && throw(ArgumentError("The desktop file dialog failed; enter a path directly"))
+    cancelled && return Dict("ok"=>true,"cancelled"=>true,"path"=>nothing)
+    mode=="save" && isempty(splitext(chosen)[2]) && (chosen*=".ludwig-study")
+    isabspath(chosen) || throw(ArgumentError("The selected path must be absolute"))
+    if mode=="folder"
+        isdir(chosen) || throw(ArgumentError("Selected folder is unavailable"))
+    else
+        lowercase(splitext(chosen)[2])==".ludwig-study" || throw(ArgumentError("Choose a .ludwig-study file"))
+        (mode=="open" ? isfile(chosen) : isdir(dirname(chosen))) || throw(ArgumentError("Selected study path is unavailable"))
+    end
+    Dict("ok"=>true,"cancelled"=>false,"path"=>chosen)
+end
+_native_folder(path,title,runtime) = Sys.iswindows() ? _windows_folder(path,title,runtime) : _desktop_selection(path,title,"folder")
+_native_file(path,title,runtime,mode) = Sys.iswindows() ? _windows_file(path,title,runtime,mode) : _desktop_selection(path,title,mode)
 
 end

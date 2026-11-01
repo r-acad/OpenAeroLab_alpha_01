@@ -516,6 +516,10 @@ async function loadHealth() {
     const data = await request("/api/health", { format: "bson" });
     if (data.ok === false) throw new Error(data.message || "Server unavailable");
     state.serviceRevision=Number(data.api_revision)||0;
+    if(data.native_solver_platform_supported===false){
+      for(const option of el.backend.options)if(!['jxfoil','xfoil'].includes(option.value)){option.disabled=true;option.title='This CUDA runtime requires Windows or Linux. JXfoil and saved result viewing are available on Mac.';}
+      if(el.backend.selectedOptions[0]?.disabled){el.backend.value='jxfoil';updateSetup();}
+    }
     window.AirfoilLBM?.onHealth?.(data.lbm);
     window.LudwigOutputControls?.setCapabilities(data.output_capabilities,selectedBackends(el.backend.value));
     if(state.serviceRevision<minimumServiceRevision) {
@@ -2146,6 +2150,7 @@ function fieldGrid(field) {
   return { nx, ny, values: values.map(Number), x: field?.x || null, y: field?.y || null };
 }
 function ramp(t) {
+  if(window.LudwigPalettes)return window.LudwigPalettes.sample(t).map(v=>Math.round(v*255));
   const stops = [[23,62,114],[52,124,187],[91,192,201],[237,212,107],[233,139,77],[155,56,77]];
   t = Math.max(0, Math.min(1, t));
   const a = Math.min(stops.length - 2, Math.floor(t * (stops.length - 1)));
@@ -2556,7 +2561,7 @@ function sourceChanged() {
 }
 function setTheme(mode) {
   if (["light", "dark"].includes(mode)) document.documentElement.dataset.theme = mode;
-  else delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   localStorage.setItem("airfoil-theme", mode);
   Object.values(spatialViews).forEach(view=>view?.schedule());
   window.AirfoilBabylon?.redrawTheme();
@@ -2803,7 +2808,7 @@ el["field-grid"].addEventListener("change", () => {state.gridVisible=el["field-g
 el["field-mesh-overlay"].addEventListener("change", () => {state.meshOverlay=el["field-mesh-overlay"].checked;renderField();});
 document.querySelectorAll("input[name='airfoil-label']").forEach(radio=>radio.addEventListener("change",()=>{state.showAirfoilName=radio.value==="show";Object.values(spatialViews).forEach(view=>view?.schedule());}));
 el["show-reference"].addEventListener("change", () => { renderPoint(); renderPolars(); });
-el["theme-mode"].value = ["auto", "light", "dark"].includes(localStorage.getItem("airfoil-theme")) ? localStorage.getItem("airfoil-theme") : "auto";
+el["theme-mode"].value = ["auto", "light", "dark"].includes(localStorage.getItem("airfoil-theme")) ? localStorage.getItem("airfoil-theme") : "dark";
 el["theme-mode"].addEventListener("change", () => setTheme(el["theme-mode"].value));
 document.querySelectorAll("[data-tab-target]").forEach(tab => {
   tab.addEventListener("click", () => switchTab(tab.dataset.tabTarget));
@@ -2847,6 +2852,7 @@ document.querySelectorAll(".view-tools").forEach(tools => tools.addEventListener
   else if (action === "zoom-in") plot.zoomAt(1.5);
   else if (action === "zoom-out") plot.zoomAt(1/1.5);
 }));
+window.addEventListener("ludwig-palette-change",()=>{if(state.activeTab==="field")renderField();else spatialViews.field?.schedule();});
 setTheme(el["theme-mode"].value); updateSetup(); loadHealth(); scheduleGeometryPreview();
 
 // Saved results (a separate line: the Node viewer tests remove the line above exactly).

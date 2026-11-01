@@ -358,7 +358,7 @@
       'results-import':'Read saved native or VTK files into the viewer without starting a solver.',
       'study-save':'Save the complete setup, original geometry and result pointers using the current destination.',
       'study-save-menu':'Save the current study to its associated file; choose a destination on the first save.',
-      'study-save-as':'Choose another study filename and destination using the native Windows save dialog.'
+      'study-save-as':'Choose another study filename and destination using the system save dialog.'
     };
     for (const [id, title] of Object.entries(tips)) if ($(id)) $(id).setAttribute('title', title);
     for (const control of document.querySelectorAll('button, select, input')) {

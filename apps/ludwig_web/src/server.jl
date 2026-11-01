@@ -46,7 +46,7 @@ function app_handler(req::HTTP.Request)
     elseif method == "GET" && haskey(ASSETS, path)
         file, mime = ASSETS[path]
         return _asset(file, mime)
-    elseif startswith(path, "/static/") || startswith(path, "/api/") ||
+    elseif startswith(path, "/common-static/") || startswith(path, "/static/") || startswith(path, "/api/") ||
            path in ("/favicon.svg", "/app.js", "/app.css")
         return AirfoilWeb.app_handler(req)
     end

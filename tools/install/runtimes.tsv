@@ -1,0 +1,6 @@
+# platform|official archive|SHA-256 (Julia versions.json, 2026-11-01)
+windows-x86_64|https://julialang-s3.julialang.org/bin/winnt/x64/1.13/julia-1.13.2-win64.zip|1c7d07bccc7ca19fce7fd0a73159b085d087ece9405d42735f33faa46b634fcd
+linux-x86_64|https://julialang-s3.julialang.org/bin/linux/x64/1.13/julia-1.13.2-linux-x86_64.tar.gz|2ecdfc9890ab0a565fdd92404c915ba2a04a933dbd5d292cc224d13819d17d07
+linux-aarch64|https://julialang-s3.julialang.org/bin/linux/aarch64/1.13/julia-1.13.2-linux-aarch64.tar.gz|b366ac62162d42b272e82436397487dec719f0830d059cdd8a3f7a1810647128
+mac-x86_64|https://julialang-s3.julialang.org/bin/mac/x64/1.13/julia-1.13.2-mac64.tar.gz|e5f224b07fc2ae2144391416542da3f710a9671d35b856d92ad355a19b0bfe86
+mac-aarch64|https://julialang-s3.julialang.org/bin/mac/aarch64/1.13/julia-1.13.2-macaarch64.tar.gz|63309775ab65021036b0b4a069e82ae004a3f2b551fc10ceb40ddb2203200387

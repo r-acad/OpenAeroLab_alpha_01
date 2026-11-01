@@ -10,6 +10,7 @@
   const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
 
   function colorAt(t) {
+    if(window.LudwigPalettes)return window.LudwigPalettes.sample(t);
     const u = clamp(t,0,1) * (palette.length - 1), i = Math.min(palette.length-2,Math.floor(u));
     const f = u-i;
     return palette[i].map((v,k) => (v*(1-f)+palette[i+1][k]*f)/255);

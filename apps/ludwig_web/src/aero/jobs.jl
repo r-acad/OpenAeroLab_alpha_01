@@ -141,7 +141,8 @@ end
 
 function capabilities()
     solvers = [Dict("id" => name, "label" => label,
-                    "available" => isfile(joinpath(root, "src", "main.jl")),
+                    "available" => !Sys.isapple() && isfile(joinpath(root, "src", "main.jl")),
+                    "reason" => Sys.isapple() ? "The CUDA solver is not available on macOS. Model placement and saved result viewing remain available." : "",
                     "placement" => name == "main",
                     "web_lattices" => name == "main" ? ["d3q27", "d3q39"] : ["d3q27"])
                for (name, label, root) in (("main", "Main LBM solver", MAIN_SOLVER),

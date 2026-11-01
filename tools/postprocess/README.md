@@ -2,7 +2,8 @@
 
 `PostprocessLauncher.jl` runs the renderer in this separate Julia environment,
 so web solver workers do not import Makie into their simulation modules.
-Instantiate it once with `julia --project=tools/postprocess -e 'using Pkg; Pkg.instantiate()'`.
+The root setup installs and verifies this environment automatically; see the
+[installation instructions](../../README.md#install-and-launch).
 
 The request accepts `source_directory`, `destination_directory`, `title`,
 `report`, `charts`, `render_3d`, `chart_format` (`png`, `svg`, `pdf`),

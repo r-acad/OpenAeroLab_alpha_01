@@ -1,6 +1,8 @@
 # Ludwig Workbench
 
-Launch `run.cmd` on Windows (or `run.jl` with the bundled JXfoil Julia project).
+Run the [root setup](../../README.md#install-and-launch) first; it installs the
+packages for both workbenches, supported solver workers and Makie. Launch
+`run.cmd` on Windows, `bash run.sh` on Linux or `bash run.command` on Mac.
 The launcher opens or reuses the current local server, trying port 8058 first
 when it needs a new one. It opens Aero Lab and Airfoil Lab.
 Airfoil Lab also keeps its standalone launcher in `../airfoil_web/`.
@@ -10,6 +12,12 @@ app source and served at `/airfoil-lab`. Its existing `/api/*` and `/static/*`
 URLs remain available. Aero Lab uses `/api/aero/*`, with runs and uploads in
 the sibling private `02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE` directory.
 The server binds only to loopback.
+
+Project / Model / Domain / Mesh / Analysis / Results / Display menus use the
+shared Boxer-style interface in `../common/static/`. Help explains the workflow.
+Display offers five palettes for numeric fields; changing palette retains the
+loaded surface/plane and does not change saved PNGs. Mac supports study/result
+viewing and JXfoil; CUDA runs require Windows or Linux with an NVIDIA GPU.
 
 Aero Lab offers **D3Q27 + cumulant** (Mach at most 0.6) from either solver
 source and **D3Q39 + entropic** (Mach at most 1.6) from the main solver. D3Q39

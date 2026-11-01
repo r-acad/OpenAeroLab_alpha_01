@@ -13,36 +13,8 @@ end
 _valid_port(port) = port isa Integer && !(port isa Bool) && 1 <= port <= 65535
 _url(port::Integer) = "http://127.0.0.1:$port/"
 
-"Wait for the browser handoff before a reused-server launcher is allowed to exit."
-function open_browser(url::AbstractString; timeout::Real=10,
-                      command::Union{Nothing,Cmd}=nothing)
-    occursin(r"^http://127\.0\.0\.1:[0-9]{1,5}/$",url) ||
-        throw(ArgumentError("Browser URL must be the local workbench"))
-    Sys.iswindows() || return false
-    timeout > 0 || throw(ArgumentError("Browser handoff timeout must be positive"))
-    if command===nothing
-        script="\$ErrorActionPreference = 'Stop'; Start-Process -FilePath '$url' -ErrorAction Stop"
-        command=Cmd(Cmd(["powershell.exe","-NoProfile","-NonInteractive","-WindowStyle","Hidden",
-            "-Command",script]);windows_hide=true)
-    end
-    try
-        process=run(command;wait=false)
-        if timedwait(()->process_exited(process),timeout;pollint=0.05)===:timed_out
-            @warn "Browser handoff did not finish in time; open the workbench URL manually" url
-            return false
-        end
-        if !success(process)
-            @warn "Default browser could not be opened; open the workbench URL manually" url
-            return false
-        end
-        println("Browser handoff completed for $url")
-        flush(stdout)
-        true
-    catch error
-        @warn "Default browser could not be opened; the workbench remains available" url exception=error
-        false
-    end
-end
+include(joinpath(@__DIR__,"..","..","common","Browser.jl"))
+open_browser(args...;kwargs...) = DesktopBrowser.open_browser(args...;kwargs...)
 
 "Check the live API, rather than trusting a stale PID, URL or saved marker."
 function is_current_server(port::Integer, public_root::AbstractString)

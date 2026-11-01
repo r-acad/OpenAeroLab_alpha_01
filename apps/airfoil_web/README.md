@@ -1,8 +1,15 @@
 # Airfoil Lab
 
-Launch with `run.cmd` on Windows, or run `run.jl` from the bundled JXfoil
-project. The app uses the repository's solver `src/` and bundled `solvers/` sources. Output
+Run the [root setup](../../README.md#install-and-launch) first. Launch with
+`run.cmd` on Windows, `bash run.sh` on Linux or `bash run.command` on Mac.
+The app uses the repository's solver `src/` and bundled `solvers/` sources. Output
 goes to the sibling private development directory (or `LUDWIG_PRIVATE_ROOT`).
+
+Project, Model, Mesh, Analysis, Results and Display use the shared Boxer-style
+menus. Menu choices select the parameter pane without changing the current result.
+Help explains the workflow; Display provides five contour palettes for numeric
+fields. Mac supports JXfoil and result viewing; CUDA backends require Windows
+or Linux with compatible NVIDIA hardware.
 
 The app includes JXfoil, compressible C and C+H meshes, the conservative
 Species path, low speed pressure based CFD, and LBM 3D. XFOIL executable runs

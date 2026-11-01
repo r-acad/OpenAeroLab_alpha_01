@@ -11,7 +11,7 @@
     state.levelVisibility={};state.inspector=defaultInspector();state.meshVisible=state.meshVisible!==false;
     let requestTimer=null,dragging=false,sectionKey=null,sectionData=null,geometryKey=null,geometryData=null,geometryTriangles=null;
     let activeDrag=null;const meshHiddenByUser=new Map();
-    let sectionView={zoom:1,pan:[0,0]},fieldBitmap=null,fieldBitmapData=null;
+    let sectionView={zoom:1,pan:[0,0]},fieldBitmap=null,fieldBitmapData=null,fieldBitmapPalette=null;
     const options=()=>state.inspector;
     const amr=()=>state.importedResults?(state.importedResults.amr||null):state.amr;
     const inspectionFrame=()=>dragging&&state.frame?state.frame:currentFrame();
@@ -168,7 +168,8 @@
       const data=cut.data,range=data&&scalarRange(data.values);
       if(data&&range){
         const spacing=Number(data.spacing_m),i1=axes.indexOf(data.axis1),i2=axes.indexOf(data.axis2);
-        if(fieldBitmapData!==data){const bitmap=document.createElement('canvas'),imageContext=bitmap.getContext?.('2d');fieldBitmap=null;
+        const palette=$('results-palette')?.value||'spectrum';
+        if(fieldBitmapData!==data||fieldBitmapPalette!==palette){fieldBitmapPalette=palette;const bitmap=document.createElement('canvas'),imageContext=bitmap.getContext?.('2d');fieldBitmap=null;
           if(imageContext){bitmap.width=data.n1;bitmap.height=data.n2;const image=imageContext.createImageData(data.n1,data.n2);for(let j=0;j<data.n2;j++)for(let i=0;i<data.n1;i++){
             const value=data.values[i+j*data.n1];if(typeof value!=='number'||!Number.isFinite(value))continue;const rgb=scalarColor(value,range),offset=((data.n2-j-1)*data.n1+i)*4;for(let k=0;k<3;k++)image.data[offset+k]=Math.round(rgb[k]*255);image.data[offset+3]=255;}
             imageContext.putImageData(image,0,0);fieldBitmap=bitmap;}fieldBitmapData=data;}

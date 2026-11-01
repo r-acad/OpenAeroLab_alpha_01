@@ -427,6 +427,7 @@
     mesh.material=material;return mesh;
   }
   function scalarColor(value,range) {
+    if(window.LudwigPalettes)return window.LudwigPalettes.sample((Number(value)-range.lo)/(range.hi-range.lo||1),$('results-palette')?.value||window.LudwigPalettes.get());
     const t=Math.max(0,Math.min(1,(Number(value)-range.lo)/(range.hi-range.lo||1)))*(colorStops.length-1),
       i=Math.min(colorStops.length-2,Math.floor(t)),f=t-i;
     return colorStops[i].map((n,k)=>(n*(1-f)+colorStops[i+1][k]*f)/255);
@@ -767,18 +768,18 @@
     const source=frame.triangles,bodyBounds=frame.body;
     const imported=state.importedResults,field=imported?$('results-field').value:$('surface-field').value,surface=imported?state.importedSurface:state.surface;
     const values=surface?.fields?.[field]??surface?.[field],offset=imported?(surface?.surface_offset||surface?.offset||imported.surface_offset||[0,0,0]):surface?.surface_offset||state.amr?.mesh_offset;
-    const hasPlacement=Array.isArray(offset)&&offset.length===3&&offset.every(Number.isFinite),rangeMode=$('surface-range-mode')?.value||'contrast';let range=null;
+    const hasPlacement=Array.isArray(offset)&&offset.length===3&&offset.every(Number.isFinite),rangeMode=$('surface-range-mode')?.value||'contrast',palette=$('results-palette')?.value||'spectrum';let range=null;
     let drawnSurface=null;
     const cached=state.scalarMeshCache,wantsScalar=state.mode==='surface'&&values&&hasPlacement&&surface.vertices.length>=9;
     if(wantsScalar)range=cached?.values===values&&cached.rangeMode===rangeMode?cached.range:scalarRange(values,rangeMode);
-    const reuse=Boolean(wantsScalar&&range&&cached&&cached.scene===state.scene&&!cached.mesh.isDisposed()&&cached.vertices===surface.vertices&&cached.values===values&&cached.rangeMode===rangeMode&&cached.field===field&&cached.ground===groundSolverFrame()&&cached.offset.every((value,axis)=>value===offset[axis]));
+    const reuse=Boolean(wantsScalar&&range&&cached&&cached.scene===state.scene&&!cached.mesh.isDisposed()&&cached.vertices===surface.vertices&&cached.values===values&&cached.rangeMode===rangeMode&&cached.field===field&&cached.palette===palette&&cached.ground===groundSolverFrame()&&cached.offset.every((value,axis)=>value===offset[axis]));
     // Domain helpers and section fields refresh independently of the surface.
     // Keep immutable scalar buffers on the GPU while only those overlays change.
     clearSceneObjects(reuse?new Set([cached.mesh,cached.material]):null);
     if(reuse){drawnSurface=keep(cached.mesh);keep(cached.material);}
     else if(wantsScalar&&range){
       drawnSurface=addTriangleSurface(surface.vertices,values,range,offset);
-      state.scalarMeshCache={scene:state.scene,mesh:drawnSurface,material:drawnSurface.material,vertices:surface.vertices,values,field,range,rangeMode,offset:offset.slice(),ground:groundSolverFrame()};
+      state.scalarMeshCache={scene:state.scene,mesh:drawnSurface,material:drawnSurface.material,vertices:surface.vertices,values,field,range,rangeMode,palette,offset:offset.slice(),ground:groundSolverFrame()};
     }
     else if(wantsScalar&&source)drawnSurface=addTriangleSurface(source);
     else if(source)drawnSurface=addTriangleSurface(source);
@@ -789,6 +790,7 @@
     inspector?.draw();
     const units=surface?.field_units?.[field]||surface?.units?.[field]||'';
     $('surface-range').textContent=range?`${imported?field+(units?` [${units}]`:'')+' · ':''}${fmt(range.lo)} to ${fmt(range.hi)}`:'';
+    if(window.LudwigPalettes)document.documentElement.style.setProperty('--result-ramp',window.LudwigPalettes.gradient(palette));
     const legend=$('surface-colour-legend');if(legend){legend.hidden=!range;if(range){
       const quantity=field==='cp'?'Pressure coefficient Cp':field==='shear'?'Shear stress':field.charAt(0).toUpperCase()+field.slice(1),unit=units||(field==='pressure'||field==='shear'?'Pa':'');
       $('surface-legend-title').textContent=`${quantity}${unit?` [${unit}]`:''} · ${range.mode==='full'?'full data range':'high contrast (2–98%)'}`;
@@ -940,6 +942,7 @@
     renderCut(job);if(state.liveResults!==false)refreshRecordedVectors(job,true);
   }
   function paintNumericCut(data) {
+    state.lastNumericCut=data;
     const n1=Number(data.n1),n2=Number(data.n2),values=data.values;
     if(!Number.isInteger(n1)||!Number.isInteger(n2)||n1<2||n2<2||n1*n2>2_000_000||!Array.isArray(values)||values.length!==n1*n2)
       throw new Error('Invalid numeric cut dimensions.');
@@ -1235,12 +1238,12 @@
     updateResultViewStatus();if(pane==='scene')requestAnimationFrame(()=>state.engine?.resize());
   }
   function applyThemePreference() {
-    let saved='auto';try{saved=window.localStorage.getItem('airfoil-theme')||'auto';}catch{}
+    let saved='dark';try{saved=window.localStorage.getItem('airfoil-theme')||'dark';}catch{}
     const select=$('theme-mode'),theme=['auto','light','dark'].includes(select?.value)?select.value:saved;
     if(select)select.value=theme;
     const dark=theme==='dark'||(theme==='auto'&&window.matchMedia?.('(prefers-color-scheme: dark)').matches);
     document.documentElement.dataset.theme=dark?'dark':'light';
-    if(state.scene)state.scene.clearColor=dark?new BABYLON.Color4(.055,.15,.20,1):new BABYLON.Color4(.91,.96,.98,1);
+    if(state.scene)state.scene.clearColor=dark?new BABYLON.Color4(14/255,19/255,26/255,1):new BABYLON.Color4(234/255,240/255,246/255,1);
   }
   function recordingChanged(){
     const seen=new Set();state.cuts=state.cuts.filter(cut=>{const key=`${cut.axis}:${Number(cut.position).toFixed(8)}`;if(seen.has(key))return false;seen.add(key);return true;});
@@ -1299,7 +1302,7 @@
   async function loadCapabilities() {
     try{
       const data=await api('/api/aero/capabilities');state.capabilities=data;
-      state.outdatedServer=data.api_revision!=='2026-11-01-results-workflow-v6';
+      state.outdatedServer=data.api_revision!=='2026-11-01-boxer-workflow-v7';
       const sel=$('solver');sel.replaceChildren();
       for(const solver of data.solvers||[]){const o=document.createElement('option');o.value=solver.id;
         o.dataset.available=String(Boolean(solver.available));o.dataset.lattices=(solver.web_lattices||['d3q27']).join(',');
@@ -1372,10 +1375,11 @@
   window.LudwigAeroResultsContext={state,api,queueRender,applyImportedResults,clearImportedResults,setImportedField,showSurfaceResults,
     getPlacement:()=>({mesh_offset:state.amr?.mesh_offset||[0,0,0],case:state.activeConfig,job_id:state.jobId})};
   window.LudwigAeroStudiesContext={state,caseSettings,attachStudyResults,hydrateCase,loadStoredModel,clearPersistedJob,queueRender,updateActions,showGeometryAudit,progress,clearImportedResults,
-    getStudyView(){const view={live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-range-mode','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
+    getStudyView(){const view={live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-range-mode','results-palette','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
     restoreStudyView(view){clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroLayout?.syncLiveResults?.();window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
   if(window.LudwigAeroResultBrowser)resultBrowser=window.LudwigAeroResultBrowser.create({$,isLive:()=>state.liveResults!==false,onOpenSurface:viewSurfaceRecord,onOpenCut:viewCutRecord,onOpenVolume:viewVolumeRecord,onStatus:(text,error)=>{if(error)window.LudwigAeroLayout?.showMessage(text,{urgent:true,title:'Result display'});else progress(text,'Results');}});
+  window.addEventListener('ludwig-palette-change',()=>{state.cutRenderKey=null;if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);queueRender();});
   initScene();wireEvents();boundaryNote();syncSolverLattice();renderCutRows();
-  try{if($('theme-mode'))$('theme-mode').value=window.localStorage.getItem('airfoil-theme')||'auto';}catch{}
+  try{if($('theme-mode'))$('theme-mode').value=window.localStorage.getItem('airfoil-theme')||'dark';}catch{}
   applyThemePreference();selectResultPane('scene');loadCapabilities().then(resumeStoredJob);updateActions();queueRender();
 })();

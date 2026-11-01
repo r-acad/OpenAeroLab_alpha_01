@@ -1,3 +1,6 @@
 *.sh text eol=lf
+*.command text eol=lf
+*.cmd text eol=crlf
+/tools/install/runtimes.tsv text eol=lf
 # The embedded solver versions are checked by SHA-256 at runtime.
 /solvers/** -text

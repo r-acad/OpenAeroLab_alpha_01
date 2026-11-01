@@ -93,6 +93,7 @@ const MIME = Dict(
 )
 include("output_options.jl")
 include(joinpath(ROOT,"apps","common","NativeDialogs.jl"))
+include(joinpath(ROOT,"apps","common","StaticAssets.jl"))
 include(joinpath("api", "campaign_status.jl"))
 
 _header(req::HTTP.Request, name::String) = get(Dict(lowercase(String(k))=>String(v) for (k,v) in req.headers), lowercase(name), "")
@@ -1035,6 +1036,7 @@ end
 function app_handler(req::HTTP.Request)
     uri = HTTP.URI(req.target)
     path = String(uri.path); method = String(req.method)
+    startswith(path,"/common-static/") && method == "GET" && return WorkbenchStatic.response(path)
     fmt = _fmt(req)
     try
         if method == "POST" && path == "/api/select-folder"
@@ -1045,7 +1047,7 @@ function app_handler(req::HTTP.Request)
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
             return _response(200, Dict("ok"=>true,"api_revision"=>17,"protocols"=>["msgpack","bson"],
-                "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"xfoil"=>AirfoilXfoilBackend.capabilities(),
+                "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),
                 "gurney"=>CFDBackend.gurney_capabilities(),

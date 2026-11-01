@@ -9,12 +9,15 @@
   <link rel="stylesheet" href="/static/styles/app.css">
   <link rel="stylesheet" href="/static/styles/ergonomics.css">
   <link rel="stylesheet" href="/static/styles/output_controls.css">
+  <script src="/common-static/palettes.js" defer></script>
   <script src="/static/vendor/babylon.js" defer></script>
   <script src="/static/scripts/babylon_view.js" defer></script>
   <script src="/static/scripts/output_controls.js" defer></script>
   <script src="/static/scripts/app.js" defer></script>
   <script src="/static/scripts/lbm.js" defer></script>
   <script src="/static/scripts/campaign.js" defer></script>
+  <link rel="stylesheet" href="/common-static/workbench.css">
+  <script src="/common-static/workbench.js" defer></script>
 </head>
 <body data-workbench="airfoil">
   <a class="skip-link" href="#results">Skip to results</a>
@@ -34,14 +37,15 @@
       </div>
     </header>
 
+    <nav class="menu-bar panel" aria-label="Airfoil Lab menus"><details class="top-menu" id="menu-project"><summary>Project</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="model" data-focus-control="source-kind">Choose airfoil</button><button type="button" id="open-saved-airfoil">Open saved results…</button><button type="button" data-command="download-result">Save result JSON</button><a href="/">All workbenches</a></div></details><details class="top-menu" id="menu-model"><summary>Model</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="model" data-focus-control="source-kind">Airfoil source and shape</button><button type="button" data-open-tab="geometry">Geometry view</button></div></details><details class="top-menu" id="menu-mesh"><summary>Mesh</summary><div class="menu-popover"><button type="button" data-open-tab="geometry">Topology and resolution</button><button type="button" data-command="create-mesh">Create mesh</button><button type="button" data-command="refine-mesh">Refine mesh</button></div></details><details class="top-menu" id="menu-analysis"><summary>Analysis</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="flow" data-focus-control="alpha">Flow conditions</button><button type="button" data-airfoil-parameters="solver">Solver settings</button><button type="button" data-airfoil-parameters="sweep">Alpha sweep</button><button type="button" data-airfoil-parameters="outputs">Outputs and reports</button><div class="menu-section"><h2>Solve</h2><button type="button" data-command="run-button">Run analysis</button></div></div></details><details class="top-menu" id="menu-results"><summary>Results</summary><div class="menu-popover"><button type="button" data-open-tab="results">Surface quantities</button><button type="button" data-open-tab="field">Flow field</button><button type="button" data-open-tab="polar">Polar</button><button type="button" data-open-tab="diagnostics">Convergence and diagnostics</button><button type="button" data-open-tab="log">Run log</button><button type="button" data-open-tab="campaign">Campaign</button></div></details><details class="top-menu" id="menu-view"><summary>Display</summary><div class="menu-popover"><button type="button" data-open-tab="geometry">Geometry and grid</button><button type="button" data-open-tab="field">Flow field</button><div class="menu-section"><h2>Colour scale</h2><label class="field"><span>Contour palette</span><select id="results-palette" title="Colour scale for numeric surface and plane fields. Existing PNG files retain their saved colours."></select><small>Applies to numeric fields; saved images keep their original colours.</small></label></div></div></details><details class="top-menu" id="menu-help"><summary>Help</summary><div class="menu-popover"><button type="button" data-workflow-help>Quick start and workflow</button><a href="/solvers">Solver methods and maturity</a></div></details></nav>
     <div class="workspace">
       <aside class="setup-column panel" aria-label="Analysis setup">
-        <div class="setup-title"><span class="eyebrow">Setup</span><strong>Operating point</strong></div>
+        <div class="setup-title"><span class="eyebrow">Setup</span><strong id="airfoil-parameter-title">Model</strong></div>
         <nav class="setup-nav" aria-label="Jump to setup section">
           <a href="#airfoil-heading">Airfoil</a><a href="#flow-heading">Flow</a><a href="#solver-heading">Solver</a><a href="#sweep-heading">Sweep</a><a href="/solvers">All solvers &amp; maturity</a>
         </nav>
         <div class="setup-groups">
-          <section class="setup-group" aria-labelledby="airfoil-heading">
+          <section class="setup-group" data-airfoil-panel="model" data-parameter-title="Model" aria-labelledby="airfoil-heading">
             <h2 id="airfoil-heading">Airfoil</h2>
             <div class="form-grid">
               <label class="field"><span>Source</span>
@@ -97,7 +101,7 @@
             </details>
           </section>
 
-          <section class="setup-group" aria-labelledby="flow-heading">
+          <section class="setup-group" data-airfoil-panel="flow" data-parameter-title="Flow conditions" aria-labelledby="flow-heading">
             <h2 id="flow-heading">Flow</h2>
             <div class="form-grid">
               <label class="field"><span>Mach</span><input id="mach" type="number" value="0" min="0" max="5" step="0.01"></label>
@@ -114,7 +118,7 @@
             <p id="flow-hint" class="hint">Ncrit applies to XFOIL and JXfoil boundary layers.</p>
           </section>
 
-          <section class="setup-group" aria-labelledby="solver-heading">
+          <section class="setup-group" data-airfoil-panel="solver" data-parameter-title="Solver" aria-labelledby="solver-heading">
             <h2 id="solver-heading">Solver</h2>
             <label class="field"><span>Backend</span>
               <select id="backend"><optgroup label="Single solver"><option value="jxfoil">JXfoil (Julia clone)</option><option value="xfoil">XFOIL executable</option><option value="transonic">Compressible CFD</option><option value="cavitation">Species / cavitation CFD</option><option value="lowspeed">Low-speed CFD (pressure based)</option><option value="lbm">LBM 3D (choose D3Q27 or D3Q39)</option></optgroup><optgroup label="Comparison runs"><option value="both">JXfoil + compressible CFD</option><option value="cfd_both">Compressible + Species CFD</option><option value="xfoil_cfd_both">XFOIL + both CFD backends</option><option value="xfoil_lowspeed">XFOIL + low-speed CFD</option></optgroup><optgroup label="Research and unavailable — see solver guide"><option value="pond" disabled>PonD finite-volume — research</option><option value="barotropic" disabled>Barotropic core — verification</option><option value="free_surface" disabled>Free-surface core — experimental</option><option value="pbcav_cavitation" disabled>PBCav phase change — incomplete</option><option value="tem_legacy" disabled>TEM cavitation step — superseded</option><option value="d3q19" disabled>D3Q19 LBM — retired</option></optgroup></select>
@@ -220,9 +224,9 @@
             </details>
           </section>
 
-          <details id="output-options" class="setup-group output-options"><summary>Outputs and reports</summary><div id="output-controls" class="output-controls"></div></details>
+          <details id="output-options" data-airfoil-panel="outputs" data-parameter-title="Outputs and reports" class="setup-group output-options"><summary>Outputs and reports</summary><div id="output-controls" class="output-controls"></div></details>
 
-          <section class="setup-group" aria-labelledby="sweep-heading">
+          <section class="setup-group" data-airfoil-panel="sweep" data-parameter-title="Alpha sweep" aria-labelledby="sweep-heading">
             <h2 id="sweep-heading">Alpha sweep</h2>
             <label class="switch-line"><span>Compute multiple angles</span><input id="sweep-enabled" type="checkbox" role="switch"></label>
             <div id="sweep-controls" class="sweep-grid hidden">

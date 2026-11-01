@@ -1,6 +1,6 @@
 using SHA
 
-const WORKBENCH_API_REVISION = "2026-11-01-results-workflow-v6"
+const WORKBENCH_API_REVISION = "2026-11-01-boxer-workflow-v7"
 
 function _workbench_repository_id(root::AbstractString)
     path = joinpath(splitpath(normpath(isdir(root) ? realpath(root) : abspath(root)))...)
