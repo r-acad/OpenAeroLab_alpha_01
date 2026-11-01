@@ -1,0 +1,19 @@
+.study-strip {display:flex;align-items:center;gap:.65rem;padding:.45rem .85rem;flex-wrap:wrap;font-size:.85rem}
+.study-strip strong {max-width:30vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.study-strip span {opacity:.85;overflow-wrap:anywhere}
+.study-warning {color:var(--warn,#cb840d)}
+.study-dialog {color:inherit;background:var(--panel,#142632);border:1px solid var(--border,#365262);border-radius:12px;width:min(700px,90vw);max-height:85vh;overflow:auto;padding:1.25rem}
+.study-dialog::backdrop {background:#06121aaa}
+.study-dialog header {display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.study-dialog header h2 {margin:0}
+.study-dialog button {cursor:pointer}
+.study-dialog .study-actions {display:flex;gap:.7rem;justify-content:flex-end;flex-wrap:wrap;margin-top:1rem}
+.study-recent-list {display:grid;gap:.5rem;margin:1rem 0}
+.study-recent-list button {text-align:left;padding:.7rem;display:grid;gap:.3rem;white-space:normal}
+.study-recent-list small {overflow-wrap:anywhere;opacity:.8}
+#benchmark-controls {margin:.7rem 0;padding:.7rem;border:1px solid var(--border,#365262);border-radius:8px}
+#benchmark-controls .hint {font-size:.8rem}
+#literature-panel {margin-bottom:.8rem}
+#literature-panel .chart {min-height:280px}
+#literature-panel .chart-heading {flex-wrap:wrap;gap:.5rem}
+body[data-workbench="airfoil"] .app-shell {grid-template-rows:auto auto auto minmax(0,1fr)}

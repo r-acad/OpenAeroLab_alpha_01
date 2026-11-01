@@ -42,7 +42,8 @@
   }
   $('open-saved-airfoil')?.addEventListener('click',()=>{closeMenus();const section=$('recent-section');if(section){section.open=true;section.scrollIntoView({block:'nearest'});$('recent-select')?.focus();}});
   if(kind==='airfoil'&&$('download-result')){
-    const syncResults=()=>{$('menu-results')?.classList.toggle('results-available',!$('download-result').disabled);};
+    const syncResults=()=>{$('menu-results')?.classList.toggle('results-available',!$('download-result').disabled||Boolean(window.AirfoilBenchmarks?.current()));};
+    window.addEventListener('airfoil-reference-updated',syncResults);
     syncResults();if(typeof MutationObserver!=='undefined')new MutationObserver(syncResults).observe($('download-result'),{attributes:true,attributeFilter:['disabled']});
   }
   function applyTheme(){
@@ -77,7 +78,8 @@
         'Display: Move a cutting plane offers an edge handle (Shift for fine movement), exact position and surface-section curves. Record required planes before running, or export volume VTK to inspect arbitrary sections later.',
         'Display: choose view, guides, AMR visibility and a contour palette. The palette recolours numeric fields; saved PNG images keep their original colours.'
       ]:[
-        'Project / Model: choose the airfoil source and designation. The selected parameters appear in the left pane.',
+        'Project: New, Open, Save and Save As manage complete studies. Open offers recent studies; Save reuses the opened filename. Save after an analysis to retain its results link.',
+        'Model: choose the airfoil. RAE 2822 and ONERA OAT15A load published conditions and show measured Cp in Results immediately. Choose another measured case there or edit the setup.',
         'Mesh: choose topology and resolution in the geometry view; Create mesh previews the solver grid.',
         'Analysis: set the flow, solver and optional alpha sweep. Outputs controls saved files, destination and reporting.',
         'Run analysis: watch progress in the left pane and review the run log or diagnostics.',

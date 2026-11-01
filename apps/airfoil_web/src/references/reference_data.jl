@@ -1,12 +1,12 @@
 module AirfoilReferenceData
 
-export reference_for_case
+export reference_for_case, benchmark_catalog
 
 const APP = normpath(joinpath(@__DIR__, "..", ".."))
 const ROOT = normpath(joinpath(APP, "..", ".."))
 const PRIVATE_ROOT = normpath(get(ENV, "LUDWIG_PRIVATE_ROOT",
     joinpath(ROOT, "..", "02_PRIVATE_PROJECT_DEVELOPMENT")))
-const DATA = joinpath(PRIVATE_ROOT, "apps", "airfoil_web", "validation", "data")
+const DATA = joinpath(APP, "data", "references")
 const MACH_TOL = 5.0e-4
 const RE_REL_TOL = 1.0e-4
 const ALPHA_TOL = 5.0e-3
@@ -21,7 +21,7 @@ function _ordered_cp(upper, lower)
 end
 
 function _rae_case9_cp()
-    path = joinpath(PRIVATE_ROOT, "tools", "rae2822_case9_exp_full.csv")
+    path = joinpath(DATA, "rae2822_case9_exp_full.csv")
     upper = Dict{String,Float64}[]
     lower = Dict{String,Float64}[]
     for line in eachline(path)
@@ -92,7 +92,7 @@ function _oat_cp()
     zones
 end
 
-const RAE_CASE9_CP = isfile(joinpath(PRIVATE_ROOT,"tools","rae2822_case9_exp_full.csv")) ? _rae_case9_cp() : nothing
+const RAE_CASE9_CP = isfile(joinpath(DATA,"rae2822_case9_exp_full.csv")) ? _rae_case9_cp() : nothing
 const RAE_CASE6_CP = isfile(joinpath(DATA,"rae2822_case6_cp.gen")) ? _rae_case6_cp() : nothing
 const OAT_CP = isfile(joinpath(DATA,"onera_oat15a_cp.dat")) ? _oat_cp() : nothing
 
@@ -132,6 +132,8 @@ function reference_for_case(case::AbstractDict)
     flow = get(case,"flow",Dict())
     alphas = get(case,"alphas",Float64[])
     kind = get(foil,"kind","")
+    (haskey(flow,"gurney_height") || get(flow,"cfd_te_thickness",0)>0 ||
+     get(flow,"cfd_fully_turbulent",false) === true || get(flow,"cfd_transition_model","") == "fully_turbulent") && return nothing
     if kind == "rae2822"
         cases = Dict{String,Any}[]
         if RAE_CASE9_CP !== nothing && _flow_matches(flow,0.734,6.5e6; trip=0.03)
@@ -144,7 +146,7 @@ function reference_for_case(case::AbstractDict)
             end
             isempty(pts) || push!(cases, Dict{String,Any}(
                 "name"=>"RAE 2822 · AGARD Case 9 (corrected free air)",
-                "source_url"=>"https://www.as.dlr.de/hiocfd/case_c2.2.html",
+                "source_url"=>"https://cfd.ku.edu/hiocfd/case_c2.2.html",
                 "data_url"=>"https://apps.dtic.mil/sti/tr/pdf/ADA073982.pdf",
                 "force_source_url"=>"https://pure.rug.nl/ws/portalfiles/portal/2914855/2005PaperAIAAVeldman.pdf",
                 "note"=>"Experimental Cp from AGARD AR-138 Table 6.7; wind-tunnel readings at M=0.730, alpha=3.19°. DLR corrected free-air CFD conditions are M=0.734, alpha=2.79°, Re=6.5e6, trips at 3% on both sides.",
@@ -176,7 +178,7 @@ function reference_for_case(case::AbstractDict)
             "name"=>"ONERA OAT15A · Jacquin et al. wind tunnel Cp",
             "source_url"=>"https://www.aiaa-dpw.org/experiment.html#oat",
             "data_url"=>"https://dpw.larc.nasa.gov/DPW8/ONERA_OAT15A/Experimental_Data/onera-oat15a.zip",
-            "note"=>"ONERA/AIAA DPW mean experimental Cp at M=0.73, Re=3.0e6, trips at 7% on both sides. Alpha=3.5° and higher may involve transonic buffet; compare steady CFD with care. ONERA retains intellectual property; acknowledge ONERA and pass on the sharing conditions in validation/data/README.md.",
+            "note"=>"ONERA/AIAA DPW mean experimental Cp at M=0.73, Re=3.0e6, trips at 7% on both sides. The DPW extended polar from alpha=3.25 degrees requires unsteady analysis; compare time-averaged CFD with the measured mean. ONERA retains intellectual property; acknowledge ONERA and pass on the sharing conditions in apps/airfoil_web/data/references/README.md.",
             "conditions"=>Dict("mach"=>0.73,"reynolds"=>3.0e6,
                 "trip_upper"=>0.07,"trip_lower"=>0.07,
                 "mach_tolerance"=>MACH_TOL,"reynolds_relative_tolerance"=>RE_REL_TOL,
@@ -185,5 +187,7 @@ function reference_for_case(case::AbstractDict)
     end
     nothing
 end
+
+include("benchmark_presets.jl")
 
 end # module

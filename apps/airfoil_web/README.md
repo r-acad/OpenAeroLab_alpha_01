@@ -13,8 +13,46 @@ or Linux with compatible NVIDIA hardware.
 
 The app includes JXfoil, compressible C and C+H meshes, the conservative
 Species path, low speed pressure based CFD, and LBM 3D. XFOIL executable runs
-require `AIRFOIL_XFOIL_EXE`. Published reference comparisons require optional
-datasets in the private directory.
+require `AIRFOIL_XFOIL_EXE`. RAE 2822 and ONERA OAT15A geometry and measured Cp
+are bundled; they work offline in a fresh installation.
+
+## Studies
+
+Use **Project → New study / Open study / Save study / Save study as**. Open
+offers recent Airfoil studies and a native system file picker. Save reuses the
+opened filename; Save As chooses a different folder or name. Ctrl+S, Ctrl+Shift+S
+and Ctrl+O provide the corresponding shortcuts. Unsaved changes are marked `*`;
+the app offers Save, Discard or Cancel before replacing the current setup.
+
+An Airfoil `.ludwig-study` file contains the source coordinates, complete solver
+request, editable controls, current results tab and literature selection. UIUC
+coordinates travel with the study, so reopening does not require downloading
+them again. Results are **links to job folders**, not copies of large fields.
+Save after starting/opening an analysis to retain that link. Opening a study
+loads available linked results without starting a solver or replacing its setup.
+**Results → Load study results** reopens them explicitly. Missing result folders
+are reported while the setup remains usable. Keep linked job/export folders if
+you need those results after clearing `TEMP_DELETEABLE`.
+
+## Published comparison cases
+
+Selecting RAE 2822 applies **AGARD Case 9 corrected free-air conditions**:
+M=0.734, Re=6.5 million, alpha=2.79°, trips at 0.03c, constant dynamic viscosity.
+Selecting ONERA OAT15A applies the measured **2.5° steady comparison**:
+M=0.73, Re=3 million, static T=271 K, trips at 0.07c, Sutherland viscosity.
+The source menu and Results both offer the other bundled measured angles and
+RAE Case 6. OAT15A angles 3.25°, 3.5° and 3.9° select physical time, for comparison
+of the post-burn-in mean with measured mean Cp. The numerical duration and step
+limit are editable starting choices, not claims of converged buffet statistics.
+
+Presets clear previous sweeps, flaps and trailing-edge overrides. They explicitly
+select the A-plus GPU path because the current C+H driver uses fully turbulent
+SST and constant kinematic viscosity. Experimental curves appear immediately in
+Results, independently of CFD jobs. Edited conditions are labelled as different;
+Apply published case restores them. CFD convergence and mesh/time independence
+remain separate checks. Sources, tunnel corrections and ONERA redistribution
+conditions are documented in [data/references](data/references/README.md) and
+linked next to the plots.
 
 Airfoil Lab's LBM 3D path offers D3Q27 + cumulant or D3Q39 + entropic from its
 pinned solver snapshot. D3Q27 uses the fixed low-Mach carrier and supports

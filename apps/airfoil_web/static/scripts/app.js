@@ -192,7 +192,7 @@ const AirfoilWire = { encodeMsgpack, decodeMsgpack, encodeBson, decodeBson };
 if (typeof window !== "undefined") window.AirfoilWire = AirfoilWire;
 
 const $ = id => document.getElementById(id);
-const minimumServiceRevision = 9;
+const minimumServiceRevision = 18;
 const el = Object.fromEntries([
   "cav-fs-controls", "cav-conventional-controls", "cav-speed", "cav-water-depth", "cav-air-height", "cav-fs-duration", "cav-fs-max-steps", "cav-fs-resolution", "cav-fs-vapor", "geometry-axis-label", "cav-fs-formulation", "cav-fs-formulation-note", "history-residual-title", "cfd-te-topology-field", "underwater-mesh-note",
   "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord",
@@ -567,7 +567,7 @@ function updateSetup() {
   el["uiuc-picker"].classList.toggle("hidden", !isUiuc);
   el["cav-reference-picker"].classList.toggle("hidden",!isCavitationReference);
   el["cav-reference-meta"].classList.toggle("hidden",!isCavitationReference);
-  if (isUiuc && !state.catalogLoaded) loadAirfoils();
+  if (isUiuc && !state.catalogLoaded && !state.embeddedAirfoil) loadAirfoils();
   const backends=selectedBackends(el.backend.value),gas=backends.includes("transonic"),cav=backends.includes("cavitation"),cavOnly=cav&&!gas;
   window.LudwigOutputControls?.setCapabilities(null,backends);
   const coupledCh=coupledChForControls();
@@ -724,6 +724,10 @@ function applyReferenceTripControls(flow) {
     flow.trip_upper=upper;flow.trip_lower=lower;flow.cav_trip_x=upper;
   }else{flow.trip_upper=0;flow.trip_lower=0;flow.cav_trip_x=0;}
 }
+function portableAirfoil(kind,id) {
+  const embedded=state.embeddedAirfoil;
+  return embedded?.kind===kind&&embedded.id===id ? {...embedded} : {kind,id};
+}
 function collectCase() {
   const kind = el["source-kind"].value;
   const preset=selectedCavitationReference();
@@ -735,6 +739,7 @@ function collectCase() {
   if (kind === "naca4" && !/^\d{4}$/.test(id)) throw new Error("Enter a four digit NACA designation.");
   if (kind === "uiuc" && !id) throw new Error("Select an airfoil from the UIUC catalog.");
   const flow = {
+    ...(state.studyFlowExtras||{}),
     ...(preset?.flow||{}),
     mach: underwater ? undefined : inputNumber("mach", "Mach number", 0, 5),
     reynolds: inputNumber("reynolds", "Reynolds number", 1),
@@ -750,12 +755,8 @@ function collectCase() {
   const coupledCh=usesCoupledCh({airfoil:{kind,id},flow,backends,
     preview:state.preview?.sourceKey===geometrySourceKey({kind,id},flow)?state.preview:null});
   const tripCapable=!coupledCh||backends.includes("xfoil")||backends.includes("cavitation");
-  // The published pressure cases used fixed transition on both surfaces.
-  // Keep the request and the reference eligibility check on the same setup.
-  if (!underwater&&tripCapable&&(kind === "rae2822" || kind === "oat15a")) {
-    flow.trip_upper = kind === "rae2822" ? 0.03 : 0.07;
-    flow.trip_lower = flow.trip_upper;
-  }
+  // Published presets set the visible prescribed-trip controls. Subsequent
+  // edits must reach the request without silently reapplying a preset.
   if(!underwater&&tripCapable&&el["transition-mode"].value==="forced") {
     flow.trip_upper=inputNumber("trip-upper","upper transition location",0,1);
     flow.trip_lower=inputNumber("trip-lower","lower transition location",0,1);
@@ -852,7 +853,7 @@ function collectCase() {
   }
   const display_every=window.LudwigOutputControls?.displayEvery()||100;
   flow.display_every=display_every;
-  const value={airfoil:{kind,id},flow,sweep,backends,display_every,outputs:window.LudwigOutputControls?.read()||{}};
+  const value={airfoil:portableAirfoil(kind,id),flow,sweep,backends,display_every,outputs:window.LudwigOutputControls?.read()||{}};
   if(flow.lbm_target_vram_percent!=null)value.target_vram_percent=flow.lbm_target_vram_percent;
   return value;
 }
@@ -898,7 +899,7 @@ function previewCase(mesh) {
   if(flow.cav_domain!=="underwater"&&gurneyEnabled()){const g=gurneyFlow(false);if(!g)return null;Object.assign(flow,g);}
   if(flow.cav_domain!=="underwater")Object.assign(flow,streamlineFlow());
   try{applyReferenceTripControls(flow);}catch{return null;}
-  return { airfoil: { kind, id }, flow, mesh, backends:selectedBackends(el.backend.value) };
+  return { airfoil: portableAirfoil(kind,id), flow, mesh, backends:selectedBackends(el.backend.value) };
 }
 function scheduleGeometryPreview() {
   clearTimeout(state.previewTimer);
@@ -1001,6 +1002,7 @@ function renderSelectedGeometry() {
   }
 }
 function jobStatus(job) {
+  window.dispatchEvent(new CustomEvent("airfoil-job-updated",{detail:job}));
   window.LudwigOutputControls?.render(job);
   const status = String(job.status || "queued");
   state.displayJobStatus=status;
@@ -1225,6 +1227,7 @@ async function pollJob(id, generation) {
       if (generation !== state.pollGeneration) return;
       state.finishAnalysis?.(); state.finishAnalysis=null;
       if (!state.job?.restored) loadRecentResults();
+
       if(job.exports?.status==='generating'){state.pollTimer=setTimeout(()=>pollJob(id,generation),1500);return;}
       return;
     }
@@ -1358,7 +1361,7 @@ class DataChart {
   draw(){const plot=polylineMarkup(this.spec.series,{...this.spec.options,viewport:this.bounds});if(!plot)return;this.currentBounds=plot.bounds;this.width=plot.width;this.height=plot.height;this.margin=plot.margin;this.node.innerHTML=plot.html;if(this.id==="cp-chart")attachPointOverlay(this.id);}
 }
 function putChart(id, content, emptyText) {
-  const node = el[id];
+  const node = el[id] || document.getElementById(id);
   node.classList.toggle("empty-chart", !content);
   if (content?.series) {const view=chartViews.get(id);if(view)view.updateSpec(content);else new DataChart(id,node,content);}
   else { chartViews.get(id)?.destroy(); node.classList.remove("interactive-chart"); if (content) node.innerHTML = content; else node.textContent = emptyText; }
@@ -1920,9 +1923,9 @@ function renderAlphaChoices() {
 }
 function matchingReference(point) {
   if(point?.reference_compatible===false)return null;
-  const reference = state.result?.reference;
+  const reference = point ? state.result?.reference : state.previewReference;
   if (!el["show-reference"].checked || !reference || !Array.isArray(reference.points)) return null;
-  const target = Number(point?.alpha_deg ?? state.requestedAlpha);
+  const target = Number(point?.alpha_deg ?? el.alpha.value);
   const tolerance = Number(reference.conditions?.alpha_tolerance_deg ?? 0.005);
   const match = reference.points.find(p => Math.abs(Number(p.alpha_deg) - target) <= tolerance);
   return match ? { reference, match } : null;
@@ -2541,21 +2544,13 @@ async function downloadResult() {
 }
 
 function sourceChanged() {
+  state.embeddedAirfoil=null;state.studyFlowExtras={};
   const source = el["source-kind"].value;
   if(source==="cavitation_reference"){updateSetup();return selectCavitationReference();}
   state.cavitationReferenceSelection++;
-  if (source === "rae2822" || source === "oat15a") {
-    // Selecting a validation section loads its published operating point;
-    // every input remains editable for other operating conditions.
-    el.backend.value = "transonic";
-    el.mach.value = source === "rae2822" ? "0.734" : "0.73";
-    el.reynolds.value = source === "rae2822" ? "6500000" : "3000000";
-    el.alpha.value = source === "rae2822" ? "2.79" : "3.25";
-    el["cfd-viscosity-model"].value = source === "rae2822" ? "constant_dynamic" : "sutherland";
-    el["transition-mode"].value="forced";
-    el["trip-upper"].value=el["trip-lower"].value=source==="rae2822" ? "0.03" : "0.07";
-    if (source === "oat15a") el["cfd-temperature"].value = "271";
-    state.machEdited = true;
+  if (window.AirfoilBenchmarks) {
+    if (["rae2822","oat15a"].includes(source)) return window.AirfoilBenchmarks.selectSource(source);
+    window.AirfoilBenchmarks.selectSource(source);
   }
   updateSetup();
   scheduleGeometryPreview();
@@ -2669,6 +2664,11 @@ function applySavedRequestToForm(saved) {
   const foil=saved?.airfoil||{},flow=saved?.flow||{},backends=Array.isArray(saved?.backends)?saved.backends:[];
   if(foil.kind==="naca4"&&/^\d{4}$/.test(String(foil.id))){el["source-kind"].value="naca4";el["naca-code"].value=String(foil.id);}
   else if(["rae2822","oat15a"].includes(foil.kind))el["source-kind"].value=foil.kind;
+  else if(foil.kind==="uiuc"){
+    el["source-kind"].value="uiuc";state.embeddedAirfoil=foil.coordinates?{...foil}:null;
+    if(![...el["airfoil-select"].options].some(option=>option.value===foil.id))el["airfoil-select"].add(new Option(foil.id,foil.id));
+    el["airfoil-select"].value=foil.id;
+  } else if(foil.kind==="cavitation_reference"){el["source-kind"].value=foil.kind;el["cav-reference-select"].value=foil.id;state.cavitationReferenceAppliedId=foil.id;}
   else return false;
   const selection=["jxfoil","xfoil","transonic","cavitation","lowspeed","both","cfd_both","xfoil_cfd_both","xfoil_lowspeed","lbm"].find(value=>{
     const b=selectedBackends(value);return b.length===backends.length&&b.every((x,i)=>x===backends[i]);});
@@ -2679,7 +2679,7 @@ function applySavedRequestToForm(saved) {
   el["lowspeed-gpu"].checked=flow.lowspeed_gpu===true;
   const sweep=saved?.sweep||{};el["sweep-enabled"].checked=sweep.enabled===true;
   if(sweep.enabled===true)for(const key of ["start","stop","step"])if(finite(Number(sweep[key])))el[`alpha-${key}`].value=String(sweep[key]);
-  if(backends.includes("xfoil")&&(Number(flow.trip_upper)>0||Number(flow.trip_lower)>0)){
+  if(Number(flow.trip_upper)>=0&&Number(flow.trip_lower)>=0){
     el["transition-mode"].value="forced";el["trip-upper"].value=String(flow.trip_upper??"");el["trip-lower"].value=String(flow.trip_lower??"");
   }
   el["trailing-edge-thickness"].value=finite(Number(flow.cfd_te_thickness))&&Number(flow.cfd_te_thickness)>0?String(flow.cfd_te_thickness):"";
@@ -2693,11 +2693,13 @@ function applySavedRequestToForm(saved) {
   state.savedLowspeedTopology=flow.lowspeed_topology==="ch_native"?"ch_native":null;
   if(el["streamline-align"].checked){el["streamline-mode"].value=flow.cfd_streamline_mode==="inviscid"?"inviscid":"viscous";el["streamline-admission"].value=flow.cfd_streamline_admission==="strict"?"strict":"demo";el["streamline-fallback"].checked=flow.cfd_streamline_fallback===true;}
   window.AirfoilLBM?.applySaved(flow);
+  for(const [key,id] of [["cfd_te_topology","cfd-te-topology"],["cfd_mesh","cfd-mesh"],["cfd_resolution","cfd-resolution"],["cfd_time_mode","cfd-time-mode"],["cfd_viscosity_model","cfd-viscosity-model"],["cfd_freestream_temperature_k","cfd-temperature"],["cfd_steps","cfd-steps"]])if(flow[key]!=null)el[id].value=String(flow[key]);
+  if(typeof flow.cfd_gpu==="boolean")el["cfd-gpu"].checked=flow.cfd_gpu;
   state.machEdited=true;state.reynoldsEdited=true;
   updateSetup();
   return true;
 }
-async function openSavedJob(id=el["recent-select"].value) {
+async function openSavedJob(id=el["recent-select"].value,{restoreForm=true,rethrow=false}={}) {
   if(!id||!/^[0-9a-f-]{36}$/.test(id))return;
   clearError();
   const done=beginOperation("open-saved","Opening saved result…",[[el["recent-open"],"Opening…"]]);
@@ -2712,7 +2714,7 @@ async function openSavedJob(id=el["recent-select"].value) {
     state.job=null;state.result=null;state.jobWire=wire;
     state.analysisCase={airfoil:saved.airfoil||{},flow:saved.flow||{},sweep:saved.sweep||{enabled:false},
       backends:Array.isArray(saved.backends)&&saved.backends.length?saved.backends:[...new Set(results.map(r=>r.backend))]};
-    const formUpdated=applySavedRequestToForm(saved);
+    const formUpdated=restoreForm?applySavedRequestToForm(saved):false;
     state.analysisGeometryKey=geometrySourceKey({kind:state.analysisCase.airfoil.kind,id:state.analysisCase.airfoil.id},state.analysisCase.flow||{});
     state.analysisMeshKey=formUpdated?meshSettingsKey():null;
     if(formUpdated)scheduleGeometryPreview();
@@ -2724,12 +2726,12 @@ async function openSavedJob(id=el["recent-select"].value) {
     renderSelection();renderPolars();renderTable();
     state.finishAnalysis?.();state.finishAnalysis=null;
     if(["queued","running"].includes(job.status))state.finishAnalysis=beginOperation("analysis","Julia analysis running…",[[el["run-button"],"Analysis running…"]]);
-    jobStatus(job);
+    state.job=job;state.result=job.result||null;renderSelection();renderPolars();renderTable();jobStatus(job);
     const savedAt=new Date(job.saved_at||job.updated_at||"");
     el["recent-status"].textContent=job.restored?`Reopened saved result${Number.isNaN(savedAt.getTime())?"":` from ${savedAt.toLocaleString([],{hour12:false})}`} (read-only; Run analysis computes it again).`:
       ["queued","running"].includes(job.status)?"Attached to the running job: live charts continue.":"Opened a job from this server session.";
-    pollTelemetry(id,generation);pollJob(id,generation);
-  } catch(err) {displayError(err);} finally {done();}
+    pollTelemetry(id,generation);pollJob(id,generation);return job;
+  } catch(err) {displayError(err);if(rethrow)throw err;} finally {done();}
 }
 el["source-kind"].addEventListener("change", sourceChanged);
 el["recent-open"].addEventListener("click",()=>openSavedJob());
@@ -2858,3 +2860,5 @@ setTheme(el["theme-mode"].value); updateSetup(); loadHealth(); scheduleGeometryP
 
 // Saved results (a separate line: the Node viewer tests remove the line above exactly).
 loadRecentResults();
+
+window.AirfoilManagedFlowKeys=["alpha_deg", "cav_air_mode", "cav_channel_height", "cav_depth_chords", "cav_domain", "cav_duration_ctu", "cav_fluid", "cav_frames", "cav_trip_x", "cav_warm_steps", "cfd_auto_stop", "cfd_block_ctu", "cfd_burnin_ctu", "cfd_duration_ctu", "cfd_freestream_temperature_k", "cfd_gpu", "cfd_mass_ceiling", "cfd_mesh", "cfd_n_base", "cfd_resolution", "cfd_rk_weight_closure", "cfd_sfd_enabled", "cfd_sfd_storage", "cfd_steps", "cfd_streamline_admission", "cfd_streamline_align", "cfd_streamline_fallback", "cfd_streamline_mode", "cfd_te_thickness", "cfd_te_topology", "cfd_time_mode", "cfd_transition_model", "cfd_viscosity_model", "display_every", "gurney_height", "lowspeed_gpu", "lowspeed_mut_ratio", "lowspeed_resolution", "lowspeed_topology", "lowspeed_tu", "mach", "ncrit", "reynolds", "sigma", "trip_lower", "trip_upper"];

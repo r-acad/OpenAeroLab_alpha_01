@@ -30,10 +30,10 @@ Ncrit, mode and fallback), written as `streamline_paths.toml` in `dir`. A refuse
 function streamline_paths_for(source, flow, alpha::Float64, dir::AbstractString; mode::AbstractString="viscous", fallback::Bool=false)
     kind = String(get(source, "kind", "")); id = String(get(source, "id", ""))
     re = Float64(get(flow, "reynolds", 3e6)); ncrit = Float64(get(flow, "ncrit", 9.0))
-    key = (kind, id, alpha, re, ncrit, String(mode), fallback)
+    key = (kind, id, bytes2hex(sha256(encode(get(source,"coordinates",nothing),:msgpack))), alpha, re, ncrit, String(mode), fallback)
     d = lock(() -> get(STREAMLINE_CACHE, key, nothing), STREAMLINE_LOCK)
     if d === nothing
-        foil = AirfoilJXBackend.resolve_airfoil(kind, id).airfoil
+        foil = AirfoilJXBackend.resolve_airfoil(source).airfoil
         d = extract_streamlines(foil, alpha; reynolds=re, ncrit, mode=Symbol(mode), allow_inviscid_fallback=fallback)
         lock(() -> (STREAMLINE_CACHE[key] = d), STREAMLINE_LOCK)
     end
@@ -55,6 +55,8 @@ const STATIC_FILES = Dict(
     "index.html" => "index.html", "favicon.svg" => "favicon.svg",
     "styles/app.css" => "styles/app.css", "styles/ergonomics.css" => "styles/ergonomics.css",
     "styles/output_controls.css"=>"styles/output_controls.css", "scripts/output_controls.js"=>"scripts/output_controls.js",
+    "scripts/studies.js"=>"scripts/studies.js", "scripts/benchmarks.js"=>"scripts/benchmarks.js",
+    "styles/studies.css"=>"styles/studies.css",
     "scripts/app.js" => "scripts/app.js", "scripts/lbm.js" => "scripts/lbm.js",
     "scripts/campaign.js" => "scripts/campaign.js", "scripts/babylon_view.js" => "scripts/babylon_view.js",
     "vendor/babylon.js" => "vendor/babylon.js",
@@ -323,7 +325,8 @@ function _validated_case(data; geometry_only::Bool=false)
         flow_out["gurney_height"] = gurney.height; flow_out["gurney_mode"] = gurney.mode
     end
     Dict{String,Any}(
-        "airfoil"=>Dict{String,Any}("kind"=>kind, "id"=>id),
+        "airfoil"=>merge(Dict{String,Any}("kind"=>kind, "id"=>id), kind == "uiuc" && haskey(foil,"coordinates") ?
+            Dict("coordinates"=>AirfoilJXBackend.study_coordinates(foil["coordinates"])) : Dict()),
         "flow"=>flow_out,
         "sweep"=>Dict("enabled"=>length(alphas)>1, "start"=>alphas[1], "stop"=>alphas[end], "step"=>length(alphas)>1 ? alphas[2]-alphas[1] : 0.0),
         "alphas"=>alphas,
@@ -479,7 +482,7 @@ function _make_preview(case, want_mesh::Bool)
         return case["airfoil"]["kind"]=="cavitation_reference" ?
             merge(cached,Dict("reference_case"=>_clean(_reference_setup(case)))) : cached
     end
-        resolved = AirfoilJXBackend.resolve_airfoil(case["airfoil"]["kind"],case["airfoil"]["id"])
+        resolved = AirfoilJXBackend.resolve_airfoil(case["airfoil"])
         foil = resolved.airfoil
         id = string(uuid4())
         outdir = _safe_job_dir(id)
@@ -648,7 +651,7 @@ function _run_job(id::String)
     _put_job(id, Dict("status"=>"running", "message"=>"Preparing airfoil geometry", "progress"=>0.02))
     _append_log(id, "server", "Preparing $(case["airfoil"]["kind"]) $(case["airfoil"]["id"]) at Mach $(case["flow"]["mach"]), Re $(case["flow"]["reynolds"]); angles $(join(case["alphas"], ", ")) deg.")
     try
-        resolved = AirfoilJXBackend.resolve_airfoil(case["airfoil"]["kind"], case["airfoil"]["id"])
+        resolved = AirfoilJXBackend.resolve_airfoil(case["airfoil"])
         foil = resolved.airfoil
         _append_log(id, "server", "Geometry loaded: $(foil.name), $(length(foil.x)) points.")
         geom = Dict{String,Any}("name"=>foil.name, "x"=>foil.x, "y"=>foil.y,
@@ -891,7 +894,7 @@ end
 const JOB_RECORD_FILE = "job_record.msgpack"
 const JOB_SUMMARY_FILE = "job_summary.msgpack"
 _job_request(case) = case isa AbstractDict ? Dict{String,Any}(
-    "airfoil"=>Dict{String,Any}("kind"=>get(get(case,"airfoil",Dict()),"kind",""),"id"=>get(get(case,"airfoil",Dict()),"id","")),
+    "airfoil"=>Dict{String,Any}(k=>v for (k,v) in get(case,"airfoil",Dict()) if k in ("kind","id","coordinates")),
     "flow"=>get(case,"flow",Dict{String,Any}()),"sweep"=>get(case,"sweep",Dict{String,Any}()),
     "backends"=>get(case,"backends",String[]),"alphas"=>get(case,"alphas",Float64[]),
     "outputs"=>get(case,"outputs",Dict{String,Any}()),"display_every"=>get(case,"display_every",nothing)) : nothing
@@ -1033,20 +1036,26 @@ function _asset_response(id::String, rel::String; range::AbstractString="")
         "Cache-Control"=>"no-store"], read(full))
 end
 
+include(joinpath("api", "studies.jl"))
+
 function app_handler(req::HTTP.Request)
     uri = HTTP.URI(req.target)
     path = String(uri.path); method = String(req.method)
     startswith(path,"/common-static/") && method == "GET" && return WorkbenchStatic.response(path)
     fmt = _fmt(req)
     try
-        if method == "POST" && path == "/api/select-folder"
+        if startswith(path,"/api/airfoil/studies/")
+            return _airfoil_study_route(req,path)
+        elseif method == "GET" && path == "/api/airfoil/benchmarks"
+            return _study_json(200,Dict("items"=>AirfoilReferenceData.benchmark_catalog()))
+        elseif method == "POST" && path == "/api/select-folder"
             payload=NativeDialogs.choose_folder(req,joinpath(PRIVATE_ROOT,"TEMP_DELETEABLE","native_dialogs"))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/output-folders"
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>17,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>18,"protocols"=>["msgpack","bson"],
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),

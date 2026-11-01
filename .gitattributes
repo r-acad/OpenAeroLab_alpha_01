@@ -4,3 +4,7 @@
 /tools/install/runtimes.tsv text eol=lf
 # The embedded solver versions are checked by SHA-256 at runtime.
 /solvers/** -text
+# Preserve the distributed numeric reference files byte for byte.
+/apps/airfoil_web/data/references/*.dat -text
+/apps/airfoil_web/data/references/*.gen -text
+/apps/airfoil_web/data/references/*.csv -text

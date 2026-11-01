@@ -1316,7 +1316,7 @@
   async function loadCapabilities() {
     try{
       const data=await api('/api/aero/capabilities');state.capabilities=data;
-      state.outdatedServer=data.api_revision!=='2026-11-01-aerodynamic-results-v8';
+      state.outdatedServer=data.api_revision!=='2026-11-01-airfoil-studies-v9';
       const sel=$('solver');sel.replaceChildren();
       for(const solver of data.solvers||[]){const o=document.createElement('option');o.value=solver.id;
         o.dataset.available=String(Boolean(solver.available));o.dataset.lattices=(solver.web_lattices||['d3q27']).join(',');

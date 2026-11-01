@@ -25,8 +25,33 @@ const UIUC_BASE_URL = "https://m-selig.ae.illinois.edu"
 const CACHE_DIR = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "build", "airfoil_web_cache")
 const INDEX_CACHE = joinpath(CACHE_DIR, "uiuc_index.html")
 const COORD_CACHE = joinpath(CACHE_DIR, "uiuc")
-const REFERENCE_GEOMETRY_DIR = joinpath(PRIVATE_ROOT, "apps", "airfoil_web", "validation", "data")
+const REFERENCE_GEOMETRY_DIR = normpath(joinpath(@__DIR__, "..", "..", "data", "references"))
 const ONERA_GEOMETRY_TERMS = "The ONERA OAT15A geometry remains the intellectual property of ONERA. Refer to it as the ONERA OAT15A, acknowledge ONERA whenever sharing it, and include these conditions when sharing."
+
+"Validate portable source coordinates; no file paths or executable payloads."
+function study_coordinates(data)
+    data isa AbstractDict || throw(ArgumentError("Invalid embedded airfoil coordinates"))
+    x,y = get(data,"x",nothing),get(data,"y",nothing)
+    x isa AbstractVector && y isa AbstractVector && 8<=length(x)<=25000 && length(x)==length(y) ||
+        throw(ArgumentError("Embedded airfoil needs 8 to 25000 paired coordinates"))
+    all(v isa Real && !(v isa Bool) && isfinite(v) && abs(v)<=100 for v in Iterators.flatten((x,y))) ||
+        throw(ArgumentError("Airfoil coordinates must be finite chord coordinates"))
+    maximum(x)-minimum(x)>0.01 || throw(ArgumentError("Airfoil chord is degenerate"))
+    Dict("x"=>Float64.(x),"y"=>Float64.(y))
+end
+
+function resolve_airfoil(source::AbstractDict; offline=false)
+    kind,id = String(source["kind"]),String(source["id"])
+    if kind == "uiuc" && haskey(source,"coordinates")
+        _safe_uiuc_id(id)
+        coordinates = study_coordinates(source["coordinates"])
+        foil = JXfoil.Airfoil(id,coordinates["x"],coordinates["y"])
+        return (airfoil=foil,metadata=Dict{String,Any}("source"=>kind,"id"=>id,"name"=>id,
+            "source_url"=>UIUC_BASE_URL*"/ads/coord/"*id,"embedded"=>true,
+            "x"=>copy(foil.x),"y"=>copy(foil.y)))
+    end
+    resolve_airfoil(kind,id;offline=offline)
+end
 const LOCAL_FALLBACK = Dict(
     "e387.dat" => joinpath(
         PRIVATE_ROOT, "Xfoil_code_2026_10_18_BASELINE", "JXfoil_REPOSITORY", "runs", "e387.dat"
