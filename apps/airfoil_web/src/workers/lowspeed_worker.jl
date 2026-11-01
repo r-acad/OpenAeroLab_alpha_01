@@ -200,12 +200,10 @@ flush(stdout)
 const pv = PBCav.PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=G0)
 const MAXS = k["PB_MAX_STEPS"]
 const T_MARCH = time()
-# Live flow-field snapshots (the app's P4; input key live_every > 0): every live_every committed steps the committed state is
-# written as live_field_<step>.msgpack in the full-field format and announced as FIELD_SNAPSHOT,<file>,<step>. The gradients
-# for the vorticity go into a separate LoadsWork, as the loads' own every step, so the march is unchanged.
-const LIVE_EVERY = Int(get(CFG, "live_every", 0))
-const LIVE_LW = LIVE_EVERY > 0 ? PBCav.LoadsWork(MESH; backend=BACKEND) : nothing
-const LIVE_FILES = String[]
+# Wall-clock snapshots are separate from iteration history and retained with the study.
+const SNAPSHOTS = FullFieldArtifact.FieldSnapshots.Schedule(get(CFG,"snapshot_interval_seconds",600.))
+const LIVE_LW = SNAPSHOTS.interval > 0 ? PBCav.LoadsWork(MESH; backend=BACKEND) : nothing
+println("Field snapshots: every ",SNAPSHOTS.interval/60," wall-clock minutes (0 = disabled); final fields are saved separately.")
 function write_live(s, step)
     PBCav.loads_gradients!(LIVE_LW, s, MESH, bc, w, cfg)
     u = Array(PBCav.lev(s.ux, 1)); v = Array(PBCav.lev(s.uy, 1)); p = Array(PBCav.lev(s.p, 1)); mt = Array(PBCav.lev(s.mut, 2))
@@ -214,11 +212,6 @@ function write_live(s, step)
     FullFieldArtifact.write_full_field((i, j) -> (c = PBCav.cell_index(MESH, 0, i, j);
         (xc[c], yc[c], hypot(u[c], v[c])/fs.U, (p[c] - fs.p_inf)/q, p[c], 1.0, u[c], v[c], 1.0, vo[c], mt[c]/cfg.mu)),
         joinpath(OUT, name), NI, NJ, joinpath(OUT, "mesh_full.msgpack"), max(step, 1))
-    push!(LIVE_FILES, name)
-    while length(LIVE_FILES) > 3                          # keep the newest three (the viewer may still be reading one)
-        old = popfirst!(LIVE_FILES)
-        try rm(joinpath(OUT, old); force=true) catch end
-    end
     println("FIELD_SNAPSHOT,", name, ",", step)
 end
 # W6b (the driver's freeair_drive!): where turb_omega_bound acted, per committed step, in omega_bound_history.csv
@@ -245,12 +238,8 @@ function app_step(s, r, led)
     tr = isfinite(sk) && isfinite(sw) ? max(sk, sw) : r.steady
     @printf("ITERATION,%d,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g\n", r.step, MAXS, r.steady, r.steady, tr,
             r.CL, r.CD, r.flux_net, r.CM)
-    if LIVE_EVERY > 0 && (r.step == 5 || r.step % LIVE_EVERY == 0)
-        try
-            write_live(s, r.step)
-        catch err
-            println("Live field snapshot skipped at step ", r.step, ": ", sprint(showerror, err))
-        end
+    FullFieldArtifact.FieldSnapshots.save_if_due!(SNAPSHOTS) do
+        write_live(s, r.step)
     end
     if r.step % 25 == 0
         @printf("PB progress: step %d of at most %d, wall %.0f s, CL %.5f, CD %.6f, CM %.5f, steady residual %.3e (stop at %.1e), k/omega %.3e/%.3e (stop at %.1e), circulation defect %.2e\n",
@@ -364,9 +353,7 @@ for (key, v) in collect(result)
     v isa AbstractFloat && !isfinite(v) && (result[key] = string(v))
 end
 open(io -> TOML.print(io, result), joinpath(OUT, "result.toml"), "w")
-for f in LIVE_FILES                                   # the final field replaces the live snapshots
-    try rm(joinpath(OUT, f); force=true) catch end
-end
+# Periodic snapshots remain available alongside the final field after reopening a study.
 @printf("Low-speed CFD worker finished: %s after %d steps, %.0f s march, %.0f s total\n", R.outcome, R.nstep, R.wall, time() - T_START)
 flush(stdout)
 exit(0)   # the outcome is in result.toml; the backend sets the point status from it

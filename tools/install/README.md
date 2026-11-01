@@ -62,9 +62,11 @@ when launching. Paths containing spaces are supported.
 - Study/output folders selected in the application: persistent user data.
   These are not installer caches and must be retained to reopen results.
 
-Other app caches under `TEMP_DELETEABLE` can contain the only copy of an unsaved
-job. Save the study and persistent outputs before cleaning those folders. Setup
-does not delete studies or results, and no generated files belong in GitHub.
+Jobs, uploaded geometry, imported results and exports are retained in
+`<private>/results/`; studies and user-selected output folders are persistent.
+`TEMP_DELETEABLE` contains only disposable data. Stop the apps and reply bridge
+before clearing it. Setup does not delete studies or results, and no generated
+files belong in GitHub.
 
 ## System requirements and troubleshooting
 

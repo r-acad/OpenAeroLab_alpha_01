@@ -80,6 +80,7 @@ function lowspeed_configuration(flow::AbstractDict)
         "the low-speed CFD uses a sharp-trailing-edge free-air C-mesh: clear the CFD trailing-edge thickness override (cfd_te_thickness) to run it"))
     live = _integer(flow, "lowspeed_live_every", LOWSPEED_DEFAULTS["lowspeed_live_every"]; lo=0, hi=1000000)
     Dict{String,Any}("resolution"=>res, "mesh"=>LOWSPEED_MESHES[res].mesh, "le_ds"=>LOWSPEED_MESHES[res].le_ds,
+        "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "mesh_label"=>LOWSPEED_MESHES[res].label,
         "reynolds"=>re, "tu"=>tu, "mut_ratio"=>mr, "wall_cap"=>cap, "max_steps"=>ms, "live_every"=>live, "gpu"=>lowspeed_gpu(flow))
 end
@@ -217,6 +218,7 @@ function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false
         "dt"=>0.25, "steady_tol"=>1e-6, "turb_steady_tol"=>1e-7, "max_steps"=>ls["max_steps"], "wall_cap"=>ls["wall_cap"],
         "n_outer_max"=>40, "vortex_every"=>10, "vortex_relax"=>0.5, "reynolds"=>ls["reynolds"], "alpha"=>Float64(alpha),
         "outdir"=>replace(String(dir), '\\'=>'/'), "live_every"=>ls["live_every"],
+        "snapshot_interval_seconds"=>get(ls,"snapshot_interval_seconds",600.),
         "knobs"=>Dict{String,Any}(k=>v for (k, v) in LOWSPEED_W6B_KNOBS))
     get(ls, "gpu", false) && merge!(cfg["knobs"], Dict{String,Any}(LOWSPEED_GPU_KNOBS))   # the GPU (opt-in); absent: unchanged
     if ls["resolution"] == "fine"

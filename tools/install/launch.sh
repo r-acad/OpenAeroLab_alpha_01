@@ -3,6 +3,9 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/tools/install/bootstrap.sh"
 ludwig_julia no
+export TMPDIR="$LUDWIG_PRIVATE_ROOT/TEMP_DELETEABLE/runtime"
+mkdir -p "$TMPDIR"
+export TEMP="$TMPDIR" TMP="$TMPDIR"
 app="${1:-workbench}"
 if [ "$#" -gt 0 ]; then shift; fi
 case "$app" in

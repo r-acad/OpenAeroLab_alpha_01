@@ -2,7 +2,7 @@
 const AIRFOIL_POSTPROCESS_LAUNCHER=joinpath(ROOT,"tools","postprocess","PostprocessLauncher.jl")
 isfile(AIRFOIL_POSTPROCESS_LAUNCHER) && include(AIRFOIL_POSTPROCESS_LAUNCHER)
 const AIRFOIL_OUTPUT_DEFAULTS = Dict{String,Any}(
-    "folder"=>"", "surface_vtk"=>true, "surface_lbmp"=>false,
+    "folder"=>"", "snapshot_interval_minutes"=>10.0, "surface_vtk"=>true, "surface_lbmp"=>false,
     "volume_vtk"=>false, "numeric_slices"=>true, "slice_png"=>true,
     "csv_history"=>true, "report"=>false, "charts"=>false, "renders_3d"=>false,
     "report_format"=>"html", "chart_format"=>"png", "render_format"=>"png",
@@ -13,6 +13,10 @@ function _output_preferences(data::AbstractDict)
     raw = get(data,"outputs",Dict{String,Any}())
     raw isa AbstractDict || throw(ArgumentError("outputs must be an object"))
     settings = copy(AIRFOIL_OUTPUT_DEFAULTS)
+    interval=get(raw,"snapshot_interval_minutes",10.0)
+    interval isa Real && !(interval isa Bool) && isfinite(interval) && 0<=interval<=1440 ||
+        throw(ArgumentError("outputs.snapshot_interval_minutes must be between 0 and 1440 (0 disables periodic snapshots)"))
+    settings["snapshot_interval_minutes"]=Float64(interval)
     for key in ("surface_vtk","surface_lbmp","volume_vtk","numeric_slices","slice_png","csv_history","report","charts","renders_3d")
         value=get(raw,key,settings[key]);value isa Bool || throw(ArgumentError("outputs.$key must be boolean"));settings[key]=value
     end
@@ -43,9 +47,9 @@ function _output_capabilities()
       "lbm"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>true,"volume_vtk"=>true,"numeric_slices"=>true,"slice_png"=>true,"renders_3d"=>true,
         "display_note"=>"Field output follows the exact requested iteration interval; GPU batch depth is reduced when necessary.")),
       "transonic"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>false,"numeric_slices"=>true,"slice_png"=>false,"renders_3d"=>false,
-        "display_note"=>"Iteration history follows the requested interval. Field snapshots are supported by the native compressible path.")),
+        "timed_snapshots"=>true,"display_note"=>"History updates use iterations. Saved field snapshots use elapsed wall-clock minutes; final fields are always saved.")),
       "lowspeed"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>false,"numeric_slices"=>true,"slice_png"=>false,"renders_3d"=>false,
-        "display_note"=>"Sharp C-mesh fields follow the requested interval; the pinned C+H path exposes its final field only.")),
+        "timed_snapshots"=>true,"display_note"=>"Sharp C-mesh snapshots use elapsed wall-clock minutes; the pinned low-speed C+H path exposes its final field only.")),
       "cavitation"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>false,"numeric_slices"=>true,"slice_png"=>true,"renders_3d"=>false,
         "display_note"=>"The requested interval controls available history/frame output; final fields remain available.")))
 end

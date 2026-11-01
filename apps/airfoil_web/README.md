@@ -31,8 +31,16 @@ them again. Results are **links to job folders**, not copies of large fields.
 Save after starting/opening an analysis to retain that link. Opening a study
 loads available linked results without starting a solver or replacing its setup.
 **Results → Load study results** reopens them explicitly. Missing result folders
-are reported while the setup remains usable. Keep linked job/export folders if
-you need those results after clearing `TEMP_DELETEABLE`.
+are reported while the setup remains usable. Linked job folders now live in
+private `results/airfoil_runs`, outside disposable storage. Keep those folders
+and selected export directories to retain results.
+
+Outputs provides **Save field snapshots every, minutes** for the compressible
+solver and sharp-mesh pressure solver. Default: 10 real-time minutes; 0: disabled.
+This is independent of iteration history and does not change final-field saving.
+In **Results → Flow field**, use **Saved snapshot** to reopen any recorded frame.
+The fields are visualization snapshots, not restart files. Writes report their
+duration and reject insufficient disk space without announcing an empty file.
 
 ## Published comparison cases
 

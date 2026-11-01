@@ -2058,9 +2058,10 @@ end
 
 # ---- Telegram ----------------------------------------------------------------------------------
 if TG
-    py = Sys.iswindows() ? "python" : "python3"
+    sender = joinpath(ROOT, "tools", "tg_send.jl")
+    project = joinpath(ROOT, "third_party", "JXfoil")
     send(p, cap, kind) = try
-        run(`$py $(joinpath(ROOT,"tools","tg_send.py")) $p $cap $kind`)
+        run(`$(Base.julia_cmd()) --startup-file=no --project=$project $sender $p $cap $kind`)
     catch e; @warn "telegram send failed" p e; end
     send(panel, "CAV $tag -- space-time alpha(s,t), u_x(s,t), V(t), detached area", "photo")
     for m in mp4s; send(m, "CAV $tag -- " * basename(m), "doc"); end

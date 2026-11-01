@@ -38,6 +38,7 @@ function _ch_transonic_config(case,path,flow,alpha,dir)
         "steps"=>_integer(flow,"cfd_steps",500000;lo=1,hi=2000000),
         "history_stride"=>_integer(flow,"cfd_history_stride",25;lo=1,hi=1000000),
         "display_every"=>_integer(flow,"cfd_display_every",0;lo=0,hi=1000000),
+        "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "gpu"=>_boolean(flow,"cfd_gpu",true),"time_mode"=>time_mode,
         "viscosity_model"=>viscosity,"cfl"=>_number(flow,"cfd_cfl",.1;lo=.01,hi=.5),
         "max_pseudo_dt"=>_number(flow,"cfd_max_pseudo_dt",.01;lo=1e-10,hi=1.),

@@ -1,4 +1,4 @@
-const EXPORT_ROOT = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "exports")
+const EXPORT_ROOT = joinpath(PRIVATE_ROOT, "results", "exports")
 const OUTPUT_DEFAULTS = Dict{String,Any}(
     "folder" => "", "surface_vtk" => true, "surface_lbmp" => false,
     "volume_vtk" => false, "numeric_slices" => true, "slice_png" => true,

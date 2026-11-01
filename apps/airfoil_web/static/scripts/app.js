@@ -192,7 +192,7 @@ const AirfoilWire = { encodeMsgpack, decodeMsgpack, encodeBson, decodeBson };
 if (typeof window !== "undefined") window.AirfoilWire = AirfoilWire;
 
 const $ = id => document.getElementById(id);
-const minimumServiceRevision = 18;
+const minimumServiceRevision = 19;
 const el = Object.fromEntries([
   "cav-fs-controls", "cav-conventional-controls", "cav-speed", "cav-water-depth", "cav-air-height", "cav-fs-duration", "cav-fs-max-steps", "cav-fs-resolution", "cav-fs-vapor", "geometry-axis-label", "cav-fs-formulation", "cav-fs-formulation-note", "history-residual-title", "cfd-te-topology-field", "underwater-mesh-note",
   "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord",
@@ -1989,6 +1989,7 @@ function fieldValues(field) {
   return field?.values || field?.data || field?.grid || null;
 }
 function renderFieldChoices(point) {
+  syncSnapshotChoices();
   if (window.AirfoilLBM?.fieldChoices(point)) return;   // LBM 3D: mid-plane frames, video and lattice (lbm.js)
   const fields = point?.fields || {};
   const choices = [];
@@ -2008,9 +2009,11 @@ function renderFieldChoices(point) {
   }
   if (!choices.length) for (const key of Object.keys(fields)) if (availableFieldQuantity(point,key)&&fieldValues(fields[key])) choices.push([`grid:${key}`, fieldNames[key] || key.replaceAll("_", " ")]);
   if (liveFieldApplies(point)) {
-    // The running low-speed point's live field (speed first): replaced by the final field when the point completes.
-    const lp=livePoint(),order=["mach","vorticity","cp","pressure","u","v","nut"];
-    choices.unshift(...order.filter(key=>Array.isArray(lp.fields.samples?.[key])).map(key=>[`live:${key}`,`Live α ${numberText(lp.alpha_deg,2)}° · step ${state.liveField.iteration} · ${lowspeedFieldMeta.quantity_labels[key]}`]));
+    const lp=livePoint(),order=['mach','vorticity','cp','pressure','u','v','density','temperature','nut'];
+    const samples=lp.fields.samples||lp.fields.blocks?.[0]?.samples;
+    choices.unshift(...order.filter(key=>Array.isArray(samples?.[key])&&!lp.fields.hidden_quantities?.includes(key)).map(key=>[
+      `live:${key}`,`Snapshot alpha ${numberText(lp.alpha_deg,2)} / step ${state.liveField.iteration} / ${quantityLabel(lp,key)}`]));
+
   }
   const keys = choices.map(c => c[0]);
   const prior = el["field-kind"].value;
@@ -2360,11 +2363,11 @@ function renderField(point = currentResult()) {
   if (window.AirfoilLBM?.renderField(point)) return;
   const choice = el["field-kind"].value;
   const [kind, key] = choice.split(":", 2);
-  const mesh = kind === "mesh" ? inspectableMesh(currentMesh(point)) : currentMesh(point);
+  const mesh = kind === "mesh" ? inspectableMesh(currentMesh(point)) : currentMesh(kind === "live" ? livePoint() : point);
   if(kind!=="surface")chartViews.get("field-view")?.destroy();
-  const selectedField = kind === "sample" ? inspectableFields(point) : null;
-  const displayPoint = selectedField?.full ? { ...point, fields: selectedField.fields } : point;
-  const useBabylon = el["field-renderer"].value === "3d" && (kind === "mesh" || kind === "sample");
+  const selectedField = kind === "live" ? {fields:livePoint()?.fields,full:true} : kind === "sample" ? inspectableFields(point) : null;
+  const displayPoint = kind === "live" ? livePoint() : selectedField?.full ? { ...point, fields: selectedField.fields } : point;
+  const useBabylon = el["field-renderer"].value === "3d" && (kind === "mesh" || kind === "sample" || kind === "live");
   el["field-view"].classList.toggle("hidden", useBabylon);
   el["babylon-view"].classList.toggle("hidden", !useBabylon);
   if (useBabylon) {
@@ -2376,7 +2379,7 @@ function renderField(point = currentResult()) {
     if (kind === "mesh" && validMesh(mesh)) {
       el["field-legend"].classList.remove("hidden");
       el["field-legend"].textContent = `${meshIsFull(mesh) ? "Full mesh" : "Mesh preview"} ${meshDimensionsText(mesh)} nodes${meshTopologyText(mesh)}${meshQualityText(mesh)}`;
-    } else if (kind === "sample") {
+    } else if (kind === "sample" || kind === "live") {
       el["field-legend"].classList.remove("hidden");
       const count = fieldCellCount(selectedField?.fields);
       const blocks=fieldBlocks(selectedField?.fields),range=window.AirfoilBabylon?.scalarColorRange?.();
@@ -2588,14 +2591,31 @@ function switchTab(name) {
 const lowspeedFieldMeta={speed_column:"mach",hidden_quantities:["density","temperature"],
   quantity_labels:{mach:"Speed |U|/U∞",cp:"Pressure coefficient Cp",pressure:"Pressure (p - p∞)/(ρU∞²)",u:"Velocity u/U∞",v:"Velocity v/U∞",vorticity:"Vorticity ωc/U∞",nut:"Eddy viscosity ratio μt/μ"},
   quantity_units:{mach:"|U|/U∞",cp:"dimensionless",pressure:"ρU∞²",u:"U∞",v:"U∞",vorticity:"U∞/c",nut:"μt/μ",density:"ρ∞",temperature:"T∞"}};
+function syncSnapshotChoices() {
+  const select=document.getElementById('field-snapshot');if(!select)return;
+  const entries=state.result?.saved_snapshots||[], prior=select.value;
+  const signature=entries.map(e=>e.artifact).join('|');
+  if(select.dataset.signature===signature)return;
+  select.dataset.signature=signature;
+  select.replaceChildren(new Option('Latest / final field',''),...entries.map(entry=>{
+    const date=entry.saved_at?new Date(entry.saved_at).toLocaleTimeString():'';
+    return new Option(`${entry.backend} / alpha ${entry.alpha_deg} / step ${entry.iteration}${date?' / '+date:''}`,entry.artifact);
+  }));
+  select.disabled=!entries.length;
+  if(entries.some(e=>e.artifact===prior))select.value=prior;
+}
 function liveFieldEntry() {
+  const chosen=document.getElementById('field-snapshot')?.value;
+  if(chosen)return (state.result?.saved_snapshots||[]).find(e=>e.artifact===chosen)||null;
+  if(!['queued','running'].includes(state.job?.status))return null;
   const live=state.result?.live_fields;
   if(!live||typeof live!=="object")return null;
   const entries=Object.values(live).filter(e=>e&&typeof e.artifact==="string"&&Number.isInteger(Number(e.iteration)));
   return entries.find(e=>e.backend===state.activeCfdBackend&&Number(e.alpha_deg)===Number(state.activeCfdAlpha))||entries[entries.length-1]||null;
 }
 function refreshLiveField() {
-  const entry=["queued","running"].includes(state.job?.status)?liveFieldEntry():null;
+  syncSnapshotChoices();
+  const entry=liveFieldEntry();
   if(!entry){
     if(state.liveField){state.liveField=null;renderFieldChoices(currentResult());}
     return;
@@ -2603,29 +2623,45 @@ function refreshLiveField() {
   const url=safeHref(entry.artifact);
   if(!url||state.liveField?.url===url||state.liveFieldLoading===url)return;
   const generation=state.pollGeneration;state.liveFieldLoading=url;
-  request(url).then(field=>{
-    if(generation!==state.pollGeneration||!validFullField(field))return;
+  request(url).then(payload=>{
+    if(payload?.kind==='structured_blocks'&&payload.full_artifact){
+      const name=payload.full_artifact;
+      if(typeof name!=='string'||!/^[a-zA-Z0-9_.-]+\.msgpack$/.test(name)||name.includes('..'))
+        throw new Error('Invalid snapshot block manifest');
+      return loadFullFieldArtifact(new URL(name,new URL(url,location.href)).href);
+    }
+    return loadFullFieldArtifact(url,payload);
+  }).then(field=>{
+    if(generation!==state.pollGeneration||liveFieldEntry()?.artifact!==entry.artifact||!validFullField(field))return;
     const first=!state.liveField;
     state.liveField={url,iteration:Number(entry.iteration),alpha:Number(entry.alpha_deg),backend:entry.backend,field};
-    // The first live field of a run replaces the mesh view once (a later choice of the user is kept).
-    if(first&&!state.liveAutoShown&&["","mesh:grid"].includes(el["field-kind"].value)){state.liveAutoShown=true;el["field-kind"].value="live:mach";}
     renderFieldChoices(currentResult());
-  }).catch(()=>{}).finally(()=>{if(state.liveFieldLoading===url)state.liveFieldLoading=null;});
+    if(document.getElementById('field-snapshot')?.value||(first&&!state.liveAutoShown)){
+      state.liveAutoShown=true;el['field-kind'].value='live:mach';
+    }
+    renderField();
+  }).catch(error=>{
+    el['field-legend'].classList.remove('hidden');
+    el['field-legend'].textContent=`Could not load saved snapshot: ${error.message}`;
+  }).finally(()=>{if(state.liveFieldLoading===url)state.liveFieldLoading=null;});
 }
 function livePoint() {
   const live=state.liveField;
   if(!live)return null;
-  const f=live.field,labels=Object.fromEntries(Object.entries(lowspeedFieldMeta.quantity_labels).map(([k,v])=>[k,`Live step ${live.iteration} · ${v}`]));
-  return {backend:live.backend,alpha_deg:live.alpha,status:"running",live:true,mesh:currentMesh({alpha_deg:live.alpha}),
-    fields:{kind:"structured_cells",ni:f.ni,nj:f.nj,samples:f.samples,cell_order:f.cell_order,iteration:f.iteration,mesh_sha256:f.mesh_sha256,
-      sample_stride:1,...lowspeedFieldMeta,quantity_labels:labels}};
+  const f=live.field,meta=live.backend==='lowspeed'?lowspeedFieldMeta:{quantity_labels:fieldNames};
+  return {backend:live.backend,alpha_deg:live.alpha,status:'snapshot',live:true,mesh:currentMesh({alpha_deg:live.alpha}),
+    fields:{...f,sample_stride:1,...meta}};
 }
 function liveFieldApplies(point) {
   const live=state.liveField;
   if(!live)return false;
-  if(point&&point.backend===live.backend&&Number(point.alpha_deg)===live.alpha)return false;   // its final field exists
-  return !(point?.fields&&["samples","structured_cells","structured_blocks"].includes(point.fields.kind));
+  if(document.getElementById('field-snapshot')?.value)return true;
+  if(point&&point.backend===live.backend&&Number(point.alpha_deg)===live.alpha)return false;
+  return !(point?.fields&&['samples','structured_cells','structured_blocks'].includes(point.fields.kind));
 }
+document.getElementById('field-snapshot')?.addEventListener('change',()=>{
+  state.liveField=null;refreshLiveField();renderFieldChoices(currentResult());renderField();
+});
 
 // ---- Recent results: jobs saved under runs/<id>/ reopen read-only (also after a server restart). --------------------
 function recentLabel(item) {

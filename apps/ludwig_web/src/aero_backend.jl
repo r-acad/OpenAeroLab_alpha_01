@@ -5,7 +5,7 @@ using HTTP, JSON3, UUIDs, Dates, Printf, TOML, Base64, SHA
 const PUBLIC_ROOT = normpath(joinpath(@__DIR__, "..", "..", ".."))
 const PRIVATE_ROOT = normpath(get(ENV, "LUDWIG_PRIVATE_ROOT",
     joinpath(PUBLIC_ROOT, "..", "02_PRIVATE_PROJECT_DEVELOPMENT")))
-const RUNTIME_ROOT = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "aero_lab")
+const RUNTIME_ROOT = joinpath(PRIVATE_ROOT, "results", "aero_lab")
 const CASES_ROOT = joinpath(RUNTIME_ROOT, "CASES")
 const MODEL_ROOT = joinpath(RUNTIME_ROOT, "models")
 const JOBS_ROOT = joinpath(RUNTIME_ROOT, "jobs")

@@ -203,11 +203,16 @@ function _log_process(cmd::Cmd, log_path::AbstractString, progress::Function,
                             "$(mesh["full_ni"]-1) × $(mesh["full_nj"]-1) cells"
                         _deliver_log(log, "CFD mesh ready for inspection at alpha=$alpha deg: $description.")
                     end
-                elseif backend == "lowspeed" && length(values) == 3 && values[1] == "FIELD_SNAPSHOT" &&
+                elseif backend in ("lowspeed","transonic") && length(values) == 3 && values[1] == "FIELD_SNAPSHOT" &&
                        occursin(r"^live_field_[0-9]+\.msgpack$", values[2]) && tryparse(Int, values[3]) !== nothing
-                    # Low-speed CFD live flow field (a committed state written during the march).
+                    # Committed CFD field, announced only after a complete, checked write.
+                    artifact=joinpath(dirname(log_path),values[2])
+                    if !isfile(artifact) || filesize(artifact)==0
+                        _deliver_log(log,"SNAPSHOT_WARNING: ignored missing or empty field artifact $(values[2]).")
+                        continue
+                    end
                     progress(Dict("event"=>"field_snapshot", "backend"=>backend, "alpha_deg"=>alpha,
-                                  "artifact"=>joinpath(dirname(log_path), values[2]), "iteration"=>parse(Int, values[3])))
+                                  "artifact"=>artifact, "iteration"=>parse(Int, values[3])))
                 elseif backend in ("transonic","cavitation") && length(values)==5 && values[1]=="PHYSICAL_TIME"
                     n=tryparse(Int,values[2])
                     t=tryparse(Float64,values[3]);duration=tryparse(Float64,values[4]);dt=tryparse(Float64,values[5])
@@ -369,6 +374,7 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log; species_b
         "physical_time_refined"=>_boolean(flow,"cfd_physical_time_refined",false),
         "history_stride"=>_integer(flow,"cfd_history_stride",400;lo=1,hi=1000000),
         "display_every"=>_integer(flow,"cfd_display_every",0;lo=0,hi=1000000),
+        "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "force_sample_dt_ctu"=>_number(flow,"cfd_force_sample_dt_ctu",0.1;lo=0.001,hi=1.0),
         # Validation-only outer-frame orientation; freestream remains at alpha_deg.
         "cfd_farfield_angle_deg"=>_number(flow, "cfd_farfield_angle_deg", alpha;
@@ -1262,6 +1268,8 @@ function _transonic_worker(cfg_path::AbstractString)
         mass_net_limit=mass_net_limit,stop_on_stall=!physical && cfg["auto_stop"]))
     last_status_time = time()
     try
+        snapshots=FullFieldArtifact.FieldSnapshots.Schedule(get(cfg,"snapshot_interval_seconds",600.))
+        println("Field snapshots: every ",snapshots.interval/60," wall-clock minutes (0 = disabled); final fields are saved separately.")
         for n in 1:cfg["steps"]
             probe_now = mass_probe_stride > 0 &&
                         (n == cfg["steps"] ||
@@ -1337,7 +1345,7 @@ function _transonic_worker(cfg_path::AbstractString)
                 s.gam = 0.9f0*s.gam + 0.1f0*Float32(0.5*speed*cl)
             end
             display_every=Int(get(cfg,"display_every",0))
-            if display_every>0 && (n%display_every==0 || n==cfg["steps"])
+            FullFieldArtifact.FieldSnapshots.save_if_due!(snapshots) do
                 _write_transonic_live_field(s,String(cfg["outdir"]),n)
             end
             history_due=physical ? (n==1 || n%physical_history_stride==0 ||

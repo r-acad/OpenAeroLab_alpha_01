@@ -65,7 +65,8 @@ const STATIC_FILES = Dict(
     "lbm.js" => "scripts/lbm.js", "campaign.js" => "scripts/campaign.js",
     "babylon_view.js" => "scripts/babylon_view.js",
 )
-const RUN_DIR = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "runs")
+const RUN_DIR = joinpath(PRIVATE_ROOT, "results", "airfoil_runs")
+const PREVIEW_DIR = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "airfoil_previews")
 const LEGACY_RUN_DIR = joinpath(PRIVATE_ROOT, "apps", "airfoil_web", "runs")
 const JOBS = Dict{String,Dict{String,Any}}()
 const JOB_LOGS = Dict{String,Vector{Dict{String,Any}}}()
@@ -167,12 +168,13 @@ function _validated_case(data; geometry_only::Bool=false)
     sigma = _num(get(flow, "sigma", 1.25), "sigma"; positive=true)
     flow_out = Dict{String,Any}(String(k)=>v for (k,v) in pairs(flow))
     outputs = _output_preferences(data)
+    flow_out["snapshot_interval_seconds"]=60*outputs["snapshot_interval_minutes"]
     display_every = get(data,"display_every",get(flow,"display_every",nothing))
     if display_every !== nothing
         interval=_num(display_every,"display_every";positive=true)
         isinteger(interval) && interval<=1_000_000 || throw(ArgumentError("display_every must be an integer in [1,1000000]"))
         display_every=Int(interval)
-        for key in ("display_every","lbm_display_every","lowspeed_live_every","cfd_history_stride","cfd_display_every","cav_history_stride","cav_fs_frame_stride")
+        for key in ("display_every","lbm_display_every","cfd_history_stride","cfd_display_every","cav_history_stride","cav_fs_frame_stride")
             flow_out[key]=display_every
         end
     end
@@ -485,7 +487,7 @@ function _make_preview(case, want_mesh::Bool)
         resolved = AirfoilJXBackend.resolve_airfoil(case["airfoil"])
         foil = resolved.airfoil
         id = string(uuid4())
-        outdir = _safe_job_dir(id)
+        outdir = joinpath(PREVIEW_DIR,id)
         mkpath(outdir)
         path = joinpath(outdir,"airfoil.dat")
         _save_geometry(foil,path)
@@ -576,6 +578,8 @@ end
 function _safe_job_dir(id::String)
     occursin(r"^[0-9a-f-]{36}$", id) || throw(ArgumentError("invalid job id"))
     current=joinpath(RUN_DIR,id)
+    preview=joinpath(PREVIEW_DIR,id)
+    isdir(preview) && !isdir(current) && return preview
     historical=joinpath(LEGACY_RUN_DIR,id)
     isdir(current) || !isdir(historical) ? current : historical
 end
@@ -663,6 +667,7 @@ function _run_job(id::String)
         results = Any[]
         meshes = Dict{String,Any}()
         live_fields = Dict{String,Any}()
+        saved_snapshots = Any[]
         lbm_live = Dict{String,Any}(); lbm_lattices = Dict{String,Any}()   # LBM 3D: running mid-plane frames and lattices
         modified_te = get(case["flow"],"cfd_te_thickness",0.0) > 0
         gurney_on = CFDBackend.gurney_enabled(case["flow"])
@@ -699,7 +704,8 @@ function _run_job(id::String)
                                        "polar"=>polar,"meshes"=>meshes,
                                        "reference"=>reference)
             case["airfoil"]["kind"]=="cavitation_reference" && (payload["reference_case"]=_reference_setup(case))
-            # Low-speed CFD live flow fields of running points (absent for every other backend)
+            payload["saved_snapshots"]=saved_snapshots
+            # Latest committed fields of running CFD points.
             isempty(live_fields) || (payload["live_fields"]=live_fields)
             isempty(lbm_live) || (payload["lbm_live"]=lbm_live)
             isempty(lbm_lattices) || (payload["lbm_lattices"]=lbm_lattices)
@@ -821,10 +827,14 @@ function _run_job(id::String)
                            get(ev,"point",nothing) isa AbstractDict
                         record_point!(backend, ev["point"]; publish=true)
                     elseif event == "field_snapshot" && angle isa Real
-                        live_fields["$(backend):$(@sprintf("%.6f",Float64(angle)))"] = Dict{String,Any}(
+                        entry = Dict{String,Any}(
                             "backend"=>backend, "alpha_deg"=>angle, "iteration"=>get(ev,"iteration",nothing),
+                            "saved_at"=>string(now(UTC))*"Z",
                             "artifact"=>_asset_urls(ev["artifact"],id,outdir))
+                        live_fields["$(backend):$(@sprintf("%.6f",Float64(angle)))"] = entry
+                        push!(saved_snapshots,entry)
                         publish_results!()
+                        _persist_job(id)
                         return nothing          # the job message and progress stay those of the iterations
                     elseif event == "lbm_lattice" && angle isa Real && get(ev,"lbm",nothing) isa AbstractDict
                         lbm_lattices[@sprintf("%.6f",Float64(angle))] = _asset_urls(ev["lbm"],id,outdir)
@@ -919,9 +929,7 @@ function _persist_job(id::String)
         record["request"] = _job_request(get(job,"case",nothing))
         record["saved_at"] = string(now(UTC))*"Z"; record["record_version"] = 1
         for (file, value) in ((JOB_RECORD_FILE, record), (JOB_SUMMARY_FILE, merge(_job_summary(job), Dict("saved_at"=>record["saved_at"]))))
-            tmp = joinpath(dir, file*".tmp")
-            write(tmp, encode(_clean(value), :msgpack))
-            mv(tmp, joinpath(dir, file); force=true)
+            CFDBackend.FullFieldArtifact.FieldSnapshots.atomic_write(joinpath(dir,file),encode(_clean(value),:msgpack);reserve_bytes=0)
         end
     catch err
         @warn "Could not save the job record" id exception=err
@@ -1055,7 +1063,7 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>18,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>19,"protocols"=>["msgpack","bson"],
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),

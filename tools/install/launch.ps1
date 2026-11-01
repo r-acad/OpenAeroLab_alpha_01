@@ -4,6 +4,9 @@ try {
     $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
     . (Join-Path $PSScriptRoot 'bootstrap.ps1')
     $julia = Get-LudwigJulia -Repository $repository
+    $scratch = Join-Path $env:LUDWIG_PRIVATE_ROOT 'TEMP_DELETEABLE\runtime'
+    New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+    $env:TEMP = $scratch; $env:TMP = $scratch; $env:TMPDIR = $scratch
     $project = if ($App -eq 'solver') { Join-Path $repository 'src' } else { Join-Path $repository 'third_party\JXfoil' }
     $entry = switch ($App) { 'workbench' {'apps\ludwig_web\run.jl'} 'airfoil' {'apps\airfoil_web\run.jl'} 'solver' {'src\main.jl'} }
     $logRoot = Join-Path $env:LUDWIG_PRIVATE_ROOT 'TEMP_DELETEABLE\launchers'

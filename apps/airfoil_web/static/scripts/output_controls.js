@@ -11,7 +11,8 @@
   function init() {
     const host = $('output-controls'); if (!host) return;
     endpoint = document.body.dataset.workbench === 'aero' ? '/api/aero/select-folder' : '/api/select-folder';
-    host.innerHTML = `<label class="field"><span>Display results every, iterations</span><input id="display-every" type="number" min="1" max="1000000" step="1" value="100"><small>Controls solver output cadence. Any backend batch alignment is reported with the result.</small></label>
+    host.innerHTML = `<label class="field"><span>Update history every, iterations</span><input id="display-every" type="number" min="1" max="1000000" step="1" value="100"><small>History update cadence. CFD field snapshots have a separate time interval below. LBM outputs use this iteration interval.</small></label>
+      <label class="field" id="snapshot-interval-field"><span>Save field snapshots every, minutes</span><input id="snapshot-interval-minutes" type="number" min="0" max="1440" step="any" value="10" title="Elapsed real time after marching starts, not simulation time. Zero disables periodic snapshots. Final results are always saved."><small>CFD: default 10 minutes of real time. 0 = off. Saved snapshots remain with the study and can be selected in Results → Flow field.</small></label>
       <label class="field"><span>Export profile</span><select id="output-profile"><option value="standard">Standard files</option><option value="all">All available files</option><option value="minimal">Coefficients only</option><option value="custom">Custom selection</option></select></label>
       <div class="output-file-options">${kinds.map(key=>`<label class="output-check"><input id="output-${key}" type="checkbox" ${defaults[key]?'checked':''}><span>${labels[key]}</span></label>`).join('')}</div>
       <p id="output-capability-note" class="hint">Only formats supported by the selected solver are exported. Internal GUI data remains available.</p>
@@ -39,6 +40,9 @@
   }
   function read() {
     const outputs={folder:($('output-folder')?.value||'').trim()};if(document.body.dataset.workbench==='aero')outputs.folder_selected=Boolean(outputs.folder);
+    const raw=$('snapshot-interval-minutes')?.value??'10', interval=Number(raw);
+    if(!String(raw).trim()||!Number.isFinite(interval)||interval<0||interval>1440)throw new Error('Snapshot interval must be between 0 and 1440 minutes; use 0 to disable periodic snapshots.');
+    outputs.snapshot_interval_minutes=interval;
     for(const key of kinds) outputs[key]=Boolean($('output-'+key)?.checked&&!$('output-'+key)?.disabled);
     const report=$('output-report')?.value||'none', charts=$('output-charts')?.value||'none', render=$('output-render')?.value||'none';
     outputs.report=report!=='none'; outputs.report_format='html'; outputs.charts=charts!=='none'; outputs.chart_format=charts==='none'?'png':charts;
@@ -50,6 +54,7 @@
   function restore(saved) {
     if(!$('output-controls'))return;
     const options=saved?.outputs||saved?.output_settings?.outputs||{}, cadence=saved?.display_every??saved?.flow?.display_every;
+    $('snapshot-interval-minutes').value=String(options.snapshot_interval_minutes??10);
     if(cadence!=null)$('display-every').value=String(cadence);
     for(const key of kinds)if(typeof options[key]==='boolean')$('output-'+key).checked=options[key];
     const folder=options.folder||saved?.output_directory||'';
@@ -64,6 +69,9 @@
     if(value)capabilities=value; if(selected)backends=selected;
     if(!capabilities||!backends.length)return;
     const active=backends.map(name=>capabilities[name]).filter(Boolean);if(!active.length)return;
+    const timed=active.some(item=>item.timed_snapshots===true);
+    $('snapshot-interval-field').hidden=!timed;
+    $('snapshot-interval-minutes').disabled=!timed;
     for(const key of [...kinds,'renders_3d']){
       const available=active.some(item=>item[key]!==false),node=key==='renders_3d'?$('output-render'):$('output-'+key);
       if(node){node.disabled=!available;node.title=available?'':'Not available for the selected solver';}

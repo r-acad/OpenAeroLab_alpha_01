@@ -41,6 +41,7 @@ end
 
 function _ch_worker_source_hashes()
     roots=[@__FILE__,joinpath(@__DIR__,"..","backends","cfd_backend.jl"),joinpath(@__DIR__,"..","backends","ch_transonic_backend.jl"),joinpath(@__DIR__,"..","full_field_artifact.jl"),
+        joinpath(@__DIR__,"..","..","..","common","FieldSnapshots.jl"),
         joinpath(@__DIR__,"..","protocol.jl"),joinpath(@__DIR__,"..","diagnostics","convergence.jl"),
         joinpath(@__DIR__,"..","mesh","ch_mesh.jl"),joinpath(@__DIR__,"..","mesh","transonic_mesh.jl"),
         joinpath(SRC,"collision","lattice.jl"),joinpath(SRC,"cmesh","cmesh_gen.jl"),
@@ -165,8 +166,8 @@ function _ch_write_fields(coupled,m,outdir,iteration;prefix="")
             "vorticity"=>"native solver inverse time","nut"=>"native solver kinematic viscosity"))
     mainfile=isempty(prefix) ? "fields_blocks.msgpack" : @sprintf("live_field_%06d.msgpack",iteration)
     fullfile=prefix*"fields_blocks_full.msgpack"
-    write(joinpath(outdir,mainfile),AirfoilWire.encode(merge(common,Dict("blocks"=>blocks,"full_artifact"=>fullfile)),:msgpack))
-    write(joinpath(outdir,fullfile),AirfoilWire.encode(merge(common,Dict("blocks"=>fullblocks)),:msgpack))
+    FullFieldArtifact.FieldSnapshots.atomic_write(joinpath(outdir,fullfile),AirfoilWire.encode(merge(common,Dict("blocks"=>fullblocks)),:msgpack))
+    FullFieldArtifact.FieldSnapshots.atomic_write(joinpath(outdir,mainfile),AirfoilWire.encode(merge(common,Dict("blocks"=>blocks,"full_artifact"=>fullfile)),:msgpack))
     (;meshsha,total,bytes)
 end
 
@@ -250,13 +251,14 @@ function _ch_transonic_worker(cfg_path::AbstractString)
     try
         firstnorms,final_load,final_decision=record!(0);lastnorms=firstnorms
         println("C+H marching on ",settings.gpu ? "GPU" : "CPU",": shared six-equation flux, native conservative SSPRK3, CFL=",settings.cfl,"; each record is flushed live");flush(stdout)
+        snapshots=FullFieldArtifact.FieldSnapshots.Schedule(get(cfg,"snapshot_interval_seconds",600.))
+        println("Field snapshots: every ",snapshots.interval/60," wall-clock minutes (0 = disabled); final fields are saved separately.")
         for n in 1:settings.steps
             isfile(joinpath(outdir,"STOP")) && (status="cooperatively_stopped";break)
             time()-march_started>=settings.wall_seconds && (status="wall_limit";break)
             accepted=L.step!(pilot,settings.cfl;max_pseudo_dt=settings.max_pseudo_dt,clock_margin=.9)
             rejections+=accepted.rejections;clock_min=min(clock_min,accepted.local_dt_min);clock_max=max(clock_max,accepted.local_dt_max)
-            display_every=Int(get(cfg,"display_every",0))
-            if display_every>0 && (n%display_every==0 || n==settings.steps)
+            FullFieldArtifact.FieldSnapshots.save_if_due!(snapshots) do
                 _ch_write_fields(coupled,m,outdir,n;prefix=@sprintf("live_%06d_",n))
                 println("FIELD_SNAPSHOT,",@sprintf("live_field_%06d.msgpack",n),",",n);flush(stdout)
             end

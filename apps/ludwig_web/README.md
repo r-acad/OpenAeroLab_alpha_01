@@ -10,7 +10,7 @@ Airfoil Lab also keeps its standalone launcher in `../airfoil_web/`.
 The launcher and Aero Lab API live here; Airfoil Lab is included from its own
 app source and served at `/airfoil-lab`. Its existing `/api/*` and `/static/*`
 URLs remain available. Aero Lab uses `/api/aero/*`, with runs and uploads in
-the sibling private `02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE` directory.
+the sibling private `02_PRIVATE_PROJECT_DEVELOPMENT/results/aero_lab` directory.
 The server binds only to loopback.
 
 Project / Model / Domain / Mesh / Analysis / Results / Display menus use the
@@ -298,11 +298,11 @@ use the main LBM solver for model offsets.
 The GPU run uses the same private shared lock as Airfoil Lab. If another run
 holds it, Aero Lab shows the owner, allows cancellation, and reports a timeout
 after three minutes. Uploads, initial mesh builds and runtime metadata use
-`02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE/aero_lab`. Accepted runs retain
+`02_PRIVATE_PROJECT_DEVELOPMENT/results/aero_lab`. Accepted runs retain
 their geometry, mesh and complete results in the selected persistent output
-folder. Open its study snapshot to restore the case even if disposable runtime
-metadata has been removed. Keep an active case's runtime and output folders
-until the job has stopped.
+folder. Open its study snapshot to restore the case. These records are durable;
+do not delete them when clearing caches. Only disposable previews, staging files
+and launcher logs belong in TEMP_DELETEABLE.
 
 The Aero Lab browser viewer uses the bundled Babylon.js core from Airfoil Lab
 and the matching Babylon loaders in `static/vendor/` for STL, OBJ, and GLB.

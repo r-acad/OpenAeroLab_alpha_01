@@ -38,10 +38,32 @@ See [setup options, storage and troubleshooting](tools/install/README.md).
 The launcher normally opens at `http://127.0.0.1:8058/` in your default browser. Open Aero Lab for 3D
 LBM preparation and results, or Airfoil Lab for section analyses. Airfoil Lab
 also has its standalone `apps\airfoil_web\run.cmd` launcher. The workbenches
-keep generated runs, uploaded geometry, and downloaded airfoil coordinates in a sibling
-`02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE` directory. Set
+keep runs, uploaded geometry and result imports in the sibling
+`02_PRIVATE_PROJECT_DEVELOPMENT/results` directory; studies stay in `studies`.
+Disposable previews, downloads, staging files and logs use
+`02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE`. Set
 `LUDWIG_PRIVATE_ROOT` to use another private location. The pressure based and
 LBM modes use the bundled, SHA checked solver sources under `solvers/`.
+
+For compressible CFD and the sharp-mesh pressure solver, **Outputs → Save field
+snapshots every, minutes** controls elapsed real time, independently of iteration
+history updates. The default is 10 minutes; zero disables periodic snapshots.
+The timer starts when marching begins and saves at the next committed step after
+the interval. Final fields are always saved. **Results → Flow field → Saved
+snapshot** opens any saved frame, including after reopening a study. These are
+visualization fields, not restart checkpoints. The low-speed C+H adapter remains
+final-field-only; LBM and species output retain their existing iteration controls.
+Snapshot writes report their elapsed cost in the log, retain all successfully
+saved frames, and refuse a write that would leave less than 1 GiB free.
+
+Never put useful source, validation evidence, references, studies or results in
+`TEMP_DELETEABLE`. Stop the workbenches and Telegram bridge before clearing it.
+The Julia utility `tools/workspace/clean_temp.jl` previews cleanup; `--delete`
+performs it and protects registered worktrees and running services. Run it with
+`julia --project=third_party/JXfoil`. Auxiliary checkouts must be created with
+`tools/workspace/new_aux_worktree.jl` and live inside that same scratch tree.
+Development and maintenance scripts use Julia, with browser JavaScript and native
+installation/launcher scripts as the application-specific exceptions.
 
 Experimental and published reference datasets are stored separately and are
 optional. Matched experimental comparisons and the two cavitation reference

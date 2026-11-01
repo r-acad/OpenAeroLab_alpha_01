@@ -10,7 +10,9 @@ if project=="third_party/JXfoil"
 elseif project=="tools/postprocess"
     using CairoMakie, GeometryBasics, JSON3
     fig=Figure(size=(160,100));ax=Axis(fig[1,1]);lines!(ax,[0,1],[0,1])
-    mktempdir() do dir; save(joinpath(dir,"setup-check.png"),fig);end
+    scratch=joinpath(get(ENV,"LUDWIG_PRIVATE_ROOT",joinpath(@__DIR__,"..","..","..","02_PRIVATE_PROJECT_DEVELOPMENT")),"TEMP_DELETEABLE","setup")
+    mkpath(scratch)
+    mktempdir(scratch) do dir; save(joinpath(dir,"setup-check.png"),fig);end
 elseif project=="solvers/pbcav_s1030/src/pbcav"
     using CUDA, KernelAbstractions, StaticArrays, Adapt, Atomix
     include(joinpath(@__DIR__,"..","..",project,"PBCav.jl"))

@@ -262,11 +262,12 @@ function render_cmesh_span3d(s, mesh, met; title::String="CMESH 3D flow field", 
 end
 
 # ------------------------------------------------------------------ Telegram
-const _TG = normpath(joinpath(@__DIR__, "..", "tg_send.py"))
+const _TG = normpath(joinpath(@__DIR__, "..", "tg_send.jl"))
 function tg_send(png::String, caption::String)
     length(caption) > 1000 && (caption = caption[1:1000])
     try
-        run(`python $_TG $png $caption photo`); true
+        project=joinpath(dirname(dirname(_TG)),"third_party","JXfoil");
+        run(`$(Base.julia_cmd()) --startup-file=no --project=$project $_TG $png $caption photo`); true
     catch e; @warn "tg_send failed" e; false; end
 end
 

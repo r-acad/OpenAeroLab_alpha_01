@@ -1,0 +1,15 @@
+isempty(ARGS)&&error("Usage: new_aux_worktree.jl NAME [REF] [--branch]")
+name=ARGS[1];occursin(r"^[A-Za-z0-9_-]+$",name)||error("Invalid worktree name")
+public=dirname(dirname(@__DIR__))
+private=abspath(get(ENV,"LUDWIG_PRIVATE_ROOT",joinpath(dirname(public),"02_PRIVATE_PROJECT_DEVELOPMENT")))
+parent=joinpath(private,"TEMP_DELETEABLE","worktrees");mkpath(parent)
+islink(parent)&&error("Worktree directory must not be a link")
+realpath(dirname(parent))==realpath(joinpath(private,"TEMP_DELETEABLE"))||error("Worktree parent escapes scratch")
+target=joinpath(parent,name)
+dirname(abspath(target))==abspath(parent)||error("Worktree escapes scratch")
+ispath(target)&&error("Worktree already exists")
+ref=length(ARGS)>=2 && ARGS[2]!="--branch" ? ARGS[2] : "HEAD"
+args=["git","-C",public,"worktree","add"]
+append!(args,"--branch" in ARGS ? ["-b",name] : ["--detach"])
+append!(args,["--",target,ref]);run(Cmd(args))
+println(target)

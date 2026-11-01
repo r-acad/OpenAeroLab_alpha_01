@@ -2,6 +2,8 @@ module FullFieldArtifact
 
 using SHA
 using ..AirfoilWire
+include(joinpath(@__DIR__,"..","..","common","FieldSnapshots.jl"))
+using .FieldSnapshots
 
 const COLUMNS = ("x", "y", "mach", "cp", "pressure", "density", "u", "v",
                  "temperature", "vorticity", "nut")
@@ -55,6 +57,8 @@ function write_full_field(at::Function, path::AbstractString,
     common=Dict{String,Any}("ni"=>Int(ni),"nj"=>Int(nj),
         "cell_order"=>"j-major, i-fastest","mesh_sha256"=>mesh_hash,"iteration"=>Int(iteration))
     total_bytes=0
+    created=String[]
+    try
     payload = if layout.part_count == 1
         arrays=_field_rows(at,Int(ni),1,Int(nj))
         # Keep the historical single-file payload unchanged below the cap.
@@ -74,7 +78,10 @@ function write_full_field(at::Function, path::AbstractString,
             bytes=AirfoilWire.encode(part,:msgpack)
             length(bytes)<=max_bytes || throw(ArgumentError("encoded full field chunk exceeds its size limit"))
             filename=stem*".part"*lpad(string(index),4,'0')*".msgpack"
-            write(joinpath(dirname(path),filename),bytes)
+            partpath=joinpath(dirname(path),filename)
+            existed=isfile(partpath)
+            atomic_write(partpath,bytes)
+            existed || push!(created,partpath)
             total_bytes+=length(bytes)
             push!(parts,Dict("path"=>filename,"j_start"=>j_start,"j_end"=>j_end,"bytes"=>length(bytes)))
         end
@@ -84,10 +91,18 @@ function write_full_field(at::Function, path::AbstractString,
     bytes = AirfoilWire.encode(payload, :msgpack)
     length(bytes) <= max_bytes ||
         throw(ArgumentError("encoded full field exceeds the 64 MiB MessagePack limit"))
-    write(path, bytes)
+    atomic_write(path, bytes)
     Dict{String,Any}("filename"=>basename(path), "cell_count"=>count,
                      "mesh_sha256"=>mesh_hash, "iteration"=>Int(iteration),
                      "bytes"=>total_bytes+length(bytes),"part_count"=>layout.part_count)
+    catch
+        # Unpublished chunks from a failed snapshot have no readers or useful data.
+        for file in created
+            dirname(abspath(file))==dirname(abspath(path)) || continue
+            isfile(file) && rm(file;force=true)
+        end
+        rethrow()
+    end
 end
 
 end # module FullFieldArtifact
