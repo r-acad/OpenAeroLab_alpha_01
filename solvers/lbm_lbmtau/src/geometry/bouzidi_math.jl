@@ -26,14 +26,18 @@ BOUZIDI_MATH.JL - Geometric Intersection Logic
     s = origin - v1
     u = f * dot(s, h)
     
-    if u < 0.0 || u > 1.0
+    # Two-sided Moller-Trumbore: the determinant sign does not cull a face.
+    # Include shared edges/corners within floating-point roundoff so reversing
+    # face winding cannot drop a grazing wall link on one side of an open sheet.
+    barycentric_tolerance = 64 * eps(Float64)
+    if u < -barycentric_tolerance || u > 1.0 + barycentric_tolerance
         return (false, 0.0)
     end
     
     q_vec = cross(s, edge1)
     v = f * dot(dir, q_vec)
     
-    if v < 0.0 || u + v > 1.0
+    if v < -barycentric_tolerance || u + v > 1.0 + barycentric_tolerance
         return (false, 0.0)
     end
     

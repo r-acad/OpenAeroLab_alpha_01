@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -6,17 +6,21 @@
   <meta name="color-scheme" content="light dark">
   <title>Airfoil Lab | Julia analysis</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/styles/app.css">
+  <link rel="stylesheet" href="/static/styles/ergonomics.css">
+  <link rel="stylesheet" href="/static/styles/output_controls.css">
   <script src="/static/vendor/babylon.js" defer></script>
-  <script src="/static/babylon_view.js" defer></script>
-  <script src="/static/app.js" defer></script>
-  <script src="/static/lbm.js" defer></script>
-  <script src="/static/campaign.js" defer></script>
+  <script src="/static/scripts/babylon_view.js" defer></script>
+  <script src="/static/scripts/output_controls.js" defer></script>
+  <script src="/static/scripts/app.js" defer></script>
+  <script src="/static/scripts/lbm.js" defer></script>
+  <script src="/static/scripts/campaign.js" defer></script>
 </head>
-<body>
+<body data-workbench="airfoil">
+  <a class="skip-link" href="#results">Skip to results</a>
   <div class="app-shell">
     <header class="masthead">
-      <div class="brand-mark" aria-hidden="true"><span></span></div>
+      <a class="brand-mark" href="/" aria-label="Return to Ludwig workbenches" title="Ludwig workbenches"><span aria-hidden="true"></span></a>
       <div class="brand-copy"><h1>Airfoil Lab</h1><span>Julia section analysis</span></div>
       <div class="header-meta">
         <div id="operation-feedback" class="operation-feedback hidden" role="status" aria-live="polite"><span class="operation-spinner" aria-hidden="true"></span><span id="operation-label">Working…</span><span class="operation-track" aria-hidden="true"></span></div>
@@ -33,6 +37,9 @@
     <div class="workspace">
       <aside class="setup-column panel" aria-label="Analysis setup">
         <div class="setup-title"><span class="eyebrow">Setup</span><strong>Operating point</strong></div>
+        <nav class="setup-nav" aria-label="Jump to setup section">
+          <a href="#airfoil-heading">Airfoil</a><a href="#flow-heading">Flow</a><a href="#solver-heading">Solver</a><a href="#sweep-heading">Sweep</a><a href="/solvers">All solvers &amp; maturity</a>
+        </nav>
         <div class="setup-groups">
           <section class="setup-group" aria-labelledby="airfoil-heading">
             <h2 id="airfoil-heading">Airfoil</h2>
@@ -59,7 +66,9 @@
               <p id="catalog-status" class="hint" role="status">Catalog not loaded yet.</p>
               <div id="airfoil-meta" class="airfoil-meta hidden"><strong id="airfoil-name"></strong><p id="airfoil-description"></p><a id="airfoil-link" target="_blank" rel="noopener noreferrer" class="hidden">View source</a></div>
             </div>
-            <div id="gurney-group" class="gurney-group">
+            <details id="gurney-group" class="gurney-group geometry-options">
+              <summary>Geometry additions <span>Gurney, spoiler, streamline mesh</span></summary>
+              <div class="geometry-options-body">
               <label class="check-line" title="A Gurney flap: a zero-thickness plate perpendicular to the chord at the trailing edge, with sharp corners; in the low-speed CFD a baffle (an interior wall) on the section's own C+H mesh"><input id="gurney-enabled" type="checkbox"><span>Gurney flap</span></label>
               <div id="gurney-controls" class="form-grid hidden">
                 <label class="field"><span>Plate height h/c</span><input id="gurney-height" type="number" min="0.001" max="0.05" step="0.001" value="0.01" title="Plate height h/c, perpendicular to the chord at the TE, zero thickness, sharp (0.001 to 0.05)"></label>
@@ -84,7 +93,8 @@
                 <label class="check-line" title="When JXfoil's viscous solution is refused (not converged, or trailing-edge separation over 0.10 c), use the inviscid path, labelled as a fallback, instead of refusing the point."><input id="streamline-fallback" type="checkbox"><span>Inviscid fallback if viscous is refused</span></label>
               </div>
               <p id="streamline-note" class="hint hidden">Development, not validated.</p>
-            </div>
+              </div>
+            </details>
           </section>
 
           <section class="setup-group" aria-labelledby="flow-heading">
@@ -107,10 +117,11 @@
           <section class="setup-group" aria-labelledby="solver-heading">
             <h2 id="solver-heading">Solver</h2>
             <label class="field"><span>Backend</span>
-              <select id="backend"><option value="jxfoil">JXfoil (Julia clone)</option><option value="xfoil">XFOIL executable</option><option value="transonic">Compressible CFD</option><option value="cavitation">Species / cavitation CFD</option><option value="both">JXfoil + compressible CFD</option><option value="cfd_both">Both CFD backends</option><option value="xfoil_cfd_both">Air comparison: XFOIL + both CFD</option><option value="lowspeed">Low-speed CFD (pressure-based, new)</option><option value="xfoil_lowspeed">XFOIL + low-speed CFD</option><option value="lbm">LBM 3D (LUDWIG)</option></select>
+              <select id="backend"><optgroup label="Single solver"><option value="jxfoil">JXfoil (Julia clone)</option><option value="xfoil">XFOIL executable</option><option value="transonic">Compressible CFD</option><option value="cavitation">Species / cavitation CFD</option><option value="lowspeed">Low-speed CFD (pressure based)</option><option value="lbm">LBM 3D (choose D3Q27 or D3Q39)</option></optgroup><optgroup label="Comparison runs"><option value="both">JXfoil + compressible CFD</option><option value="cfd_both">Compressible + Species CFD</option><option value="xfoil_cfd_both">XFOIL + both CFD backends</option><option value="xfoil_lowspeed">XFOIL + low-speed CFD</option></optgroup><optgroup label="Research and unavailable — see solver guide"><option value="pond" disabled>PonD finite-volume — research</option><option value="barotropic" disabled>Barotropic core — verification</option><option value="free_surface" disabled>Free-surface core — experimental</option><option value="pbcav_cavitation" disabled>PBCav phase change — incomplete</option><option value="tem_legacy" disabled>TEM cavitation step — superseded</option><option value="d3q19" disabled>D3Q19 LBM — retired</option></optgroup></select>
             </label>
             <label class="check-line"><input id="show-reference" type="checkbox" checked><span>Show matching validation reference</span></label>
             <p id="backend-note" class="hint">JXfoil provides coefficients and surface pressure. Flow fields require CFD.</p>
+            <p class="hint">See the <a href="/solvers">complete solver guide</a> for each method, application, maturity, and research paths that are not selectable here.</p>
             <div id="lowspeed-controls" class="hidden">
               <p class="experimental-note">Low-speed CFD is the new incompressible pressure-based solver (version 2, in development, not yet validated): fully turbulent k-omega SST in free air, on the CPU (8 threads) by default or, opt-in, on the GPU. Mach is ignored.</p>
               <div class="form-grid">
@@ -123,17 +134,20 @@
               <p id="lowspeed-note" class="hint">Defaults: Tu 1%, μt/μ 10 (freestream turbulence for a fast steady start). About 15-25 minutes per angle on this machine (alpha 0 about 35; each angle may run up to 60 minutes); the loads settle well before the steady stop.</p>
             </div>
             <div id="lbm-controls" class="hidden">
-              <p class="experimental-note">LBM 3D (LUDWIG) runs the workspace's lattice-Boltzmann solver (D3Q27 cumulant, one level or several with periodic-Y AMR) on the section extruded along the span, with periodic span faces, on the GPU through the shared GPU lock. Development path, not validated for airfoils. Mach is not an input.</p>
+              <p class="experimental-note"><strong>Choose D3Q27 + cumulant or D3Q39 + entropic.</strong> The pinned solver accepts up to 7 periodic-Y AMR levels when the domain, span, and memory permit. D3Q27 uses a fixed low-Mach carrier; D3Q39 uses the Mach input and compressible thermal flow. Both run on the GPU on the section extruded along a periodic span. Higher-level D3Q39 AMR and airfoil predictions are development paths; inspect mesh, interfaces, and convergence. D3Q19 remains retired.</p>
               <div class="form-grid">
+                <label class="field"><span>LBM lattice / collision</span><select id="lbm-lattice"><option value="d3q27">D3Q27 + cumulant</option><option value="d3q39">D3Q39 + entropic</option></select></label>
                 <label class="field"><span>Span / chord</span><input id="lbm-span-ratio" type="number" value="0.25" min="0.05" max="2" step="0.0625" title="The extrusion length in chords; snapped to whole blocks of the coarsest level (8 cells, times 2 per extra level)"></label>
-                <label class="field"><span>Cells per chord</span><input id="lbm-cells" type="number" value="128" min="16" max="512" step="8" title="Lattice resolution: the finest level's cells per chord"></label>
+                <label class="field"><span>Cells per chord</span><input id="lbm-cells" type="number" value="128" min="16" max="1024" step="8" title="Lattice resolution: the finest level's cells per chord"></label>
                 <label class="field"><span>Convective times</span><input id="lbm-ctu" type="number" value="5" min="0.05" max="50" step="0.5" title="Run length in c/U (lattice steps = cells per chord / 0.08 per convective time)"></label>
                 <label class="field"><span>Mid-plane frames</span><input id="lbm-frames" type="number" value="60" min="2" max="400" step="1" title="Mid-span slices written by the solver (the video frames)"></label>
                 <label class="field"><span>Upstream, c</span><input id="lbm-upstream" type="number" value="2" min="0.5" max="10" step="0.5"></label>
                 <label class="field"><span>Downstream, c</span><input id="lbm-downstream" type="number" value="3" min="1" max="20" step="0.5"></label>
                 <label class="field"><span>Above / below, c</span><input id="lbm-height" type="number" value="2" min="0.5" max="10" step="0.5" title="Domain extent above and below the body (slip walls with a freestream sponge)"></label>
                 <label class="field"><span>Plate thickness, cells</span><input id="lbm-plate-cells" type="number" value="2" min="1.5" max="8" step="0.5" title="Gurney and spoiler plate thickness in lattice cells: the immersed boundary needs at least about 1.5-2 cells"></label>
-                <label class="field"><span>Refinement levels</span><select id="lbm-levels" title="Grid levels (periodic-Y AMR): cells per chord is the finest level's; each coarser level halves it. Available when the app's LBM solver snapshot has periodic-Y AMR."><option value="1">1 (uniform)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+                <label class="field"><span>Refinement levels</span><select id="lbm-levels" title="Grid levels (periodic-Y AMR): cells per chord is the finest level's; each coarser level halves it. Available when the app's LBM solver snapshot has periodic-Y AMR."><option value="1">1 (uniform)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option></select></label>
+                <label class="field"><span>Mesh sizing</span><select id="lbm-sizing"><option value="manual">Manual cells per chord</option><option value="vram">Fit a VRAM target</option></select></label>
+                <label class="field"><span>Target available VRAM, %</span><input id="lbm-target-vram" type="number" min="1" max="100" step="1" value="80" disabled title="Percentage of currently free GPU memory"><small id="lbm-vram-target-note">Available VRAM is measured at mesh sizing and checked again before running.</small></label>
                 <label class="field"><span>Top / bottom walls</span><select id="lbm-z-walls" title="The domain's top and bottom faces. Slip: an exact specular reflection (the subgrid models WALE and SVV keep a small non-mirrored ghost, 1 to 3.4e-4 U, so it is nearly, not exactly, a symmetry plane). No-slip: stationary walls; they grow a boundary layer along each wall from the inlet, which may or may not be wanted, depending on what the case represents. Either wall type makes the domain a tunnel, not free air: the lift depends on the domain height (blockage and streamline curvature), more so for small heights."><option value="slip" selected>Slip</option><option value="no_slip" disabled title="needs the solver update (lbm-zwalls)">No-slip (needs the solver update)</option></select></label>
               </div>
               <label class="check-line" id="lbm-level-visc-line" title="Experimental. The solver's legacy rule gives each coarse level 4^(L-l) x the physical viscosity (measured 4.005 x one level up). This option cuts it to the physical value where the stability floor tau >= 0.501 allows: at 128 cells per chord and Re 2e4, 1.3 x and 2.6 x physical on the two coarse levels of three. Its app-length stability screen (24 c/U) did not pass: the growth of the C_L fluctuation amplitude differed from the legacy twin's (1.5 x against 0.96 x); no numerical instability was seen. In that screen the peak velocity on the coarsest level after 8 c/U was 9-20 % above the legacy twin's. Results with it are not validated. Off by default; it has no effect with one level."><input id="lbm-level-visc" type="checkbox" disabled><span>Physical viscosity on coarse levels (experimental)</span></label>
@@ -206,6 +220,8 @@
             </details>
           </section>
 
+          <details id="output-options" class="setup-group output-options"><summary>Outputs and reports</summary><div id="output-controls" class="output-controls"></div></details>
+
           <section class="setup-group" aria-labelledby="sweep-heading">
             <h2 id="sweep-heading">Alpha sweep</h2>
             <label class="switch-line"><span>Compute multiple angles</span><input id="sweep-enabled" type="checkbox" role="switch"></label>
@@ -217,13 +233,16 @@
             <p id="sweep-count" class="hint hidden"></p>
           </section>
 
-          <section class="setup-group" aria-labelledby="recent-heading">
-            <h2 id="recent-heading">Recent results</h2>
-            <label class="field"><span>Saved job</span><select id="recent-select" aria-label="Recent saved results" disabled><option value="">No saved results loaded</option></select></label>
-            <div class="recent-actions"><button id="recent-open" type="button" class="secondary-button" disabled>Open saved result</button><button id="recent-refresh" type="button" class="secondary-button">Refresh list</button></div>
-            <p id="recent-status" class="hint" role="status">The latest 20 jobs saved under runs/ reopen with their fields, Cp, polar and history, also after a server restart.</p>
-          </section>
         </div>
+        <details id="recent-section" class="saved-results">
+          <summary>Saved results</summary>
+          <div class="saved-results-body">
+            <label class="field"><span>Saved job</span><select id="recent-select" aria-label="Recent saved results" disabled><option value="">No saved results loaded</option></select></label>
+            <div class="recent-actions"><button id="recent-open" type="button" class="secondary-button" disabled>Open result</button><button id="recent-refresh" type="button" class="secondary-button">Refresh list</button></div>
+            <p id="recent-status" class="hint" role="status">The latest 20 saved jobs can reopen after a server restart.</p>
+          </div>
+        </details>
+        <details class="saved-results"><summary>Reports and exported files</summary><div id="output-results" class="output-results-body"></div></details>
         <div class="run-panel">
           <button id="run-button" type="button" class="primary-button">Run analysis <span aria-hidden="true">&#8599;</span></button>
           <details id="run-status" class="run-status" aria-live="polite">
@@ -235,7 +254,7 @@
         </div>
       </aside>
 
-      <main class="results-column">
+      <main id="results" class="results-column">
         <div class="results-toolbar">
           <div class="toolbar-title"><h2>Results</h2><label class="check-line coordinate-grid-option" title="Show coordinate grid in geometry, curvature and 2D result charts"><input id="field-grid" type="checkbox" checked><span>Grid</span></label></div>
           <div class="toolbar-selects">

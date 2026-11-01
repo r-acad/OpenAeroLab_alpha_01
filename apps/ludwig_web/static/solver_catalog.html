@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Solver guide | Ludwig Workbench</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/workbench-static/solver_catalog.css">
+</head>
+<body>
+  <a class="skip-link" href="#catalog">Skip to solver guide</a>
+  <header class="topbar">
+    <a class="home-link" href="/">← Workbenches</a>
+    <nav aria-label="Workbench navigation"><a href="/aero-lab">Aero Lab</a><a href="/airfoil-lab">Airfoil Lab</a></nav>
+  </header>
+  <main id="catalog" class="page">
+    <header class="hero">
+      <p class="eyebrow">Open Ludwig · solver guide</p>
+      <h1>Choose a solver with its limits in view</h1>
+      <p>These are the distinct solver paths present in this workspace. A working interface does not establish physical accuracy. The status below describes the current evidence for the stated application, not the amount of code or the number of tests.</p>
+      <div class="legend" aria-label="Maturity key">
+        <span><b class="dot established"></b> Established within a narrow scope</span>
+        <span><b class="dot beta"></b> Working development backend</span>
+        <span><b class="dot research"></b> Research or verification path</span>
+        <span><b class="dot unavailable"></b> Incomplete, superseded, or retired</span>
+      </div>
+      <p class="scope-note">The six choices in Airfoil Lab are XFOIL, JXfoil, pressure-based low-speed CFD, compressible C-mesh CFD, Species cavitation CFD, and LUDWIG LBM. Aero Lab exposes the 3D LBM modes. Entries below that lack an “Open” link are documented here but cannot be selected as a supported workbench run.</p>
+    </header>
+
+    <section aria-labelledby="workbench-title">
+      <div class="section-head"><p class="eyebrow">Selectable backends</p><h2 id="workbench-title">Available in the workbenches</h2></div>
+
+      <details class="solver-card" id="xfoil"><summary><span class="summary-copy"><span class="type">2D airfoil · external</span><strong>XFOIL</strong><span>Panel method with viscous boundary-layer coupling</span></span><span class="badge established">Established reference</span></summary><div class="details-grid">
+        <p><b>Application.</b> Fast 2D airfoil coefficients, pressure distributions, transition estimates, and polars in attached or moderately separated flow. Requires the optional executable.</p>
+        <p><b>Mathematical method.</b> Inviscid potential-flow panels are coupled to integral laminar and turbulent boundary-layer and wake equations, including transition and viscous interaction. It is not a three-dimensional Navier–Stokes simulation.</p>
+        <p><b>Maturity.</b> Established external solver and a useful comparison baseline. Strong separation, dynamic stall, three-dimensional effects, and geometry outside its airfoil model need different evidence.</p>
+        <p><b>Workspace.</b> Airfoil Lab backend <code>xfoil</code>; a local executable is optional and is not the JXfoil source.</p>
+      </div><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></details>
+
+      <details class="solver-card" id="jxfoil"><summary><span class="summary-copy"><span class="type">2D airfoil · Julia</span><strong>JXfoil</strong><span>Panel solve with coupled viscous and wake equations</span></span><span class="badge established">Cross-checked</span></summary><div class="details-grid">
+        <p><b>Application.</b> Quick airfoil coefficients, surface pressure, transition, boundary-layer state, and polar sweeps. It is the in-workspace alternative to XFOIL for the same class of 2D section problems.</p>
+        <p><b>Mathematical method.</b> Node-based linear-vorticity potential-flow panels feed a coupled boundary-layer and wake Newton solve. Displacement thickness changes the inviscid edge flow; skin friction and wake momentum thickness contribute to drag.</p>
+        <p><b>Maturity.</b> The strongest parity evidence among the in-house paths: bundled inviscid and viscous suites report close agreement with XFOIL. Agreement with XFOIL does not validate separated stall or 3D flow against experiments.</p>
+        <p><b>Workspace.</b> <code>third_party/JXfoil/</code>; Airfoil Lab backend <code>jxfoil</code>.</p>
+      </div><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></details>
+
+      <details class="solver-card" id="pbcav-low-speed"><summary><span class="summary-copy"><span class="type">2D airfoil · CPU/GPU</span><strong>Pressure-based low-speed CFD</strong><span>Incompressible finite-volume flow with optional SST turbulence</span></span><span class="badge beta">Working beta</span></summary><div class="details-grid">
+        <p><b>Application.</b> Viscous low-Mach airfoil sections and steady polars where a resolved flow field is needed. The current Airfoil Lab mode uses the low-speed, single-phase part of PBCav.</p>
+        <p><b>Mathematical method.</b> Collocated finite-volume momentum equations, Rhie–Chow face fluxes, pressure correction, and PIMPLE-style coupling enforce incompressible continuity. The working airfoil configuration includes k–ω SST turbulence and a C-mesh.</p>
+        <p><b>Maturity.</b> Working development backend. Saved NACA 0012 cases reached the solver's steady residual stop and have pre-stall comparisons; mesh quality, grid independence, and high-incidence/stall behavior remain under study. A stable lift or drag trace alone is not a convergence certificate.</p>
+        <p><b>Workspace.</b> <code>solvers/pbcav_s1030/</code>; Airfoil Lab backend <code>lowspeed</code>. Its real-water phase-change extension below is incomplete.</p>
+      </div><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></details>
+
+      <details class="solver-card" id="compressible-cmesh"><summary><span class="summary-copy"><span class="type">2D airfoil · CPU/GPU</span><strong>Compressible C-mesh CFD</strong><span>Conservative compressible finite-volume equations</span></span><span class="badge research">Research backend</span></summary><div class="details-grid">
+        <p><b>Application.</b> Compressible airfoil flow, including transonic pressure recovery and shocks, with resolved surface and field outputs.</p>
+        <p><b>Mathematical method.</b> A body-fitted C-mesh carries conservative mass, momentum, and energy updates. The active KernelAbstractions CPU/GPU carrier shares a rotated-face kinetic flux-vector-splitting core with the older CPU implementation; viscous stresses and turbulence models are coupled to it.</p>
+        <p><b>Maturity.</b> Experimental CFD. A saved RAE 2822 Case 9 comparison placed loads and the main pressure-rise bracket near reference data, but its continuity guard reported stalled and neither equation nor grid convergence was established. Inspect residuals, mass balance, and mesh before interpreting a result.</p>
+        <p><b>Workspace.</b> <code>src/compressible/</code> and shared <code>src/cmesh/</code>; Airfoil Lab backend <code>transonic</code>.</p>
+      </div><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></details>
+
+      <details class="solver-card" id="species-cavitation"><summary><span class="summary-copy"><span class="type">2D hydrofoil · CPU/GPU</span><strong>Conservative Species cavitation</strong><span>Mixture flow with transported vapour mass and phase-change source</span></span><span class="badge research">Research · partial validation</span></summary><div class="details-grid">
+        <p><b>Application.</b> Cavitating hydrofoils and water-tunnel cases for research comparisons. The implementation calls its current stepping module “production” to distinguish it from the legacy TEM step; that label does not mean predictive accuracy is established.</p>
+        <p><b>Mathematical method.</b> The C-mesh carrier advances conservative mixture mass and momentum. A separate conservative vapour partial-density equation transports composition; an equation of state and evaporation/condensation source couple phase and pressure. The current path has GPU execution and restart machinery.</p>
+        <p><b>Maturity.</b> Runnable but not validated for general cavitation prediction. In the recorded reference campaign one case partly matched loads and cavity length, while a held-out higher-cavitation case failed cavity length and pressure shape. That campaign was paused.</p>
+        <p><b>Workspace.</b> <code>src/cavitation/cmesh_cav_species.jl</code>, shared <code>src/cmesh/</code>, and <code>tools/cmesh_cav_movie.jl</code>; Airfoil Lab backend <code>cavitation</code>.</p>
+      </div><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></details>
+
+      <details class="solver-card" id="d3q27"><summary><span class="summary-copy"><span class="type">3D geometry · GPU/AMR</span><strong>LUDWIG D3Q27 + cumulant</strong><span>Low-Mach lattice Boltzmann flow</span></span><span class="badge beta">Development</span></summary><div class="details-grid">
+        <p><b>Application.</b> Three-dimensional low-Mach external flow around imported geometry. Aero Lab allows geometry placement, mesh inspection, and adaptive refinement; Airfoil Lab uses a spanwise-periodic extruded section.</p>
+        <p><b>Mathematical method.</b> A 27-velocity lattice Boltzmann population streams and collides using a cumulant operator. Block-structured AMR refines the obstacle and wake; macroscopic density, velocity, and surface outputs are reconstructed from the populations.</p>
+        <p><b>Maturity.</b> Development solver with runnable GPU paths and mesh/diagnostic tools. Airfoil predictions and arbitrary-body force accuracy are not yet validated. Check wall resolution, AMR interfaces, boundary conditions, and convergence for each case.</p>
+        <p><b>Workspace.</b> <code>src/main.jl</code> and <code>src/collision/</code>; Airfoil Lab also uses the pinned <code>solvers/lbm_lbmtau/</code> copy.</p>
+      </div><div class="open-links"><a class="open-link" href="/aero-lab">Open Aero Lab →</a><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></div></details>
+
+      <details class="solver-card" id="d3q39"><summary><span class="summary-copy"><span class="type">3D geometry · GPU/AMR</span><strong>LUDWIG D3Q39 + entropic</strong><span>Compressible thermal lattice Boltzmann flow</span></span><span class="badge research">Development · numerical review</span></summary><div class="details-grid">
+        <p><b>Application.</b> Research on three-dimensional compressible flow. The workbenches allow the lattice to be chosen explicitly; the main solver's automatic regime selection normally uses D3Q39 above Mach 0.6.</p>
+        <p><b>Mathematical method.</b> A 39-velocity lattice Boltzmann population uses an entropic collision operator and a thermal distribution to evolve compressible density, velocity, and thermodynamic pressure. Multiple AMR levels are supported subject to domain and GPU memory checks.</p>
+        <p><b>Maturity.</b> Development only. Short demonstrations and mesh paths exist, but general force and flow-field accuracy are not established. The October 2026 Mach 0.2 cube outputs were explicitly rejected after visible pressure artifacts; those outputs must not be used as validation or steady-state evidence.</p>
+        <p><b>Workspace.</b> <code>src/main.jl</code> and <code>src/collision/kernel_entropic_d3q39.jl</code>; Airfoil Lab also has a pinned LBM snapshot.</p>
+      </div><div class="open-links"><a class="open-link" href="/aero-lab">Open Aero Lab →</a><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></div></details>
+    </section>
+
+    <section aria-labelledby="research-title">
+      <div class="section-head"><p class="eyebrow">Source and test paths</p><h2 id="research-title">Research paths outside the selectable backends</h2><p>These are visible here so their existence is clear. They are not enabled as workbench run options.</p></div>
+
+      <details class="solver-card" id="pond"><summary><span class="summary-copy"><span class="type">2D/3D compressible research</span><strong>PonD finite-volume kinetic solver</strong><span>Conservative moment fluxes; thermal, DUGKS, and AMR experiments</span></span><span class="badge research">Prototype</span></summary><div class="details-grid">
+        <p><b>Application.</b> Compressible flow research on canonical shocks, cylinders, spheres, and airfoils.</p><p><b>Mathematical method.</b> Particles-on-Demand kinetic equilibria supply conservative finite-volume face fluxes. Separate modules explore thermal transport, a DUGKS viscous flux, GPU kernels, and nested or block AMR. A single-level 3D case driver uses immersed-body volume penalization.</p><p><b>Maturity.</b> Numerical unit and canonical-case tests exist. The source describes production-block AMR integration as further work; it is not a validated general body-flow backend.</p><p><b>Workspace.</b> <code>src/collision/pond/</code> and private <code>tools/pond_*.jl</code> experiments.</p>
+      </div></details>
+
+      <details class="solver-card" id="barotropic"><summary><span class="summary-copy"><span class="type">2D periodic reference</span><strong>Native barotropic mixture core</strong><span>Conservative contact and acoustic verification</span></span><span class="badge research">Verification only</span></summary><div class="details-grid">
+        <p><b>Application.</b> Controlled two-phase mixture, contact, and acoustic tests.</p><p><b>Mathematical method.</b> A conservative finite-volume update evolves density, two momentum components, and vapour partial density on a uniform periodic grid. A barotropic equation of state supplies pressure and sound speed at Runge–Kutta stages.</p><p><b>Maturity.</b> Restricted CPU reference with numerical checks. It lacks curved walls, open boundaries, turbulence, and the other pieces of a validated hydrofoil solver.</p><p><b>Workspace.</b> <code>src/barotropic/</code>.</p>
+      </div></details>
+
+      <details class="solver-card" id="free-surface"><summary><span class="summary-copy"><span class="type">Air/water interface research</span><strong>C-mesh free-surface core</strong><span>Three-constituent interface and flux contracts</span></span><span class="badge research">Experimental core</span></summary><div class="details-grid">
+        <p><b>Application.</b> Resolved air/water interfaces, including overturned free surfaces, as a future underwater-flow path.</p><p><b>Mathematical method.</b> Conservative constituent state, pressure-equilibrium closure, and candidate interface flux/projection operators are implemented in isolated modules.</p><p><b>Maturity.</b> Its source explicitly says it is not admitted as an underwater-airfoil backend. Gravity balance, transport, and free-surface benchmarks must pass first.</p><p><b>Workspace.</b> <code>src/cmesh/cmesh_free_surface*.jl</code>.</p>
+      </div></details>
+    </section>
+
+    <section aria-labelledby="unavailable-title">
+      <div class="section-head"><p class="eyebrow">Not runnable as current solvers</p><h2 id="unavailable-title">Incomplete and retired paths</h2></div>
+
+      <details class="solver-card" id="pbcav-cavitation"><summary><span class="summary-copy"><span class="type">Planned real-water model</span><strong>PBCav phase-change extension</strong><span>Pressure-based cavitation architecture, not a completed solver</span></span><span class="badge unavailable">Incomplete</span></summary><div class="details-grid">
+        <p><b>Intended application.</b> Pressure-based real-water cavitation with phase change and turbulence.</p><p><b>Planned method.</b> Extend the working pressure-correction core with liquid/vapour compressibility, a phase predictor, and evaporation/condensation source laws.</p><p><b>Maturity.</b> The present phase-law, source, and phase-predictor files still contain explicit stubs. The working low-speed PBCav backend above is single-phase and does not make this extension available.</p><p><b>Workspace.</b> <code>solvers/pbcav_s1030/src/pbcav/</code>.</p>
+      </div></details>
+
+      <details class="solver-card" id="legacy-tem"><summary><span class="summary-copy"><span class="type">Older cavitation implementation</span><strong>Legacy TEM stepping</strong><span>Composition transport and phase-change approximation</span></span><span class="badge unavailable">Superseded</span></summary><div class="details-grid">
+        <p><b>Former application.</b> Earlier cavitating C-mesh calculations retained for reproducibility.</p><p><b>Mathematical method.</b> A transported composition scalar with an algebraic mixture-pressure projection and segregated phase-change stepping.</p><p><b>Maturity.</b> The source marks <code>tem_step!</code> legacy only; current cavitating runs use the conservative Species step. TEM configuration functions remain live and must not be confused with the old stepping path.</p><p><b>Workspace.</b> <code>src/cavitation/cmesh_cav_tem.jl</code>.</p>
+      </div></details>
+
+      <details class="solver-card" id="d3q19"><summary><span class="summary-copy"><span class="type">Legacy 3D lattice</span><strong>LUDWIG D3Q19</strong><span>Nineteen-velocity low-Mach lattice Boltzmann path</span></span><span class="badge unavailable">Retired</span></summary><div class="details-grid">
+        <p><b>Former application.</b> Lower-cost low-Mach 3D lattice Boltzmann cases.</p><p><b>Mathematical method.</b> Nineteen discrete velocity populations with collision and streaming; legacy kernel and case code remain in the source and archive.</p><p><b>Maturity.</b> Retired from the active regime selector and workbench choices. Revival requires a separate solver review, regression tests, and physical validation before it can be offered as a run option.</p><p><b>Workspace.</b> Legacy D3Q19 files under <code>src/</code> and the private archive.</p>
+      </div></details>
+    </section>
+    <footer><p>Source snapshots and research modules can share numerical components without representing separate qualified products. Always inspect a case's mesh, residuals, physical balances, and comparison data before trusting its outputs.</p><a href="/">← Back to workbenches</a></footer>
+  </main>
+</body>
+</html>

@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "server.jl"))
+include(joinpath(@__DIR__, "src", "server.jl"))
 using .AirfoilWeb
 
 preferred_port = parse(Int, get(ENV, "AIRFOIL_WEB_PORT", "8058"))

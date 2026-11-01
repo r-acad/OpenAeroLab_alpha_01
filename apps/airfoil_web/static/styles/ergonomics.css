@@ -1,0 +1,37 @@
+/* Layout and input affordances kept separate from the plotting stylesheet. */
+.brand-mark[href]{display:block;text-decoration:none}
+.brand-mark[href]:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
+.skip-link{position:absolute;left:12px;top:-48px;z-index:30;padding:9px 13px;border-radius:7px;background:var(--paper);color:var(--teal-dark);box-shadow:var(--shadow)}
+.skip-link:focus{top:8px}
+.workspace{grid-template-columns:minmax(320px,350px) minmax(0,1fr)}
+.setup-title{padding:12px 14px 8px}
+.setup-title strong{font-size:14px}
+.setup-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;padding:6px 12px 9px;border-bottom:1px solid var(--line);background:var(--paper)}
+.setup-nav a{display:block;padding:8px 4px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--ink);font-size:11px;font-weight:700;text-align:center;text-decoration:none}
+.setup-nav a:hover,.setup-nav a:focus-visible{border-color:var(--teal);color:var(--teal-dark);background:var(--paper)}
+.setup-groups{padding:2px 14px 10px;scrollbar-gutter:stable}
+.setup-group{padding:12px 0}
+.setup-group h2{font-size:12px;letter-spacing:.02em;margin-bottom:7px;scroll-margin-top:12px}
+.field{gap:4px;margin-top:7px}
+.field>span{font-size:11px;line-height:1.3}
+.field input,.field select,.transport-choice select{min-height:34px;padding:6px 9px;font-size:12px}
+.hint{font-size:11px;line-height:1.45;margin-top:7px}
+.check-line{font-size:11px;line-height:1.4;margin-top:9px}
+.check-line input,.switch-line input{flex:none}
+.advanced-cfd summary{font-size:11px;padding:4px 0}
+.geometry-options{margin-top:12px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
+.geometry-options>summary{cursor:pointer;padding:9px 11px;color:var(--navy);font-size:12px;font-weight:750}
+.geometry-options>summary span{display:block;margin:3px 0 0 17px;color:var(--muted);font-size:10px;font-weight:500}
+.geometry-options:has(input:checked)>summary::after{content:"Active";float:right;margin-top:-28px;padding:2px 6px;border-radius:5px;background:var(--paper);color:var(--teal-dark);font-size:10px}
+.geometry-options-body{padding:0 11px 11px}
+.saved-results{flex:none;border-top:1px solid var(--line);background:var(--paper)}
+.saved-results>summary{cursor:pointer;padding:10px 14px;color:var(--teal-dark);font-size:12px;font-weight:750}
+.saved-results-body{max-height:min(240px,35dvh);overflow:auto;padding:0 14px 12px}
+.saved-results .recent-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.saved-results .recent-actions button{min-height:31px}
+.run-panel{padding:10px 14px 12px}
+.primary-button{min-height:40px;font-size:13px}
+.field input:focus-visible,.field select:focus-visible,.header-control select:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+@media(max-width:980px){.workspace{grid-template-columns:minmax(285px,310px) minmax(0,1fr)}}
+@media(max-width:680px){.workspace{display:block}.setup-nav{position:sticky;top:0;z-index:6}.setup-groups{scrollbar-gutter:auto}.saved-results-body{max-height:none}}
+@media(max-width:530px){.setup-nav a{padding:8px 3px;font-size:10px}.geometry-options>summary span{font-size:10px}}

@@ -1,4 +1,5 @@
 using Printf
+include(joinpath(@__DIR__,"grid_quantization.jl"))
 
 
 # Note: CS2_PHYSICS and CS4_PHYSICS are defined in dependencies.jl as mutable globals
@@ -81,8 +82,8 @@ function compute_max_levels_for_domain(domain_size::Float64, dx_fine::Float64, b
     # healthy pyramid limit. Users who really need deeper refinement in a tight
     # domain should lower `advanced.high_re.min_coarse_blocks` explicitly, which
     # is the unambiguous opt-in.
-    hard_ratio = domain_size / (dx_fine * block_size)
-    soft_ratio = domain_size / (dx_fine * min_blocks * block_size)
+    hard_ratio = _roundoff_snap_grid_integer(domain_size / (dx_fine * block_size))
+    soft_ratio = _roundoff_snap_grid_integer(domain_size / (dx_fine * min_blocks * block_size))
 
     hard_cap = hard_ratio < 1.0 ? 1 : Int(floor(1 + log2(hard_ratio)))
     soft_cap = soft_ratio < 1.0 ? 1 : Int(floor(1 + log2(soft_ratio)))
@@ -313,9 +314,9 @@ function compute_domain_auto_extents(mesh_min, mesh_max)
 
         # Snap to L1 cell grid, enforce min_coarse_blocks per axis at L1
         min_cells = MIN_COARSE_BLOCKS * bs
-        nx = max(min_cells, Int(ceil(ceil(ext_x / dx_coarse) / bs) * bs))
-        ny = max(min_cells, Int(ceil(ceil(ext_y / dx_coarse) / bs) * bs))
-        nz = max(min_cells, Int(ceil(ceil(ext_z / dx_coarse) / bs) * bs))
+        nx = bs*_stable_grid_block_count(ext_x,dx_coarse,bs;minimum_blocks=MIN_COARSE_BLOCKS)
+        ny = bs*_stable_grid_block_count(ext_y,dx_coarse,bs;minimum_blocks=MIN_COARSE_BLOCKS)
+        nz = bs*_stable_grid_block_count(ext_z,dx_coarse,bs;minimum_blocks=MIN_COARSE_BLOCKS)
 
         domain_x = nx * dx_coarse
         wake_start = chord_up * L_chord + L_stream - 0.1 * L_chord
@@ -528,9 +529,9 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
     dx_coarse = dx_fine * 2^(num_levels - 1)
     dx_levels = [dx_fine * 2^(num_levels - lvl) for lvl in 1:num_levels]
     
-    nx_coarse = max(BLOCK_SIZE_CONFIG, Int(ceil(ceil(domain_x/dx_coarse)/BLOCK_SIZE_CONFIG)*BLOCK_SIZE_CONFIG))
-    ny_coarse = max(BLOCK_SIZE_CONFIG, Int(ceil(ceil(domain_y/dx_coarse)/BLOCK_SIZE_CONFIG)*BLOCK_SIZE_CONFIG))
-    nz_coarse = max(BLOCK_SIZE_CONFIG, Int(ceil(ceil(domain_z/dx_coarse)/BLOCK_SIZE_CONFIG)*BLOCK_SIZE_CONFIG))
+    nx_coarse = BLOCK_SIZE_CONFIG*_stable_grid_block_count(domain_x,dx_coarse,BLOCK_SIZE_CONFIG)
+    ny_coarse = BLOCK_SIZE_CONFIG*_stable_grid_block_count(domain_y,dx_coarse,BLOCK_SIZE_CONFIG)
+    nz_coarse = BLOCK_SIZE_CONFIG*_stable_grid_block_count(domain_z,dx_coarse,BLOCK_SIZE_CONFIG)
     
     domain_x, domain_y, domain_z = nx_coarse*dx_coarse, ny_coarse*dx_coarse, nz_coarse*dx_coarse
     bx_max, by_max, bz_max = nx_coarse÷BLOCK_SIZE_CONFIG, ny_coarse÷BLOCK_SIZE_CONFIG, nz_coarse÷BLOCK_SIZE_CONFIG

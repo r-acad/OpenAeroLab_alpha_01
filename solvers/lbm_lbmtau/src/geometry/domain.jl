@@ -467,6 +467,7 @@ function setup_multilevel_domain(mesh::Geometry.SolverMesh, params)
 
     for lvl in 1:num_levels
         println("\n--- Level $lvl ---")
+        flush(stdout)
 
         scale = 2^(lvl - 1)
         dx = params.dx_coarse / scale
@@ -941,6 +942,7 @@ function setup_multilevel_domain(mesh::Geometry.SolverMesh, params)
         else
             println("  Boundary: Simple bounce-back")
         end
+        flush(stdout)
     end
     
     # ═══════════════════════════════════════════════════════════════════
@@ -1114,6 +1116,7 @@ function setup_multilevel_domain(mesh::Geometry.SolverMesh, params)
                     println("[Mesh] Level $lvl block count unchanged, but coordinates changed; rebuilding stale AMR maps")
                 end
 
+                flush(stdout)
                 println("[Mesh] Rebuilding level $lvl: $(length(old_coords)) → $(length(new_coords)) blocks ($(length(new_coords) - length(old_coords) >= 0 ? "+" : "")$(length(new_coords) - length(old_coords)))")
 
                 scale = 2^(lvl - 1)
@@ -1414,6 +1417,7 @@ function setup_multilevel_domain(runtime::CaseIDContract.RuntimeSelection,
             CaseIDContract.verify_claimed_output(runtime, claimed_output)
             Geometry.write_stl_binary_exclusive(subdivision_output, mesh)
         end
+        flush(stdout)
         push!(meshes, mesh)
         push!(triangle_counts, length(mesh.triangles))
     end
@@ -1436,6 +1440,9 @@ function setup_multilevel_domain(runtime::CaseIDContract.RuntimeSelection,
                                 ground_up_axis=GROUND_UP_AXIS)
     if SYMMETRIC_ANALYSIS && mesh.min_bounds[2] < -1.0e-6
         mesh = Geometry.auto_slice_half_y(mesh)
+        # Enforce the requested final sampling edge after symmetry welding,
+        # including roundoff at nearly coplanar cap faces.
+        Float64(MINIMUM_FACET_SIZE)>0 && (mesh=Geometry.subdivide_mesh(mesh,Float64(MINIMUM_FACET_SIZE)))
     end
 
     validate_half_domain_mesh!(mesh)

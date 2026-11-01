@@ -1358,7 +1358,7 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
                          object_names=object_names)
 
         surf_bin_filename = @sprintf("%s/surface_%06d.lbmp", vtk_dir, export_step)
-        export_surface_pressure_bin(surf_bin_filename, force_data, unrotated_mesh, params;
+        export_surface_pressure_bin(surf_bin_filename, force_data, geometry_mesh, params;
                                     object_names=object_names,
                                     use_domain_offset=false)
 
@@ -1813,10 +1813,10 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
                                      object_names=object_names)
 
                     # â”€â”€ Binary surface pressure export (for web viewer) â”€â”€
-                    # Uses unrotated mesh (STL frame, no domain offset) so that
-                    # pressures and net force vectors share the same coordinate system.
+                    # Per-face fields follow the exact solver mesh, including
+                    # half-domain clipping; the sidecar records local placement.
                     surf_bin_filename = @sprintf("%s/surface_%06d.lbmp", vtk_dir, out_step)
-                    export_surface_pressure_bin(surf_bin_filename, force_data, unrotated_mesh, params;
+                    export_surface_pressure_bin(surf_bin_filename, force_data, geometry_mesh, params;
                                                 object_names=object_names,
                                                 use_domain_offset=false)
 
@@ -2048,7 +2048,7 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
                                  object_names=object_names)
 
                 surf_bin_filename = @sprintf("%s/surface_%06d.lbmp", vtk_dir, final_step)
-                export_surface_pressure_bin(surf_bin_filename, force_data, unrotated_mesh, params;
+                export_surface_pressure_bin(surf_bin_filename, force_data, geometry_mesh, params;
                                             object_names=object_names,
                                             use_domain_offset=false)
             catch e

@@ -41,9 +41,9 @@ include(joinpath(ROOT, "src", "collision", "lattice.jl")); cx, cy, cz, w, _, _ =
 include(joinpath(ROOT, "src", "cmesh", "cmesh_gen.jl"));       using .CMeshGen
 include(joinpath(ROOT, "tools", "cmesh_fixed_outer_mesh.jl")); using .CMeshFixedOuterMesh
 include(joinpath(ROOT, "src", "cmesh", "cmesh_metrics.jl"));   using .CMeshMetrics
-include(joinpath(ROOT, "src", "cmesh", "cmesh_solver_ka.jl")); using .CMeshSolverKA
-include(joinpath(ROOT, "src", "cmesh", "cmesh_cav_tem.jl"));   using .CMeshCavTEM
-include(joinpath(ROOT, "src", "cmesh", "cmesh_cav_species.jl")); using .CMeshCavSpecies
+include(joinpath(ROOT, "src", "compressible", "cmesh_solver_ka.jl")); using .CMeshSolverKA
+include(joinpath(ROOT, "src", "cavitation", "cmesh_cav_tem.jl"));   using .CMeshCavTEM
+include(joinpath(ROOT, "src", "cavitation", "cmesh_cav_species.jl")); using .CMeshCavSpecies
 include(joinpath(ROOT, "tools", "cmesh_species_diagnostics.jl"))
 include(joinpath(ROOT, "tools", "topology_core.jl"))
 include(joinpath(ROOT, "tools", "jet_connectivity_core.jl")); using .JetConnectivityCore

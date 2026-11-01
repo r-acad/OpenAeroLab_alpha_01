@@ -1,4 +1,5 @@
 using Printf
+include(joinpath(@__DIR__,"grid_quantization.jl"))
 
 
 # Note: CS2_PHYSICS and CS4_PHYSICS are defined in dependencies.jl as mutable globals
@@ -81,8 +82,8 @@ function compute_max_levels_for_domain(domain_size::Float64, dx_fine::Float64, b
     # healthy pyramid limit. Users who really need deeper refinement in a tight
     # domain should lower `advanced.high_re.min_coarse_blocks` explicitly, which
     # is the unambiguous opt-in.
-    hard_ratio = domain_size / (dx_fine * block_size)
-    soft_ratio = domain_size / (dx_fine * min_blocks * block_size)
+    hard_ratio = _roundoff_snap_grid_integer(domain_size / (dx_fine * block_size))
+    soft_ratio = _roundoff_snap_grid_integer(domain_size / (dx_fine * min_blocks * block_size))
 
     hard_cap = hard_ratio < 1.0 ? 1 : Int(floor(1 + log2(hard_ratio)))
     soft_cap = soft_ratio < 1.0 ? 1 : Int(floor(1 + log2(soft_ratio)))
@@ -313,9 +314,9 @@ function compute_domain_auto_extents(mesh_min, mesh_max)
 
         # Snap to L1 cell grid, enforce min_coarse_blocks per axis at L1
         min_cells = MIN_COARSE_BLOCKS * bs
-        nx = max(min_cells, Int(ceil(ceil(ext_x / dx_coarse) / bs) * bs))
-        ny = max(min_cells, Int(ceil(ceil(ext_y / dx_coarse) / bs) * bs))
-        nz = max(min_cells, Int(ceil(ceil(ext_z / dx_coarse) / bs) * bs))
+        nx = bs*_stable_grid_block_count(ext_x,dx_coarse,bs;minimum_blocks=MIN_COARSE_BLOCKS)
+        ny = bs*_stable_grid_block_count(ext_y,dx_coarse,bs;minimum_blocks=MIN_COARSE_BLOCKS)
+        nz = bs*_stable_grid_block_count(ext_z,dx_coarse,bs;minimum_blocks=MIN_COARSE_BLOCKS)
 
         domain_x = nx * dx_coarse
         wake_start = chord_up * L_chord + L_stream - 0.1 * L_chord
@@ -423,6 +424,25 @@ function compute_domain_auto_extents(mesh_min, mesh_max)
     return num_levels_try
 end
 
+"Return the mesh offset that places its AABB center at an absolute coordinate inside the resolved domain."
+function object_center_offset_m(mesh_min::Float64, mesh_max::Float64,
+                                domain_size::Float64, target::Float64, key::String)
+    isfinite(target) && isfinite(domain_size) && domain_size > 0 &&
+        isfinite(mesh_min) && isfinite(mesh_max) && mesh_max >= mesh_min ||
+        error("advanced.domain.$key requires finite body bounds, target, and positive domain size")
+    center = (mesh_min + mesh_max) / 2
+    half_extent = (mesh_max - mesh_min) / 2
+    lowest = half_extent
+    highest = domain_size - half_extent
+    tolerance = max(1.0e-10 * domain_size, 1.0e-12)
+    if highest < lowest - tolerance || target < lowest - tolerance || target > highest + tolerance
+        error("advanced.domain.$key=$(target) m does not fit the body inside the resolved domain. " *
+              "Valid AABB-center range is [$(round(lowest, digits=6)), $(round(highest, digits=6))] m " *
+              "for a body extent of $(round(mesh_max - mesh_min, digits=6)) m and domain size $(round(domain_size, digits=6)) m.")
+    end
+    return target - center
+end
+
 function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh_max::Tuple{Float64,Float64,Float64})
     # Optional auto-sizer. When mesh.min_dx is set in YAML, this rewrites
     # the legacy DOMAIN_* / SURFACE_RESOLUTION / NUM_LEVELS_CONFIG globals
@@ -528,9 +548,9 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
     dx_coarse = dx_fine * 2^(num_levels - 1)
     dx_levels = [dx_fine * 2^(num_levels - lvl) for lvl in 1:num_levels]
     
-    nx_coarse = max(BLOCK_SIZE_CONFIG, Int(ceil(ceil(domain_x/dx_coarse)/BLOCK_SIZE_CONFIG)*BLOCK_SIZE_CONFIG))
-    ny_coarse = max(BLOCK_SIZE_CONFIG, Int(ceil(ceil(domain_y/dx_coarse)/BLOCK_SIZE_CONFIG)*BLOCK_SIZE_CONFIG))
-    nz_coarse = max(BLOCK_SIZE_CONFIG, Int(ceil(ceil(domain_z/dx_coarse)/BLOCK_SIZE_CONFIG)*BLOCK_SIZE_CONFIG))
+    nx_coarse = BLOCK_SIZE_CONFIG*_stable_grid_block_count(domain_x,dx_coarse,BLOCK_SIZE_CONFIG)
+    ny_coarse = BLOCK_SIZE_CONFIG*_stable_grid_block_count(domain_y,dx_coarse,BLOCK_SIZE_CONFIG)
+    nz_coarse = BLOCK_SIZE_CONFIG*_stable_grid_block_count(domain_z,dx_coarse,BLOCK_SIZE_CONFIG)
     
     domain_x, domain_y, domain_z = nx_coarse*dx_coarse, ny_coarse*dx_coarse, nz_coarse*dx_coarse
     bx_max, by_max, bz_max = nx_coarse÷BLOCK_SIZE_CONFIG, ny_coarse÷BLOCK_SIZE_CONFIG, nz_coarse÷BLOCK_SIZE_CONFIG
@@ -574,7 +594,11 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
         end
     end
 
-    if DOMAIN_OBJECT_CENTER_X_FRACTION === nothing
+    if DOMAIN_OBJECT_CENTER_X_M !== nothing
+        mesh_x_offset = object_center_offset_m(mesh_min[1], mesh_max[1], domain_x,
+                                               DOMAIN_OBJECT_CENTER_X_M, "object_center_x_m")
+        @printf("[Domain] Streamwise placement: object AABB center x=%.6f m\n", DOMAIN_OBJECT_CENTER_X_M)
+    elseif DOMAIN_OBJECT_CENTER_X_FRACTION === nothing
         mesh_x_offset = ref_length * DOMAIN_UPSTREAM - mesh_min[1]
     else
         target_center_fraction = Float64(DOMAIN_OBJECT_CENTER_X_FRACTION)
@@ -596,13 +620,31 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
                 target_center_fraction, placed_min_x, placed_max_x)
     end
 
-    mesh_y = HALF_Y_DOMAIN ? (-mesh_min[2]) : (domain_y/2 - mesh_center[2])
+    if DOMAIN_OBJECT_CENTER_Y_M !== nothing && SYMMETRIC_ANALYSIS
+        error("advanced.domain.object_center_y_m cannot move a body off the y=0 symmetry plane; omit it")
+    end
+    if DOMAIN_OBJECT_CENTER_Y_M !== nothing && PERIODIC_Y_BODY_SHIFT != 0.0
+        error("advanced.domain.object_center_y_m and periodic_y_body_shift cannot both be set")
+    end
+    mesh_y = DOMAIN_OBJECT_CENTER_Y_M === nothing ?
+             (HALF_Y_DOMAIN ? -mesh_min[2] : domain_y/2 - mesh_center[2]) :
+             object_center_offset_m(mesh_min[2], mesh_max[2], domain_y,
+                                    DOMAIN_OBJECT_CENTER_Y_M, "object_center_y_m")
+    if DOMAIN_OBJECT_CENTER_Y_M !== nothing
+        @printf("[Domain] Transverse placement: object AABB center y=%.6f m%s\n",
+                DOMAIN_OBJECT_CENTER_Y_M,
+                GROUND_ANALYSIS ? @sprintf(" (ground clearance %.6f m)", mesh_min[2] + mesh_y) : "")
+    end
     if PERIODIC_Y_AMR && PERIODIC_Y_BODY_SHIFT != 0.0
         # periodic-Y AMR: optional body placement along the periodic axis
         mesh_y += PERIODIC_Y_BODY_SHIFT
         @printf("[Domain] Periodic-Y AMR: body shifted along Y by %.6g m\n", PERIODIC_Y_BODY_SHIFT)
     end
-    mesh_z = domain_z/2 - mesh_center[3]
+    mesh_z = DOMAIN_OBJECT_CENTER_Z_M === nothing ? domain_z/2 - mesh_center[3] :
+             object_center_offset_m(mesh_min[3], mesh_max[3], domain_z,
+                                    DOMAIN_OBJECT_CENTER_Z_M, "object_center_z_m")
+    DOMAIN_OBJECT_CENTER_Z_M === nothing ||
+        @printf("[Domain] Vertical placement: object AABB center z=%.6f m\n", DOMAIN_OBJECT_CENTER_Z_M)
     mesh_offset = (mesh_x_offset, mesh_y, mesh_z)
     
     length_scale = dx_fine

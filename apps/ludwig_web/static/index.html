@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Ludwig Workbench</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/workbench-static/home.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead"><div class="symbol" aria-hidden="true"><span></span><span></span><span></span></div><div><p class="eyebrow">Open Ludwig</p><h1>Choose a workbench</h1><p class="intro">Build a case, inspect the mesh, run a solver, and examine its flow fields.</p></div></header>
+    <section class="workbenches" aria-label="Workbenches">
+      <a class="card aero" href="/aero-lab"><div class="card-art" aria-hidden="true"><div class="object"></div><div class="plane"></div></div><div class="card-copy"><span class="kind">3D / LBM</span><h2>Aero Lab</h2><p>Place imported geometry in a fluid domain, inspect the AMR mesh and memory estimate, then monitor surface and cut plane fields.</p><span class="open">Open Aero Lab <span aria-hidden="true">↗</span></span></div></a>
+      <a class="card foil" href="/airfoil-lab"><div class="card-art" aria-hidden="true"><svg viewBox="0 0 300 120"><path d="M25 67 C72 38 160 45 274 62 C176 67 80 81 25 67Z"/></svg></div><div class="card-copy"><span class="kind">2D / airfoils</span><h2>Airfoil Lab</h2><p>Create section meshes and compare JXfoil, pressure, compressible, cavitation, and LBM analyses.</p><span class="open">Open Airfoil Lab <span aria-hidden="true">↗</span></span></div></a>
+    </section>
+    <p class="solver-guide-link"><a href="/solvers">Explore all solvers, mathematical methods, applicability, and maturity →</a></p>
+    <footer>Runs and uploaded geometry remain on this computer in the private development directory.</footer>
+  </main>
+</body>
+</html>

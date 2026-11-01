@@ -363,6 +363,11 @@ global DOMAIN_LATERAL = 0.75
 global DOMAIN_HEIGHT = 0.75
 global DOMAIN_SPAN_OVERRIDE = -1.0
 global DOMAIN_OBJECT_CENTER_X_FRACTION = nothing
+# Optional absolute placement of the transformed/scaled body AABB center in
+# resolved-domain metres. Nothing preserves each axis's existing placement.
+global DOMAIN_OBJECT_CENTER_X_M = nothing
+global DOMAIN_OBJECT_CENTER_Y_M = nothing
+global DOMAIN_OBJECT_CENTER_Z_M = nothing
 global SPONGE_THICKNESS = 0.10f0
 global SPONGE_PROFILE = :cosine      # :cosine (raised cosine) or :tanh (Palabos-style)
 global SPONGE_TANH_SIGMA = 0.18f0    # Normalized width of tanh transition (fraction of thickness)
@@ -1103,6 +1108,18 @@ function parse_ground_up_axis(raw_value)
     axis = lowercase(strip(string(raw_value)))
     axis in ("x", "y", "z") || error("Invalid basic.ground_up_axis=$(repr(raw_value)). Valid values: \"x\", \"y\", or \"z\".")
     return Symbol(axis)
+end
+
+function parse_optional_object_center_m(config, axis::String)
+    key = "object_center_$(axis)_m"
+    config_has_path(config, "advanced", "domain", key) || return nothing
+    raw = safe_get(config, "advanced", "domain", key)
+    raw === nothing && return nothing
+    raw isa Real && !(raw isa Bool) ||
+        error("advanced.domain.$key must be a finite number of metres")
+    value = Float64(raw)
+    isfinite(value) || error("advanced.domain.$key must be a finite number of metres")
+    return value
 end
 
 function load_case_configuration(runtime::CaseIDContract.RuntimeSelection;
@@ -1927,6 +1944,13 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     else
         global DOMAIN_OBJECT_CENTER_X_FRACTION = nothing
     end
+    global DOMAIN_OBJECT_CENTER_X_M = parse_optional_object_center_m(CFG, "x")
+    global DOMAIN_OBJECT_CENTER_Y_M = parse_optional_object_center_m(CFG, "y")
+    global DOMAIN_OBJECT_CENTER_Z_M = parse_optional_object_center_m(CFG, "z")
+    DOMAIN_OBJECT_CENTER_X_M !== nothing && DOMAIN_OBJECT_CENTER_X_FRACTION !== nothing &&
+        error("advanced.domain.object_center_x_m and object_center_x_fraction cannot both be set")
+    DOMAIN_OBJECT_CENTER_Y_M !== nothing && SYMMETRIC_ANALYSIS &&
+        error("advanced.domain.object_center_y_m cannot move a body off the y=0 symmetry plane; omit it")
     # Sponge defaults tuned for multi-level AMR:
     #  - tanh with σ=0.25 is smoother at both edges than a half-cosine and
     #    avoids the hard color step that shows up at the outlet in density

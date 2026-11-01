@@ -10,6 +10,9 @@ using CUDA
 using Adapt
 using KernelAbstractions
 
+include("triangle_subdivision.jl")
+using .SurfaceSubdivision
+
 export load_mesh, load_mesh_bytes, compute_mesh_bounds, GPUMesh, upload_mesh_to_gpu
 export SolverMesh, subdivide_mesh, write_stl_binary, write_stl_binary_exclusive,
        rotate_mesh, build_rotation_matrix, auto_slice_half_y
@@ -185,163 +188,63 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-    subdivide_triangle(tri, min_size) -> Vector of triangles
+    subdivide_triangle(tri, max_edge) -> Vector of triangles
 
-Iteratively subdivide a triangle by bisecting the longest edge until every
-edge is ≤ `min_size`.  Each bisection splits the longest edge at its midpoint,
-connecting the midpoint to the opposite vertex to produce 2 child triangles.
-This guarantees the longest edge halves each level, so it converges in
-O(log₂(L/min_size)) levels with O(2^levels) output triangles.
-
-Uses an explicit worklist to avoid stack overflow.
+Bisect the longest edge until no edge exceeds `max_edge`. Child winding and
+planar geometry are preserved. The bounded visitor prevents a single enormous
+facet from allocating an unbounded temporary child array.
 """
-function subdivide_triangle(tri::Tuple{Tuple{Float64,Float64,Float64},
-                                       Tuple{Float64,Float64,Float64},
-                                       Tuple{Float64,Float64,Float64}},
-                            min_size::Float64)
-    T = typeof(tri)
-    result = T[]
-    worklist = T[tri]
-
-    while !isempty(worklist)
-        t = pop!(worklist)
-
-        v1 = SVector(t[1])
-        v2 = SVector(t[2])
-        v3 = SVector(t[3])
-
-        e1 = norm(v2 - v1)   # edge v1-v2
-        e2 = norm(v3 - v2)   # edge v2-v3
-        e3 = norm(v1 - v3)   # edge v3-v1
-
-        longest = max(e1, e2, e3)
-
-        if longest <= min_size
-            push!(result, t)
-        else
-            # Bisect the longest edge at its midpoint
-            if e1 >= e2 && e1 >= e3
-                # Longest edge is v1-v2 → midpoint m, opposite vertex v3
-                m = Tuple((v1 + v2) / 2.0)
-                push!(worklist, (t[1], m,    t[3]))   # (v1, m, v3)
-                push!(worklist, (m,    t[2], t[3]))   # (m, v2, v3)
-            elseif e2 >= e1 && e2 >= e3
-                # Longest edge is v2-v3 → midpoint m, opposite vertex v1
-                m = Tuple((v2 + v3) / 2.0)
-                push!(worklist, (t[2], m,    t[1]))   # (v2, m, v1)
-                push!(worklist, (m,    t[3], t[1]))   # (m, v3, v1)
-            else
-                # Longest edge is v3-v1 → midpoint m, opposite vertex v2
-                m = Tuple((v3 + v1) / 2.0)
-                push!(worklist, (t[3], m,    t[2]))   # (v3, m, v2)
-                push!(worklist, (m,    t[1], t[2]))   # (m, v1, v2)
-            end
-        end
-    end
-
-    return result
+function subdivide_triangle(tri::NTuple{3,NTuple{3,Float64}}, max_edge::Float64)
+    children=typeof(tri)[]
+    count=visit_subtriangles(t -> push!(children,t),tri,max_edge;limit=50_000_000)
+    count <= 50_000_000 || throw(ArgumentError("Surface subdivision exceeds 50 million triangles; increase the maximum triangle edge length"))
+    children
 end
 
 """
-    subdivide_mesh(mesh, min_size) -> SolverMesh
+    subdivide_mesh(mesh, max_edge) -> SolverMesh
 
-Subdivide every triangle in `mesh` whose longest edge exceeds `min_size`
-using longest-edge bisection.
-Returns a new SolverMesh with inherited parent normals and recomputed areas/centers.
+Refine the actual geometry used by wall links and per-face force/pressure
+sampling. Geometry, winding and parent normal are preserved; child areas and
+sampling centers are recomputed. Count first, then allocate the exact bounded
+output instead of using a global edge estimate that undercounts large facets.
 """
-function subdivide_mesh(mesh::SolverMesh, min_size::Float64)
-    if min_size <= 0.0
-        return mesh
-    end
-
-    n_orig = length(mesh.triangles)
-
-    # Estimate upper bound on output triangles
-    max_edge = 0.0
-    for tri in mesh.triangles
-        v1 = SVector(tri[1]); v2 = SVector(tri[2]); v3 = SVector(tri[3])
-        max_edge = max(max_edge, norm(v2-v1), norm(v3-v2), norm(v1-v3))
-    end
-    max_levels = max_edge > min_size ? ceil(Int, log2(max_edge / min_size)) : 0
-    est_factor = 2^max_levels
-    est_total  = n_orig * est_factor
-
-    @printf("[Geometry] Subdividing %d triangles (min facet size: %.4f m)\n", n_orig, min_size)
-    @printf("[Geometry]   Largest edge: %.4f m → up to %d bisection levels\n", max_edge, max_levels)
-    @printf("[Geometry]   Estimated output: ~%d triangles (upper bound)\n", est_total)
-
-    MAX_TRIANGLES = 50_000_000   # 50M safety cap
-    if est_total > MAX_TRIANGLES
-        @printf("[Geometry] ⚠ Estimated triangle count (%d) exceeds safety cap (%d).\n", est_total, MAX_TRIANGLES)
-        @printf("[Geometry]   Consider increasing minimum_facet_size. Proceeding anyway...\n")
-    end
-
-    new_triangles = Vector{eltype(mesh.triangles)}()
-    new_normals   = Vector{SVector{3, Float64}}()
-    sizehint!(new_triangles, min(est_total, MAX_TRIANGLES))
-    sizehint!(new_normals,   min(est_total, MAX_TRIANGLES))
-
-    for (i, tri) in enumerate(mesh.triangles)
-        parent_normal = mesh.normals[i]
-        children = subdivide_triangle(tri, min_size)
-        append!(new_triangles, children)
-
-        # All children inherit the parent's normal — no recomputation from cross product
-        for _ in 1:length(children)
-            push!(new_normals, parent_normal)
+function subdivide_mesh(mesh::SolverMesh, max_edge::Float64)
+    isfinite(max_edge) || throw(ArgumentError("Maximum triangle edge must be finite"))
+    max_edge <= 0 && return mesh
+    max_triangles=50_000_000
+    n_orig=length(mesh.triangles)
+    n_new=subdivision_count(mesh.triangles,max_edge;limit=max_triangles)
+    n_new <= max_triangles || throw(ArgumentError(
+        "Surface subdivision exceeds $max_triangles triangles; increase the maximum triangle edge length"))
+    n_new==n_orig && return mesh
+    @printf("[Geometry] Surface subdivision: %d -> %d triangles; maximum edge %.6f m\n", n_orig,n_new,max_edge)
+    flush(stdout)
+    new_triangles=Vector{eltype(mesh.triangles)}(undef,n_new)
+    new_normals=Vector{SVector{3,Float64}}(undef,n_new)
+    cursor=0
+    for (i,tri) in enumerate(mesh.triangles)
+        normal=mesh.normals[i]
+        emitted=visit_subtriangles(tri,max_edge;limit=n_new-cursor) do child
+            cursor+=1
+            new_triangles[cursor]=child
+            new_normals[cursor]=normal
         end
-
-        if length(new_triangles) > MAX_TRIANGLES
-            error("[Geometry] Subdivision exceeded $(MAX_TRIANGLES) triangles. " *
-                  "Increase minimum_facet_size or reduce mesh complexity.")
-        end
+        emitted <= n_new || error("Surface subdivision count changed unexpectedly")
     end
-
-    # Recompute areas and centers (these are geometry-dependent, not orientation-dependent)
-    n_new = length(new_triangles)
-    new_areas   = Vector{Float64}(undef, n_new)
-    new_centers = Vector{SVector{3, Float64}}(undef, n_new)
+    cursor==n_new || error("Surface subdivision count changed unexpectedly")
+    new_areas=Vector{Float64}(undef,n_new)
+    new_centers=Vector{SVector{3,Float64}}(undef,n_new)
     @threads for i in 1:n_new
-        v1 = SVector(new_triangles[i][1])
-        v2 = SVector(new_triangles[i][2])
-        v3 = SVector(new_triangles[i][3])
-        new_areas[i]   = 0.5 * norm(cross(v2 - v1, v3 - v1))
-        new_centers[i] = (v1 + v2 + v3) / 3.0
+        a,b,c=SVector.(new_triangles[i])
+        new_areas[i]=0.5*norm(cross(b-a,c-a))
+        new_centers[i]=(a+b+c)/3
     end
-
-    # Recompute bounds from the new triangle set
-    min_x, min_y, min_z =  Inf,  Inf,  Inf
-    max_x, max_y, max_z = -Inf, -Inf, -Inf
-    for tri in new_triangles
-        for p in tri
-            min_x = min(min_x, p[1]); max_x = max(max_x, p[1])
-            min_y = min(min_y, p[2]); max_y = max(max_y, p[2])
-            min_z = min(min_z, p[3]); max_z = max(max_z, p[3])
-        end
-    end
-
-    @printf("[Geometry] Subdivision complete: %d → %d triangles (%.1fx)\n",
-            n_orig, length(new_triangles), length(new_triangles)/n_orig)
-
-    return SolverMesh(new_triangles,
-                      (min_x, min_y, min_z),
-                      (max_x, max_y, max_z),
-                      new_normals, new_areas, new_centers)
+    println("[Geometry] Surface sampling geometry ready: $n_new triangles")
+    flush(stdout)
+    SolverMesh(new_triangles,mesh.min_bounds,mesh.max_bounds,new_normals,new_areas,new_centers)
 end
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Mesh rotation (alpha around Y, then beta around Z)
-# ──────────────────────────────────────────────────────────────────────────────
-
-"""
-    build_rotation_matrix(alpha_deg, beta_deg; ground_mode=false, ground_up_axis=:z) -> SMatrix{3,3,Float64}
-
-Build the rigid-body rotation used by the solver geometry pipeline.
-
-- Default mode: apply `alpha_deg` around Y, then `beta_deg` around Z.
-- `ground_mode=true`: first align the configured STL up-axis with the solver
-  y-axis, then apply the user alpha/beta rotations in solver coordinates.
-"""
 function build_rotation_matrix(alpha_deg::Float64, beta_deg::Float64; ground_mode::Bool=false,
                                ground_up_axis::Symbol=:z)
     alpha = deg2rad(alpha_deg)
@@ -451,6 +354,7 @@ function rotate_mesh(mesh::SolverMesh, alpha_deg::Float64, beta_deg::Float64;
     end
     @printf("[Geometry] New bounds: [%.3f, %.3f] x [%.3f, %.3f] x [%.3f, %.3f]\n",
             min_x, max_x, min_y, max_y, min_z, max_z)
+    flush(stdout)
 
     return SolverMesh(new_tris,
                       (min_x, min_y, min_z),
@@ -471,10 +375,12 @@ function auto_slice_half_y(mesh::SolverMesh)
     y_mid = (mesh.min_bounds[2] + mesh.max_bounds[2]) / 2.0
     tol_y = max(1.0e-10, (mesh.max_bounds[2] - mesh.min_bounds[2]) * 1.0e-9)
 
-    @inline shift_pt(p) = (p[1], p[2] - y_mid, p[3])
+    # Classification admits a small roundoff band. Weld those vertices to the
+    # actual plane and never extrapolate a near-coplanar edge outside its parent.
+    @inline shift_pt(p) = (p[1], abs(p[2]-y_mid)<=tol_y ? 0.0 : p[2]-y_mid, p[3])
     @inline interp_to_plane(A, B) = begin
         # Linear interpolation to y = y_mid; inputs guaranteed to straddle
-        t = (y_mid - A[2]) / (B[2] - A[2])
+        t = clamp((y_mid - A[2]) / (B[2] - A[2]),0.0,1.0)
         (A[1] + t * (B[1] - A[1]), y_mid, A[3] + t * (B[3] - A[3]))
     end
 
@@ -580,6 +486,7 @@ function auto_slice_half_y(mesh::SolverMesh)
             y_mid, n_kept, n_clipped, n_dropped, length(new_tris))
     @printf("[Geometry] Sliced bounds: [%.3f, %.3f] x [%.3f, %.3f] x [%.3f, %.3f]\n",
             min_x, max_x, min_y, max_y, min_z, max_z)
+    flush(stdout)
 
     return SolverMesh(new_tris,
                       (min_x, min_y, min_z),
@@ -747,6 +654,7 @@ function load_mesh_bytes(bytes::AbstractVector{UInt8};
     println("[Geometry] Loaded $(length(triangles)) triangles.")
     println("[Geometry] Bounds: [$(round(min_x,digits=3)), $(round(max_x,digits=3))] x [$(round(min_y,digits=3)), $(round(max_y,digits=3))] x [$(round(min_z,digits=3)), $(round(max_z,digits=3))]")
     @printf("[Geometry] Area-weighted centroid: (%.6f, %.6f, %.6f)\n", centroid...)
+    flush(stdout)
 
     mesh = SolverMesh(triangles, (min_x, min_y, min_z), (max_x, max_y, max_z),
                       normals, areas, centers)

@@ -592,6 +592,30 @@ end
 # Build-only mode
 # ──────────────────────────────────────────────────────────────────────────────
 
+"Publish a complete build summary without exposing a partial TOML document."
+function lbmio_write_build_summary_atomic(path::AbstractString, summary::AbstractDict)
+    summary_target=abspath(String(path))
+    summary_temporary,summary_io=mktemp(dirname(summary_target);cleanup=false)
+    try
+        TOML.print(summary_io,summary;sorted=true)
+        close(summary_io)
+        # rename replaces the destination atomically; mv(force=true) first removes
+        # it on some platforms, leaving status readers a missing-file window.
+        for attempt in 1:6
+            try
+                Base.Filesystem.rename(summary_temporary,summary_target)
+                return summary_target
+            catch error
+                error isa Union{Base.IOError,SystemError} && attempt<6 || rethrow()
+                sleep(.02*attempt) # Windows readers may briefly hold the old file.
+            end
+        end
+    finally
+        isopen(summary_io) && close(summary_io)
+        isfile(summary_temporary) && rm(summary_temporary;force=true)
+    end
+end
+
 """
     lbmio_build_only_case(runtime_selection, output_claim, sim_start_datetime)
 
@@ -668,9 +692,7 @@ function lbmio_build_only_case(runtime_selection, output_claim, sim_start_dateti
         "plane_files" => [replace(relpath(f, output_dir), "\\" => "/") for f in plane_files],
         "geometry_triangles" => length(geometry_mesh.triangles),
     )
-    open(joinpath(output_dir, "build_only_summary.toml"), "w") do io
-        TOML.print(io, summary; sorted=true)
-    end
+    lbmio_write_build_summary_atomic(joinpath(output_dir,"build_only_summary.toml"),summary)
     @printf("[BuildOnly] %d level(s), %d blocks, %d cells, %.1f MB allocated; summary: %s\n",
             length(cpu_grids), total_blocks, total_cells, total_bytes / 1e6,
             joinpath(output_dir, "build_only_summary.toml"))

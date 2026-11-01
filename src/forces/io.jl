@@ -318,12 +318,34 @@ function export_net_triangle_forces_csv(filename::String,
     println("[NetForce] Exported $(n_tri) triangle forces to $(filename)")
 end
 
+function _surface_atomic_write(writer::Function,path::AbstractString)
+    target=abspath(String(path));mkpath(dirname(target))
+    temporary,stream=mktemp(dirname(target);cleanup=false)
+    try
+        writer(stream);close(stream)
+        for attempt in 1:6
+            try
+                Base.Filesystem.rename(temporary,target);return target
+            catch error
+                error isa Union{Base.IOError,SystemError} && attempt<6 || rethrow()
+                sleep(.02*attempt)
+            end
+        end
+    finally
+        isopen(stream) && close(stream)
+        isfile(temporary) && rm(temporary;force=true)
+    end
+end
+
 """
     export_surface_pressure_bin(filename, force_data, mesh, params; object_names=nothing)
 
 Export surface pressure data as a compact binary file for web visualization.
 The file contains the full triangle mesh with per-face pressure and shear magnitude,
 readable by postv8.html (BabylonJS-based pressure viewer).
+The mesh must be the exact solver geometry used by the per-face arrays.
+An adjacent `.lbmp.toml` records the geometry frame, offset and triangle order;
+unmatched geometry/field counts are rejected instead of truncating either.
 
 Binary format (little-endian):
   [Header]
@@ -349,17 +371,28 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
 
     n_tri_mesh = length(mesh.triangles)
     n_tri_force = length(force_data.pressure_map)
-    n_tri = min(n_tri_mesh, n_tri_force)
-    if n_tri != n_tri_mesh || n_tri != n_tri_force
-        @warn "Surface pressure-bin triangle-count mismatch; exporting common prefix" mesh_triangles=n_tri_mesh force_triangles=n_tri_force exported=n_tri
+    n_tri_mesh>0 && n_tri_mesh==n_tri_force ||
+        throw(ArgumentError("Surface geometry has $n_tri_mesh triangles but pressure has $n_tri_force faces; export requires the exact solver geometry, without prefix truncation."))
+    n_tri=n_tri_mesh
+    length(mesh.normals)==n_tri || throw(ArgumentError("Surface normal count does not match the solver geometry."))
+    for values in (force_data.shear_x_map,force_data.shear_y_map,force_data.shear_z_map)
+        length(values)==n_tri || throw(ArgumentError("Surface shear count does not match the solver geometry."))
+    end
+    labels=object_names
+    if labels!==nothing && length(labels)!=n_tri
+        # A single named source keeps the same identity after native half clipping.
+        # Multiple sources require an explicit retained-face label map.
+        !isempty(labels) && all(==(first(labels)),labels) ||
+            throw(ArgumentError("Surface object labels do not match the clipped solver geometry."))
+        labels=fill(first(labels),n_tri)
     end
     ox = use_domain_offset ? Float32(params.mesh_offset[1]) : 0.0f0
     oy = use_domain_offset ? Float32(params.mesh_offset[2]) : 0.0f0
     oz = use_domain_offset ? Float32(params.mesh_offset[3]) : 0.0f0
 
     # Build object name table
-    if object_names !== nothing
-        unique_names = unique(object_names[1:n_tri])
+    if labels !== nothing
+        unique_names = unique(labels)
     else
         unique_names = ["default"]
     end
@@ -367,10 +400,10 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
     name_to_id = Dict(n => Int32(i) for (i, n) in enumerate(unique_names))
 
     # Copy GPU data to CPU
-    p_cpu  = Array(force_data.pressure_map)[1:n_tri]
-    sx_cpu = Array(force_data.shear_x_map)[1:n_tri]
-    sy_cpu = Array(force_data.shear_y_map)[1:n_tri]
-    sz_cpu = Array(force_data.shear_z_map)[1:n_tri]
+    p_cpu  = Array(force_data.pressure_map)
+    sx_cpu = Array(force_data.shear_x_map)
+    sy_cpu = Array(force_data.shear_y_map)
+    sz_cpu = Array(force_data.shear_z_map)
     shear_mag = sqrt.(sx_cpu .^ 2 .+ sy_cpu .^ 2 .+ sz_cpu .^ 2)
 
     # Compute Cp = p_gauge / q_inf
@@ -382,7 +415,7 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
         mkpath(out_dir)
     end
 
-    open(filename, "w") do io
+    _surface_atomic_write(filename) do io
         # Header
         write(io, UInt8.([0x4C, 0x42, 0x4D, 0x50]))  # "LBMP"
         write(io, UInt32(1))                            # version
@@ -430,9 +463,16 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
 
         # Object IDs: n_tri Int32
         for i in 1:n_tri
-            obj_name = object_names !== nothing ? object_names[i] : "default"
+            obj_name = labels !== nothing ? labels[i] : "default"
             write(io, name_to_id[obj_name])
         end
+    end
+
+    metadata=Dict("format"=>"LBMP","format_version"=>1,"triangles"=>n_tri,
+        "geometry_frame"=>use_domain_offset ? "domain" : "solver_local",
+        "triangle_order"=>"solver_geometry","mesh_offset_m"=>Float64.(collect(params.mesh_offset)))
+    _surface_atomic_write(filename*".toml") do io
+        TOML.print(io,metadata;sorted=true)
     end
 
     file_size_mb = filesize(filename) / (1024^2)
