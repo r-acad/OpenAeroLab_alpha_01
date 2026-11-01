@@ -258,6 +258,7 @@ function _same_study_setup(a::AbstractDict,b::AbstractDict)
     all(key -> key=="cuts" ? true : key=="domain" ?
         (_same_study_domain(get(a,key,nothing),get(b,key,nothing)) ||
          _same_study_domain(get(a,"requested_domain",nothing),get(b,key,nothing))) :
+        key=="flow" ? merge(Dict("alpha"=>0.,"beta"=>0.),get(a,key,Dict()))==merge(Dict("alpha"=>0.,"beta"=>0.),get(b,key,Dict())) :
         get(a,key,nothing)==get(b,key,nothing), STUDY_SETUP_KEYS)
 end
 

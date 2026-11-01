@@ -635,7 +635,7 @@ end
 
 @kernel function map_stresses_kernel!(
     p_map, sx_map, sy_map, sz_map,
-    wall_dist_map,                   # Phase 1.7: physical distance from triangle to probe (m)
+    normal_sign_map, wall_dist_map,  # Phase 1.7: physical distance from triangle to probe (m)
     cx_tri, cy_tri, cz_tri,
     nx_tri, ny_tri, nz_tri,
     rho, vel, obstacle, block_ptr,
@@ -651,7 +651,8 @@ end
     temperature_arr,                # Phase 4: temperature field (or dummy = rho when no thermal)
     thermal_coupling::Int32,        # Phase 4: 0=isothermal, 1=coupled (p = ρ·cs²·T)
     pi_neq_arr,                     # Phase A4: Π_neq tensor field (dummy 1x1x1x1x6 when unused)
-    force_method_i::Int32           # 0=prandtl (1D wall-law), 1=stress_tensor (σ·n from Π_neq)
+    force_method_i::Int32,          # 0=prandtl (1D wall-law), 1=stress_tensor (σ·n from Π_neq)
+    recover_normal::Bool           # closed surfaces only; thin surfaces retain distinct sides
 )
     i = @index(Global)
 
@@ -773,12 +774,30 @@ end
             end
         end
 
-        # Finalize Shepard-averaged pressure inputs. If enough probes accumulated,
-        # use the averaged ρ/T for the pressure EOS (smooth surface field). Otherwise
-        # fall through to the single best_rho/best_T values (staircased but at least
-        # defined).
-        pressure_rho = p_w_accum > 0.5f0 ? p_rho_accum / p_w_accum : best_rho
-        pressure_T   = p_w_accum > 0.5f0 ? p_T_accum   / p_w_accum : best_T
+        # Open GLB components can have reversed winding. Recover a nearby fluid
+        # sample on the opposite side only when the supplied side has no sample.
+        # Keep the sign explicitly so force traction and exported normals agree.
+        normal_sign = 1.0f0
+        if !found_fluid && recover_normal
+            for probe_i in Int32(1):pressure_probe_max
+                d_cells = Float32(probe_i) + 0.5f0
+                px = tx - n_x*d_cells*dx; py = ty - n_y*d_cells*dx; pz = tz - n_z*d_cells*dx
+                r, ux, uy, uz, ok, w_q = trilinear_sample_flow(rho,vel,obstacle,block_ptr,px,py,pz,dx,block_size,dim_x,dim_y,dim_z)
+                if ok && w_q >= min_quality
+                    temperature = 1.0f0
+                    if thermal_coupling == Int32(1)
+                        tr, _, _, _, tok, _ = trilinear_sample_flow(temperature_arr,vel,obstacle,block_ptr,px,py,pz,dx,block_size,dim_x,dim_y,dim_z)
+                        if tok; temperature=tr; end
+                    end
+                    p_rho_accum+=w_q*r; p_T_accum+=w_q*temperature; p_w_accum+=w_q
+                    if !found_fluid
+                        best_rho=r; best_ux=ux; best_uy=uy; best_uz=uz; best_T=temperature
+                        best_wall_dist=d_cells; best_quality=w_q; found_fluid=true; normal_sign=-1.0f0
+                    end
+                end
+            end
+            if normal_sign < 0.0f0; n_x=-n_x; n_y=-n_y; n_z=-n_z; end
+        end
 
         if !found_fluid
             gx_f = tx / dx
@@ -855,7 +874,16 @@ end
             end
         end
 
-        p_val = 0.0f0
+        # Finalize Shepard-averaged pressure inputs. If enough probes accumulated,
+        # use the averaged ρ/T for the pressure EOS (smooth surface field). Otherwise
+        # fall through to the single best_rho/best_T values (staircased but at least
+        # defined).
+        pressure_rho = p_w_accum > 0.5f0 ? p_rho_accum / p_w_accum : best_rho
+        pressure_T   = p_w_accum > 0.5f0 ? p_T_accum   / p_w_accum : best_T
+
+        normal_sign_map[i] = normal_sign
+
+        p_val = Float32(NaN)
         tau_x = 0.0f0
         tau_y = 0.0f0
         tau_z = 0.0f0
@@ -1201,13 +1229,13 @@ end
     net_Fx, net_Fy, net_Fz,
     p_map_plus, sx_map_plus, sy_map_plus, sz_map_plus,
     p_map_minus, sx_map_minus, sy_map_minus, sz_map_minus,
-    nx_tri, ny_tri, nz_tri,
+    nx_tri, ny_tri, nz_tri, normal_sign_map,
     areas
 )
     i = @index(Global)
 
     @inbounds begin
-        p_net = p_map_plus[i] - p_map_minus[i]
+        p_net = p_map_plus[i] * normal_sign_map[i] - p_map_minus[i]
 
         sx_net = sx_map_plus[i] - sx_map_minus[i]
         sy_net = sy_map_plus[i] - sy_map_minus[i]
@@ -1238,7 +1266,7 @@ end
     Fx_p_acc, Fy_p_acc, Fz_p_acc,
     Fx_v_acc, Fy_v_acc, Fz_v_acc,
     Mx_acc, My_acc, Mz_acc,
-    p_map, sx_map, sy_map, sz_map,
+    p_map, sx_map, sy_map, sz_map, normal_sign_map,
     cx_tri, cy_tri, cz_tri,
     nx_tri, ny_tri, nz_tri,
     areas,
@@ -1255,9 +1283,10 @@ end
 
         # Skip triangles with Inf/NaN pressure (prevents poisoning the sum)
         if isfinite(p) && isfinite(tau_x) && isfinite(tau_y) && isfinite(tau_z)
-            nx = nx_tri[i]
-            ny = ny_tri[i]
-            nz = nz_tri[i]
+            sign = normal_sign_map[i]
+            nx = nx_tri[i]*sign
+            ny = ny_tri[i]*sign
+            nz = nz_tri[i]*sign
             A = areas[i]
 
             cx = cx_tri[i] + offset_x
@@ -1304,6 +1333,7 @@ end
 function map_surface_stresses!(force_data::ForceData, level, gpu_mesh,
                                backend, params;
                                search_radius::Int=8,
+                               recover_normal::Bool=true,
                                cx_gpu=nothing, cy_gpu=nothing, cz_gpu=nothing, w_gpu=nothing)
 
     mesh_offset = params.mesh_offset
@@ -1346,7 +1376,7 @@ function map_surface_stresses!(force_data::ForceData, level, gpu_mesh,
     kernel!(
         force_data.pressure_map,
         force_data.shear_x_map, force_data.shear_y_map, force_data.shear_z_map,
-        force_data.wall_dist_map,
+        force_data.normal_sign_map, force_data.wall_dist_map,
         gpu_mesh.centers_x, gpu_mesh.centers_y, gpu_mesh.centers_z,
         gpu_mesh.normals_x, gpu_mesh.normals_y, gpu_mesh.normals_z,
         level.rho, level.vel, level.obstacle, level.block_pointer,
@@ -1363,6 +1393,7 @@ function map_surface_stresses!(force_data::ForceData, level, gpu_mesh,
         thermal_flag,
         pi_neq_arr,
         force_method_i,
+        recover_normal,
         ndrange=(gpu_mesh.n_triangles,)
     )
 
@@ -1442,7 +1473,7 @@ function integrate_surface_forces!(force_data::ForceData, gpu_mesh, backend, par
         Fx_v_acc, Fy_v_acc, Fz_v_acc,
         Mx_acc, My_acc, Mz_acc,
         force_data.pressure_map,
-        force_data.shear_x_map, force_data.shear_y_map, force_data.shear_z_map,
+        force_data.shear_x_map, force_data.shear_y_map, force_data.shear_z_map, force_data.normal_sign_map,
         gpu_mesh.centers_x, gpu_mesh.centers_y, gpu_mesh.centers_z,
         gpu_mesh.normals_x, gpu_mesh.normals_y, gpu_mesh.normals_z,
         gpu_mesh.areas,
@@ -1610,7 +1641,7 @@ function compute_net_triangle_forces!(force_data::ForceData, gpu_mesh, backend)
         force_data.shear_x_map, force_data.shear_y_map, force_data.shear_z_map,
         force_data.pressure_map_minus,
         force_data.shear_x_map_minus, force_data.shear_y_map_minus, force_data.shear_z_map_minus,
-        gpu_mesh.normals_x, gpu_mesh.normals_y, gpu_mesh.normals_z,
+        gpu_mesh.normals_x, gpu_mesh.normals_y, gpu_mesh.normals_z, force_data.normal_sign_map,
         gpu_mesh.areas,
         ndrange=(n_tri,)
     )
@@ -1626,7 +1657,7 @@ function compute_net_aerodynamics!(force_data::ForceData, level, gpu_mesh, backe
     # PLUS SIDE: reuse the proven one-sided mapping kernel (map_stresses_kernel!)
     # This populates force_data.pressure_map, shear_x/y/z_map with robust plus-side values
     map_surface_stresses!(force_data, level, gpu_mesh, backend, params;
-                          search_radius=search_radius,
+                          search_radius=search_radius, recover_normal=closed_body,
                           cx_gpu=cx_gpu, cy_gpu=cy_gpu, cz_gpu=cz_gpu, w_gpu=w_gpu)
 
     if closed_body

@@ -545,6 +545,9 @@ end
 
 function _apply_run_output_updates!(state,raw)
     isempty(raw) && return state
+    if haskey(raw,"reference")
+        state["case"]["reference"]=_reference_dimensions(raw["reference"],state["case"]["domain"]["boundary"])
+    end
     if haskey(raw,"outputs")
         state["case"]["outputs"] = _validate_outputs(raw["outputs"])
     end

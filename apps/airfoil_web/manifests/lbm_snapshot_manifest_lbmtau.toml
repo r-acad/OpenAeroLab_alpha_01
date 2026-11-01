@@ -1,8 +1,8 @@
 commit = "6e50352d7eb9511d880d6507bc40fc2043a7cb06"
-written_utc = "2026-11-01T18:39:51Z"
+written_utc = "2026-11-01T20:23:40Z"
 snapshot = "solvers/lbm_lbmtau"
 
-source_note = "Original baseline commit retained for provenance; SHA-256 pins describe the vendored sources refreshed on 2026-11-01, including local mesh and result-export updates."
+source_note = "Original baseline commit retained for provenance; SHA-256 pins describe the vendored sources refreshed on 2026-11-01, including local mesh, result-export and fluid-side surface pressure recovery updates."
 
 [sha256]
 "src/collision/physics_kernels.jl" = "f451d79b9988baba94dbe3be11a44a333b5e85d4d767b951974a9bf0d4085941"
@@ -16,8 +16,8 @@ source_note = "Original baseline commit retained for provenance; SHA-256 pins de
 "src/io/diagnostics.jl" = "df83d5099a34fa5c2185a2e64759cb668273c19ad98dab02e237e570f53b6da2"
 "src/collision/pond/pond_fv2d_steady.jl" = "d928d8fea4537750060f70f65d9e2545c44eccd65366c33de516b8e0e22d4907"
 "src/collision/kernel_larsson_pgr.jl" = "2558d0a7fa9a8a65a6154aa6965b21f5e29dfed0cffdb62c8ae83933bd078db5"
-"src/forces/structs.jl" = "2f2f216bcd12871e72fab790c0f4c15e706e257d609743b0aff816882ef1aad5"
-"src/forces/surface.jl" = "978519f558881bb9550df4bac20085e2c00260ea7047210eabfe7d7017c96e40"
+"src/forces/structs.jl" = "d25fd9361c5a676e435448835c24a7cf863e29cbe1f88ad2abc1b0236c7d3c36"
+"src/forces/surface.jl" = "3493294b10ad313e066c941fd7e2c0393eb3a9bcaad8d75dcd0cacd445dd8219"
 "src/geometry/domain.jl" = "5ea688b7d2f8fcfc6afed67c50eb9a78e768f6e879f34900dc7f153e6d74c694"
 "src/collision/pond/pond_fv2d_amr.jl" = "a1ae6a674f7d1454cf056237556f71da1a594c6cf02638c4e7c28fbce7f74695"
 "src/collision/pond/pond_wall_model.jl" = "1ab1590c92bfe0f8fdda1e898e4633fe8c5c608e467f5aa00e0521b53dcd8184"
@@ -59,7 +59,7 @@ source_note = "Original baseline commit retained for provenance; SHA-256 pins de
 "src/dependencies.jl" = "cb622acb5f17a6754e9f0f341317ebb7e1cbea78d63508b47fbc6416e487ba2b"
 "src/preset_bootstrap.jl" = "3ae72d917edcbfae056b034913015dc5fe15fb285e46262bfe75fae787e02ebd"
 "src/collision/pond/pond_fv3dT_amr.jl" = "6850680e260119c2f9ec810240ef0bb60bda65e4c570c44f689ffba34974d108"
-"src/forces/io.jl" = "b6f42cf6eefd0cdbb1cddbe16b8b9c3cedc1fa79a4f11c9f9e0d7092a25ae943"
+"src/forces/io.jl" = "22fa5a8aefaafe131aed2d017d8bdeb1675cda7f1f0609c58ecc6244f06c7de8"
 "src/geometry/bouzidi_kernel.jl" = "aa89a6c4d615928b99c842288d8981ebba8d6eda44d956e66deb82fcc89a5655"
 "src/collision/kernel_regularization_d3q19.jl" = "54922471779606032febd0c8d393185574fe593715d86f8e523ba411b9b06072"
 "src/io/case_id_contract.jl" = "f451966b21a78791e73a2398e063ed5a4f9f565fd9dace689ca49023a996b30b"

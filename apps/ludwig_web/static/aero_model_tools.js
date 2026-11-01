@@ -1,12 +1,12 @@
 /* Original GLB appearance and persistent placement widgets. Canonical solver triangles stay unchanged. */
 (() => {
   'use strict';
-  const copySettings=p=>({scale:[...(p?.scale||[1,1,1])],rotation_deg:[...(p?.rotation_deg||[0,0,0])],translation:[...(p?.translation||[0,0,0])]});
+  const copySettings=p=>({flow_angles:[...(p?.flow_angles||[0,0])],scale:[...(p?.scale||[1,1,1])],rotation_deg:[...(p?.rotation_deg||[0,0,0])],translation:[...(p?.translation||[0,0,0])]});
   const radians=Math.PI/180;
   function sourceRotation(p,point) {
     const [rx,ry,rz]=p.rotation_deg.map(v=>v*radians),[cx,sx,cy,sy,cz,sz]=[Math.cos(rx),Math.sin(rx),Math.cos(ry),Math.sin(ry),Math.cos(rz),Math.sin(rz)];
     let [x,y,z]=point,n=y*cx-z*sx;z=y*sx+z*cx;y=n;
-    n=x*cy+z*sy;z=-x*sy+z*cy;x=n;n=x*cz-y*sz;y=x*sz+y*cz;return [n,y,z];
+    n=x*cy+z*sy;z=-x*sy+z*cy;x=n;n=x*cz-y*sz;y=x*sz+y*cz;return window.LudwigAeroReference?window.LudwigAeroReference.multiply(window.LudwigAeroReference.rotation({alpha:p.flow_angles?.[0],beta:p.flow_angles?.[1]}),[n,y,z]):[n,y,z];
   }
   // Source -> solver -> Babylon. Free air displays Z up; the ground backend uses Y up.
   const toViewer=(p,ground)=>ground?[p[0],p[2],-p[1]]:[p[0],p[2],p[1]];
@@ -23,11 +23,11 @@
     const offset=solverToViewer(origin,ground).map((v,a)=>v-basis.reduce((sum,b,i)=>sum+b[a]*center[i],0));
     return affineMatrix(B,basis,offset);
   }
-  function rotationDegrees(B,quaternion,ground) {
+  function rotationDegrees(B,quaternion,ground,flowAngles=[0,0]) {
     const matrix=new B.Matrix();quaternion.toRotationMatrix(matrix);
     const axes=[[1,0,0],[0,1,0],[0,0,1]].map(axis=>{
       const v=toViewer(axis,ground),r=B.Vector3.TransformNormal(B.Vector3.FromArray(v),matrix);
-      return fromViewer([r.x,r.y,r.z],ground);
+      const point=fromViewer([r.x,r.y,r.z],ground);return window.LudwigAeroReference?window.LudwigAeroReference.multiply(window.LudwigAeroReference.transpose(window.LudwigAeroReference.rotation({alpha:flowAngles[0],beta:flowAngles[1]})),point):point;
     });
     // Rz * Ry * Rx, matching the mesher's numeric X, Y, Z controls.
     const y=Math.asin(Math.max(-1,Math.min(1,-axes[0][2]))),cy=Math.cos(y);
@@ -179,7 +179,7 @@
     }
     function beginDrag() {
       if(!frame||drag)return;
-      const params=copySettings(frame.config?.transform||adapter.getTransformSettings());proxy.computeWorldMatrix(true);
+      const params=copySettings({...frame.config?.transform,...(frame.config?.flow?{flow_angles:[frame.config.flow.alpha||0,frame.config.flow.beta||0]}:adapter.getTransformSettings())});proxy.computeWorldMatrix(true);
       drag={params,origin:proxy.position.clone(),inverse:proxy.getWorldMatrix().clone().invert(),ground:Boolean(frame.ground)};
     }
     function updateDrag() {
@@ -190,7 +190,7 @@
       const translation=fromViewer([delta.x,delta.y,delta.z],drag.ground);
       p.translation=p.translation.map((v,i)=>v+translation[i]);
       if(frame.boundary==='symmetry')p.translation[1]=0;
-      p.rotation_deg=rotationDegrees(B,proxy.rotationQuaternion||B.Quaternion.FromEulerVector(proxy.rotation),drag.ground);
+      p.rotation_deg=rotationDegrees(B,proxy.rotationQuaternion||B.Quaternion.FromEulerVector(proxy.rotation),drag.ground,drag.params.flow_angles);
       adapter.setTransformSettings(p);
       proxy.computeWorldMatrix(true);
       // The neutral mesh is transient; deform it only until the commit rebuilds the preview.
@@ -217,7 +217,7 @@
       if(drag)return textured;
       clearProjections();
       frame=nextFrame;surface=nextOptions.surface||null;options=nextOptions;
-      const p=copySettings(frame?.config?.transform||adapter.getTransformSettings()),bounds=adapter.getSourceBounds?.();
+      const p=copySettings({...frame?.config?.transform,...(frame?.config?.flow?{flow_angles:[frame.config.flow.alpha||0,frame.config.flow.beta||0]}:adapter.getTransformSettings())}),bounds=adapter.getSourceBounds?.();
       const placed=Boolean(frame?.bodyOrigin?.length===3&&bounds?.center&&!frame?.imported);
       textured=Boolean(placed&&container&&options.appearance==='glb'&&!options.fieldMode);
       visualRoot.setEnabled(textured);if(surface)surface.setEnabled(!textured);

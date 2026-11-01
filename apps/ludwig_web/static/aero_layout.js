@@ -270,6 +270,7 @@
     const status = String(update.status || (update.active ? 'running' : 'idle')).toLowerCase();
     const terminal = /^(completed|complete|ready)$/.test(status) ? 'completed' : /^(failed|error)$/.test(status) ? 'error' : /^(cancelled|canceled)$/.test(status) ? 'cancelled' : null;
     const active = !!update.active, visible = active || !!terminal;
+    if (terminal && update.restored) dismissedSolvers.add(String(update.key || `${solverJob || 'draft'}:${terminal}`));
     solverTerminalKey = terminal ? String(update.key || `${solverJob || 'draft'}:${terminal}`) : null;
     card.dataset.state = terminal || (status === 'waiting_for_gpu' || status === 'queued' ? 'waiting' : 'running');
     card.hidden = !visible || !!(solverTerminalKey && dismissedSolvers.has(solverTerminalKey));

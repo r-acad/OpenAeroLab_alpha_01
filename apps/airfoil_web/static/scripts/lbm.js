@@ -680,7 +680,7 @@
   const SEQ_STOPS = [[23, 62, 114], [52, 124, 187], [91, 192, 201], [237, 212, 107], [233, 139, 77], [155, 56, 77]];   // = app.js ramp()
   function fieldColor(v, meta, lo, hi) {
     if (!Number.isFinite(v)) return NOLEVEL_RGB;
-    if(window.LudwigPalettes)return window.LudwigPalettes.sample((v-lo)/(hi-lo||1)).map(c=>Math.round(255*c));
+    if(window.LudwigPalettes)return window.LudwigPalettes.valueColor(v,lo,hi).map(c=>Math.round(255*c));
     const mid = meta.mid;
     if (meta.cmap === "div" && Number.isFinite(mid) && lo < mid && mid < hi)
       return stopsColor(DIV_STOPS, v < mid ? 0.5 * (v - lo) / (mid - lo) : 0.5 + 0.5 * (v - mid) / (hi - mid));

@@ -158,7 +158,13 @@ function _run_monitoring(id,state;history=_run_history(id))
     result["performance"]=Dict("mlups"=>get(history.convergence,"MLUPS",nothing),
         "iterations_per_second"=>get(history.resources,"Iter_per_s",nothing),
         "domain_travel_pct"=>get(history.convergence,"Domain_travel_pct",nothing))
-    result["coefficients"]=Dict(key=>value for (key,value) in history.forces if startswith(key,"C"))
+    if all(key->haskey(history.forces,key), ("Fx_N","Fy_N","Fz_N","Mx","My","Mz"))
+        result["dimensional_loads"]=Dict("step"=>get(history.forces,"Step",nothing),
+            "force_N"=>[history.forces[k] for k in ("Fx_N","Fy_N","Fz_N")],
+            "moment_Nm"=>[history.forces[k] for k in ("Mx","My","Mz")],
+            "convention"=>"solver axes; symmetric histories already contain mirrored full-model loads")
+    end
+    result["coefficients"]= Dict(key=>value for (key,value) in history.forces if startswith(key,"C"))
     residuals=Dict(key=>value for (key,value) in history.convergence if occursin(r"(?i)residual|resid_|l2_norm",key) && value isa Real)
     result["residuals"]=Dict("available"=>!isempty(residuals),"values"=>residuals,
         "reason"=>isempty(residuals) ? "This solver run does not export a residual metric. Iteration, density, performance and force histories are shown instead." : "")

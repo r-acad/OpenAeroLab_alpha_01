@@ -15,7 +15,7 @@ The server binds only to loopback.
 
 Project / Model / Domain / Mesh / Analysis / Results / Display menus use the
 shared Boxer-style interface in `../common/static/`. Help explains the workflow.
-Display offers five palettes for numeric fields; changing palette retains the
+Display offers six palettes for numeric fields; changing palette retains the
 loaded surface/plane and does not change saved PNGs. Mac supports study/result
 viewing and JXfoil; CUDA runs require Windows or Linux with an NVIDIA GPU.
 
@@ -46,10 +46,10 @@ axis-aligned positions from the latest saved snapshot. The case link resumes the
 result also reports finest-level wall cells; a severely sparse surface mesh
 must be rebuilt before a flow run.
 
-The top bar provides **File, Model, Domain, Solver, Flow, Run, Sections,
-Outputs, View, Results, and Help** dropdowns. Menu choices select a scrollable parameter
-panel on the left; mesh creation, running and cancellation are in **Run**.
-View contains preparation controls: geometry and AMR display, camera, guides
+The top bar provides **Project, Model, Domain, Mesh, Analysis, Results,
+Display, and Help** dropdowns. Menu choices select a scrollable parameter
+panel on the left; meshing is in **Mesh**, and running and cancellation are in **Analysis**.
+Display contains preparation controls: geometry and AMR display, camera, guides
 and fitting. Results groups surface fields, vectors, cut-plane fields, imported
 result sources and downloads. It stays grey until data are available, then turns
 green; it always opens so saved files can be imported. The permanent results
@@ -63,7 +63,8 @@ edited setup. A missing result location does not prevent opening the study.
 **File → Read native / VTK results** is also available for import.
 Triangle and cell counts, VRAM estimate and GPU budget
 share a slim status strip. **Mesh details** sits immediately left of **Messages**
-in the header, alongside **Hide mesh** and **i**. The i panel lists domain dimensions, axes, boundary
+in the header; **Solver log** sits immediately left of **Show mesh / Hide mesh**.
+The i panel lists domain dimensions, axes, boundary
 conditions and inspection help without labels covering the model. Important
 messages open a centered, closable dialog; **Above GPU budget** immediately
 focuses the warning text. Dismissed warnings stay closed during repeated polls.
@@ -86,7 +87,9 @@ time, available diagnostics and a retained log. GPU and system RAM readings
 update while running; process readings can be live or retained samples and are
 labelled accordingly. Memory is shown in GiB. Unexported residuals and
 unreliable ETA values stay explicitly unavailable. Terminal cards can be closed
-and reopened without losing their logs.
+and reopened without losing their logs. Reopening a saved study does not open
+a completed solver card or replay an old mesh-sizing proposal; **Solver log**
+remains available for deliberate inspection.
 
 Choose **Model → Appearance and GLB textures**, then **GLB materials and
 textures**, to display the original GLB appearance instead of the neutral
@@ -98,7 +101,8 @@ with the solver geometry so textures survive a case reload. Older cases can reco
 load the original GLB to recover its appearance.
 Under **Model → Appearance and GLB textures**, **Placement projections** can
 show the model's silhouette on the ground, inlet and lateral walls, separately
-or together, to help check clearances.
+or together, to help check clearances. All three projections are on by default
+for new studies; saved view preferences are retained.
 
 **Model → Surface triangle refinement** sets the maximum sampling triangle edge
 in millimetres (default **50 mm**). New meshes subdivide the placed model's
@@ -109,7 +113,49 @@ unbounded subdivision, and its memory allowance is included in the estimate.
 Existing studies retain the geometry used for their saved results until rebuilt.
 Surface colours use full brightness, with a visible legend. **High contrast**
 uses the 2nd–98th percentiles and reports true extrema; **Full data range**
-includes every field value in the colour scale.
+includes every field value in the colour scale. **Results → Field scale limits**
+provides minimum/maximum numbers and sliders, **Apply limits** and **Automatic**.
+Select surface, interactive section or recorded numeric cut; each quantity keeps
+independent limits in the study. The signed Boxer palette uses red for negative,
+blue for positive and a neutral colour at actual zero, including asymmetric limits.
+Colour clipping never changes stored data; saved PNGs retain their original colours.
+
+**Model → Reference dimensions** accepts total wing area, reference chord,
+optional span, and the moment reference point in metres. The point is measured
+from the centred/placed construction frame (X aft, Y right, Z up), before the
+flow angles; its Y coordinate is fixed to the wall for symmetric cases.
+**Analysis → Fluid properties** sets alpha and beta; beta is zero in symmetry.
+Angles rotate the geometry into the solver's +X freestream and require a new
+mesh. Manual placement rotation aligns the imported model before these angles.
+Optional Boxer body, wind and stability axes and angle arcs appear in the view;
+the stability axes use the entered reference alpha, and the moment origin is optional.
+
+The reference panel computes CL, CD, CY, body roll/pitch/yaw Cl/Cm/Cn and L/D
+from the latest saved dimensional force and moment history. It shifts moments
+to the requested origin using `(old_origin - new_origin) × force`. With
+`q = rho U² / 2`, forces use `q S`; pitch uses `q S c`, and roll/yaw use
+`q S b` when span is entered (otherwise chord, explicitly labelled).
+For symmetric cases the effective solved area is half the total area. Native
+histories already mirror the half-model loads, so full loads / full area is used,
+equivalent to half loads / half area. Enter actual dimensions: the app does not
+guess wing area from a bounding box. These are instantaneous saved loads;
+a completed run is not evidence of convergence.
+
+The surface-pressure sampler now finalizes pressure after nearest-fluid recovery,
+and checks the reverse normal when a closed-surface face has no valid forward
+probe. The recovered sign is used consistently in forces and exported normals.
+The two-sided force API retains separate sampling sides for thin surfaces. Unavailable samples
+are explicitly missing (grey), rather than fabricated zero pressure. Old surface
+files are unchanged: rerun the analysis to replace affected window/facet samples.
+
+Under **Display → Move a cutting plane**, enable **Move plane: edge handle** to
+show a small draggable sphere at a domain corner. Drag it or the plane border
+along the plane normal; hold Shift for tenfold finer movement, or enter an exact
+position. Mesh overlays hide during dragging. With surface data loaded,
+**Surface field section curves** shows the intersected face values against both
+in-plane coordinates, around the model in 3D and along the top/right of the 2D
+section. The curves use the currently selected surface quantity and retain its
+actual values; they do not infer new flow information between saved samples.
 
 Click a model surface to put the orbit centre on that exact point. Right drag
 keeps the view pinned to the cursor; double-click the background to fit the

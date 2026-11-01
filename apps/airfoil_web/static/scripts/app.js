@@ -2149,8 +2149,8 @@ function fieldGrid(field) {
   if (!nx || !ny || values.length !== nx * ny) return null;
   return { nx, ny, values: values.map(Number), x: field?.x || null, y: field?.y || null };
 }
-function ramp(t) {
-  if(window.LudwigPalettes)return window.LudwigPalettes.sample(t).map(v=>Math.round(v*255));
+function ramp(t,lo=0,hi=1) {
+  if(window.LudwigPalettes)return window.LudwigPalettes.valueColor(lo+t*(hi-lo),lo,hi).map(v=>Math.round(v*255));
   const stops = [[23,62,114],[52,124,187],[91,192,201],[237,212,107],[233,139,77],[155,56,77]];
   t = Math.max(0, Math.min(1, t));
   const a = Math.min(stops.length - 2, Math.floor(t * (stops.length - 1)));
@@ -2166,7 +2166,7 @@ function rasterizeStructuredSamples(pts, ni, nj, plot, vmin, vmax, pixelRatio = 
   const pixels = new Uint8ClampedArray(width * height * 4);
   const values = new Float32Array(width * height);
   values.fill(NaN);
-  const palette = Array.from({ length: 256 }, (_, i) => ramp(i / 255));
+  const palette = Array.from({ length: 256 }, (_, i) => ramp(i / 255,vmin,vmax));
   const span = vmax - vmin || 1;
   const vertices = pts.map(p => ({
     x: plot.x(p.x) * pixelRatio, y: plot.y(p.y) * pixelRatio, v: p.v,
@@ -2238,6 +2238,7 @@ function safeHref(url) {
   catch { return null; }
 }
 function fieldLegend(name, min, max, extra = "") {
+  if(window.LudwigPalettes)el["field-legend"].style.setProperty('--result-ramp',window.LudwigPalettes.gradient(window.LudwigPalettes.get(),min,max));
   el["field-legend"].classList.remove("hidden");
   el["field-legend"].innerHTML = `<span>${escapeHtml(name)}${extra ? ` · ${escapeHtml(extra)}` : ""}</span><span>${numberText(min, 3)}</span><span class="legend-ramp"></span><span>${numberText(max, 3)}</span>`;
 }
@@ -2267,7 +2268,7 @@ function renderSamples(point, key) {
   const sorted=blocks.flatMap(block=>block.pts.map(p=>p.v)).sort((a,b)=>a-b);
   const percentile=q=>sorted[Math.min(sorted.length-1,Math.max(0,Math.round(q*(sorted.length-1))))];
   const vmin=percentile(0.02),vmax=percentile(0.98);
-  const palette=Array.from({length:256},(_,i)=>`rgb(${ramp(i/255).join(",")})`);
+  const palette=Array.from({length:256},(_,i)=>`rgb(${ramp(i/255,vmin,vmax).join(",")})`);
   const color=v=>palette[Math.max(0,Math.min(255,Math.round((v-vmin)/(vmax-vmin||1)*255)))];
   const mesh=currentMesh(point),wall=meshWall(mesh),si=spatialCoordinatesSI(point,mesh),units=quantityUnits(point,key,mesh);
   const gx=wall?.x||point?.native_geometry?.x||state.result?.geometry?.x||[],gy=wall?.y||point?.native_geometry?.y||state.result?.geometry?.y||[];
@@ -2409,7 +2410,7 @@ function renderField(point = currentResult()) {
     const v = grid.values[sourceRow * grid.nx + col];
     const i = (row * grid.nx + col) * 4;
     if (!Number.isFinite(v)) { image.data[i+3] = 0; continue; }
-    const c = ramp((v - min) / span);
+    const c = ramp((v - min) / span,min,max);
     image.data[i] = c[0]; image.data[i+1] = c[1]; image.data[i+2] = c[2]; image.data[i+3] = 255;
   }
   ctx.putImageData(image, 0, 0);

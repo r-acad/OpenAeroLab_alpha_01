@@ -163,11 +163,12 @@ function save_surface_vtk(filename::String, force_data::ForceData,
                     u_tau .* wall_dist_cpu ./ nu_phys :
                     zeros(Float32, n_tri)
 
+    normal_signs = Array(force_data.normal_sign_map)
     normals = Matrix{Float64}(undef, 3, n_tri)
     for i in 1:n_tri
-        normals[1, i] = mesh.normals[i][1]
-        normals[2, i] = mesh.normals[i][2]
-        normals[3, i] = mesh.normals[i][3]
+        normals[1, i] = mesh.normals[i][1]*normal_signs[i]
+        normals[2, i] = mesh.normals[i][2]*normal_signs[i]
+        normals[3, i] = mesh.normals[i][3]*normal_signs[i]
     end
 
     shear_vec = Matrix{Float32}(undef, 3, n_tri)
@@ -406,6 +407,7 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
     sz_cpu = Array(force_data.shear_z_map)
     shear_mag = sqrt.(sx_cpu .^ 2 .+ sy_cpu .^ 2 .+ sz_cpu .^ 2)
 
+    normal_signs = Array(force_data.normal_sign_map)
     # Compute Cp = p_gauge / q_inf
     q_inf = Float32(0.5 * force_data.rho_ref * force_data.u_ref^2)
     Cp = q_inf > Float32(1e-10) ? p_cpu ./ q_inf : zeros(Float32, n_tri)
@@ -441,9 +443,9 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
 
         # Normals: n_tri × 3 Float32
         for i in 1:n_tri
-            write(io, Float32(mesh.normals[i][1]))
-            write(io, Float32(mesh.normals[i][2]))
-            write(io, Float32(mesh.normals[i][3]))
+            write(io, Float32(mesh.normals[i][1]*normal_signs[i]))
+            write(io, Float32(mesh.normals[i][2]*normal_signs[i]))
+            write(io, Float32(mesh.normals[i][3]*normal_signs[i]))
         end
 
         # Pressure: n_tri Float32
@@ -468,7 +470,7 @@ function export_surface_pressure_bin(filename::String, force_data::ForceData,
         end
     end
 
-    metadata=Dict("format"=>"LBMP","format_version"=>1,"triangles"=>n_tri,
+    metadata=Dict("sampling_revision"=>2,"missing_samples"=>count(x->!isfinite(x),p_cpu),"reversed_normal_samples"=>count(<(0),normal_signs),"moment_origin_m"=>collect(force_data.moment_center),"reference_area_m2"=>force_data.area_ref,"reference_chord_m"=>force_data.chord_ref,"format"=>"LBMP","format_version"=>1,"triangles"=>n_tri,
         "geometry_frame"=>use_domain_offset ? "domain" : "solver_local",
         "triangle_order"=>"solver_geometry","mesh_offset_m"=>Float64.(collect(params.mesh_offset)))
     _surface_atomic_write(filename*".toml") do io

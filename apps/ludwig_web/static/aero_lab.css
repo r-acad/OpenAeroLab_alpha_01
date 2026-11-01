@@ -200,3 +200,5 @@ button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible,su
 .mesh-ready-actions{display:flex;gap:7px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}.mesh-ready-actions button{border:1px solid var(--line);background:var(--control);color:var(--teal-dark);border-radius:5px;padding:5px 8px;font-size:10px;font-weight:650}
 @media(max-width:680px){#menu-results .menu-popover{left:8px;right:8px;top:var(--aero-menu-bottom,121px);width:auto}.results-menu .compact-field select{max-width:75%}}
 @media(prefers-color-scheme:dark){:root:not([data-theme=light]) .top-menu.results-available>summary{color:#8ce7ac}}
+
+.aero-coefficients dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.aero-coefficients dl>div{padding:6px;background:var(--soft);border:1px solid var(--line)}.aero-coefficients dt{font-size:11px;color:var(--muted)}.aero-coefficients dd{margin:3px 0;font-variant-numeric:tabular-nums}.aero-coefficients{margin-top:15px}#surface-scale-controls{border:1px solid var(--line);padding:8px;margin-top:8px}#surface-scale-controls>input[type=range]{width:100%}#surface-scale-controls legend{font-size:12px}

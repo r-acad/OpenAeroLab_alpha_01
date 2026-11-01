@@ -5,14 +5,16 @@
 (() => {
   function create(context){
     const {state,$,v3,keep,addQuad,addLines,addLabel,queueRender,currentFrame,scalarColor,scalarRange,
-      api,apiUrl,renderCutRows,invalidateMesh,selectResultPane,clearCameraMotion}=context;
+      api,apiUrl,renderCutRows,invalidateMesh,selectResultPane,clearCameraMotion,referenceTools}=context;
     const mesh=window.LudwigMeshInspector,axes=mesh.axes;
     const defaultInspector=()=>({enabled:false,axis:'z',position:null,field:'mesh',clip:true,mesh:true,data:null,key:null,error:'',loading:false});
     state.levelVisibility={};state.inspector=defaultInspector();state.meshVisible=state.meshVisible!==false;
     let requestTimer=null,dragging=false,sectionKey=null,sectionData=null,geometryKey=null,geometryData=null,geometryTriangles=null;
+    let shiftPressed=false;window.addEventListener('keydown',event=>{if(event.key==='Shift')shiftPressed=true;});window.addEventListener('keyup',event=>{if(event.key==='Shift')shiftPressed=false;});window.addEventListener('blur',()=>{shiftPressed=false;});
     let activeDrag=null;const meshHiddenByUser=new Map();
     let sectionView={zoom:1,pan:[0,0]},fieldBitmap=null,fieldBitmapData=null,fieldBitmapPalette=null;
     const options=()=>state.inspector;
+    const fieldRange=data=>{const raw=scalarRange(data.values),range=referenceTools?.range(raw,'section',data.field||options().field)||raw;referenceTools?.syncRange(range,'section',data.field||options().field);return range;};
     const amr=()=>state.importedResults?(state.importedResults.amr||null):state.amr;
     const inspectionFrame=()=>dragging&&state.frame?state.frame:currentFrame();
     const isAmr=item=>Boolean(item?.metadata?.amrMesh||item?.name?.startsWith('AMR '));
@@ -133,7 +135,7 @@
       if(geometryKey!==key||geometryTriangles!==triangles){const extent=Math.max(...frame.domain.max.map((v,i)=>v-frame.domain.min[i]));geometryData=mesh.geometrySection(triangles,cut.axis,cut.position,Math.max(extent*1e-10,1e-9));geometryKey=key;geometryTriangles=triangles;}return geometryData;}
     function drawFieldPlane(data){
       if(!data?.values?.length)return null;
-      const range=scalarRange(data.values);if(!range)return null;
+        const range=fieldRange(data);if(!range)return null;
       const normal=axes.indexOf(data.normal_axis),a=axes.indexOf(data.axis1),b=axes.indexOf(data.axis2),origin=data.origin_m,spacing=Number(data.spacing_m);
       const p=(i,j)=>{const v=origin.slice();v[normal]=Number(data.normal_coord_m);v[a]+=i*spacing;v[b]+=j*spacing;return v;};
       const plane=addQuad('section field',[p(0,0),p(data.n1,0),p(data.n1,data.n2),p(0,data.n2)],BABYLON.Color3.White(),1);
@@ -153,7 +155,7 @@
       const cut=options(),section=getSection(),base=`${cut.axis.toUpperCase()} = ${cut.position.toPrecision(5)} m · ${section.cells.length.toLocaleString()} section cells${section.stride>1?' (display sampled)':''}`;
       if(cut.field==='mesh')return base+` · ${getGeometrySection().segments.length.toLocaleString()} geometry intersection segments · drag the plane border along its normal, or use the slider.`;
       if(cut.loading)return base+' · loading saved field…';
-      if(cut.data){const range=scalarRange(cut.data.values);if(!range)return base+' · No finite fluid values in the saved field at this position.';return base+` · ${cut.field} [${cut.data.units||'solver units'}] · step ${cut.data.step} · ${cut.data.source==='saved_volume'?'saved volume':'recorded plane'} · colour range ${range.lo.toPrecision(4)} to ${range.hi.toPrecision(4)}`;}
+      if(cut.data){const range=fieldRange(cut.data);if(!range)return base+' · No finite fluid values in the saved field at this position.';return base+` · ${cut.field} [${cut.data.units||'solver units'}] · step ${cut.data.step} · ${cut.data.source==='saved_volume'?'saved volume':'recorded plane'} · colour range ${range.lo.toPrecision(4)} to ${range.hi.toPrecision(4)}`;}
       return base+' · '+(cut.error||'No saved field at this position. Enable volume VTK snapshots or record this plane before running.');
     }
     function paint2d(){
@@ -165,10 +167,10 @@
       const ctx=canvas.getContext('2d');if(!ctx)return;
       ctx.fillStyle='#f6fafb';ctx.fillRect(0,0,canvas.width,canvas.height);
       const px=x=>pad+(x-lo[a[0]])*scale+sectionView.pan[0],py=y=>canvas.height-pad-(y-lo[a[1]])*scale+sectionView.pan[1];
-      const data=cut.data,range=data&&scalarRange(data.values);
+      const data=cut.data,range=data&&fieldRange(data);
       if(data&&range){
         const spacing=Number(data.spacing_m),i1=axes.indexOf(data.axis1),i2=axes.indexOf(data.axis2);
-        const palette=$('results-palette')?.value||'spectrum';
+        const palette=[$('results-palette')?.value||'spectrum',range.lo,range.hi].join(':');
         if(fieldBitmapData!==data||fieldBitmapPalette!==palette){fieldBitmapPalette=palette;const bitmap=document.createElement('canvas'),imageContext=bitmap.getContext?.('2d');fieldBitmap=null;
           if(imageContext){bitmap.width=data.n1;bitmap.height=data.n2;const image=imageContext.createImageData(data.n1,data.n2);for(let j=0;j<data.n2;j++)for(let i=0;i<data.n1;i++){
             const value=data.values[i+j*data.n1];if(typeof value!=='number'||!Number.isFinite(value))continue;const rgb=scalarColor(value,range),offset=((data.n2-j-1)*data.n1+i)*4;for(let k=0;k<3;k++)image.data[offset+k]=Math.round(rgb[k]*255);image.data[offset+3]=255;}
@@ -189,6 +191,7 @@
       ctx.fillStyle='#264354';ctx.font='12px sans-serif';ctx.fillText(`${axes[a[0]].toUpperCase()} [m]`,canvas.width/2,canvas.height-8);ctx.fillText(`${axes[a[1]].toUpperCase()} [m]`,3,17);
       const left=lo[a[0]]-sectionView.pan[0]/scale,right=lo[a[0]]+(canvas.width-2*pad-sectionView.pan[0])/scale;
       ctx.fillText(left.toPrecision(3),pad,canvas.height-12);ctx.fillText(right.toPrecision(3),canvas.width-pad-35,canvas.height-12);
+      referenceTools?.paintCurves(ctx,referenceTools.section(cut.axis,cut.position),a,px,py,canvas);
       $('section-2d-note').textContent=statusText()+` · zoom ${sectionView.zoom.toPrecision(3)}× · wheel to zoom, drag to pan, double-click to fit.`;
     }
     function scheduleField(){clearTimeout(requestTimer);requestTimer=setTimeout(loadField,260);}
@@ -226,16 +229,32 @@
       }
       const geometry=getGeometrySection(),extent=Math.hypot(...frame.domain.max.map((v,i)=>v-frame.domain.min[i]));
       if(geometry.segments.length){const epsilon=Math.max(1e-9,extent*1e-7),pairs=geometry.segments.map(pair=>pair.map(p=>{const point=p.slice();point[n]+=epsilon;return point;}));details.push(addLines('geometry section',pairs,new BABYLON.Color3(1,.94,.75)));}
-      // The plane's border is the drag target. No sphere scales with the full
-      // far-field domain or obscures the geometry at a close camera zoom.
       backing.metadata={...(backing.metadata||{}),sectionTool:true};
       border.isPickable=true;border.metadata={...(border.metadata||{}),sectionTool:true};border.intersectionThreshold=Math.max(extent*.002,1e-5);
-      const normal=[0,0,0];normal[n]=1;const behavior=new BABYLON.PointerDragBehavior({dragAxis:v3(...normal)});behavior.moveAttached=false;behavior.useObjectOrientationForDragging=false;border.addBehavior(behavior);
-      let start=cut.position,travel=0;
-      behavior.onDragStartObservable.add(()=>{finishDrag(true);dragging=true;start=cut.position;travel=0;const visibility=new Map();for(const item of [...amrMeshes(),...details])if(item?.setEnabled){visibility.set(item,item.isEnabled());item.setEnabled(false);}activeDrag={behavior,visibility};clearCameraMotion();});
-      behavior.onDragObservable.add(event=>{travel+=Number(event.dragDistance)||0;move(start+travel,false);const delta=options().position-start,offset=v3(...normal).scale(delta);backing.position=offset;border.position=offset;applyClip();$('section-note').textContent='Moving section · release to refresh mesh and saved fields.';});
-      behavior.onDragEndObservable.add(()=>finishDrag());border.onDisposeObservable?.add(()=>{if(activeDrag?.behavior===behavior)cancelDrag();});
-      addLabel(`${cut.axis.toUpperCase()} = ${cut.position.toPrecision(4)} m · drag plane border`,points[2],'cut');
+      const handles=[];
+      if($('section-move-handle')?.checked){
+        const radius=Math.min(extent*.012,Math.max(.0001,(state.camera?.radius||extent)*.015));
+        const handle=keep(BABYLON.MeshBuilder.CreateSphere('section edge handle',{diameter:radius,segments:16},state.scene));
+        handle.position=v3(...points[2]);handle.isPickable=true;handle.metadata={sectionTool:true};
+        const material=keep(new BABYLON.StandardMaterial('section handle material',state.scene));material.diffuseColor=new BABYLON.Color3(1,.65,.18);material.emissiveColor=material.diffuseColor.scale(.5);handle.material=material;handles.push(handle);
+      }
+      const normal=[0,0,0];normal[n]=1;
+      for(const target of [border,...handles]){
+        const behavior=new BABYLON.PointerDragBehavior({dragAxis:v3(...normal)});behavior.moveAttached=false;behavior.useObjectOrientationForDragging=false;target.addBehavior(behavior);
+        let start=cut.position,travel=0;const starts=handles.map(handle=>handle.position.clone());
+        behavior.onDragStartObservable.add(()=>{finishDrag(true);dragging=true;start=cut.position;travel=0;const visibility=new Map();for(const item of [...amrMeshes(),...details])if(item?.setEnabled){visibility.set(item,item.isEnabled());item.setEnabled(false);}activeDrag={behavior,visibility};clearCameraMotion();});
+        behavior.onDragObservable.add(event=>{travel+=(Number(event.dragDistance)||0)*(shiftPressed ? .1 : 1);move(start+travel,false);const delta=options().position-start,offset=v3(...normal).scale(delta);backing.position=offset;border.position=offset;handles.forEach((handle,i)=>handle.position=starts[i].add(offset));applyClip();$('section-note').textContent='Moving section · Shift for 10× precision · release to refresh fields.';});
+        behavior.onDragEndObservable.add(()=>finishDrag());target.onDisposeObservable?.add(()=>{if(activeDrag?.behavior===behavior)cancelDrag();});
+      }
+      if($('section-surface-curves')?.checked&&referenceTools){
+        const segments=referenceTools.section(cut.axis,cut.position);
+        if(segments.length){let lo=Infinity,hi=-Infinity;const bmin=[Infinity,Infinity],bmax=[-Infinity,-Infinity];for(const s of segments){lo=Math.min(lo,s.value);hi=Math.max(hi,s.value);for(const p of s.points)for(let j=0;j<2;j++){bmin[j]=Math.min(bmin[j],p[a[j]]);bmax[j]=Math.max(bmax[j],p[a[j]]);}}
+          const span=hi-lo||1,height=Math.max(bmax[0]-bmin[0],bmax[1]-bmin[1])*.16;
+          for(let direction=0;direction<2;direction++){const other=1-direction,pairs=segments.map(s=>s.points.map(p=>{const out=p.slice();out[a[other]]=bmax[other]+height*.25+height*(s.value-lo)/span;return out;}));details.push(addLines(`surface ${axes[a[direction]]} distribution`,pairs,new BABYLON.Color3(...(direction?[.35,.65,1]:[1,.4,.3]))));}
+          addLabel(`Surface section field: ${lo.toPrecision(4)} … ${hi.toPrecision(4)}`,segments[0].points[0],'cut');
+        }
+      }
+      addLabel(`${cut.axis.toUpperCase()} = ${cut.position.toPrecision(4)} m · drag edge handle or border`,points[2],'cut');
       applyClip();
       $('section-note').textContent=statusText();paint2d();scheduleField();
     }
@@ -245,6 +264,7 @@
     $('section-axis').addEventListener('change',()=>{options().axis=$('section-axis').value;options().position=null;options().data=null;options().key=null;refresh();});
     for(const id of ['section-position','section-slider'])$(id).addEventListener('input',()=>{options().enabled=true;move($(id).value);});
     $('section-field').addEventListener('change',()=>{options().field=$('section-field').value;options().key=null;options().data=null;refresh();});
+    $('section-move-handle')?.addEventListener('change',queueRender);$('section-surface-curves')?.addEventListener('change',queueRender);
     $('section-mesh').addEventListener('change',()=>{options().mesh=$('section-mesh').checked;queueRender();});
     $('section-clip').addEventListener('change',()=>{options().clip=$('section-clip').checked;queueRender();});
     $('section-show').addEventListener('click',()=>{options().enabled=true;if($('interactive-section-panel'))$('interactive-section-panel').open=true;refresh();selectResultPane('cuts');});
@@ -260,8 +280,8 @@
     const finishPan=event=>{if(pan?.id!==event.pointerId)return;pan=null;try{canvas.releasePointerCapture(event.pointerId);}catch{}};canvas.addEventListener('pointerup',finishPan);canvas.addEventListener('pointercancel',finishPan);
     canvas.addEventListener('dblclick',event=>{event.preventDefault();resetZoom();});$('section-reset-zoom')?.addEventListener('click',resetZoom);
     return {draw,drawAmr,sync,levelControls,refresh,setMeshVisible,cancelDrag,isDragging:()=>dragging,
-      getView:()=>({inspector:{...options(),data:undefined,key:undefined,loading:undefined,error:undefined},section_view:{zoom:sectionView.zoom,pan:sectionView.pan.slice()},mesh_visible:state.meshVisible!==false,levelVisibility:{...state.levelVisibility},amr_render:$('amr-render').value,voxel_opacity:Number($('voxel-opacity').value)}),
-      restoreView(view){cancelDrag();clearTimeout(requestTimer);setMeshVisible(view?.mesh_visible!==false);state.inspector=defaultInspector();if(view?.inspector){const c=view.inspector;Object.assign(options(),{enabled:c.enabled===true,axis:axes.includes(c.axis)?c.axis:'z',position:Number.isFinite(c.position)?c.position:null,field:['mesh','velocity','pressure','density','vorticity','u','v','w','mach','temperature'].includes(c.field)?c.field:'mesh',mesh:c.mesh!==false,clip:c.clip!==false});}const saved=view?.section_view;sectionView={zoom:Math.max(.25,Math.min(4096,Number(saved?.zoom)||1)),pan:Array.isArray(saved?.pan)&&saved.pan.length===2&&saved.pan.every(Number.isFinite)?saved.pan.slice():[0,0]};state.levelVisibility=view?.levelVisibility||{};$('amr-render').value=['blocks','wire_voxels','solid_voxels','translucent_voxels'].includes(view?.amr_render)?view.amr_render:'blocks';$('voxel-opacity').value=String(Math.max(1,Math.min(65,Number(view?.voxel_opacity)||12)));sectionKey=null;geometryKey=null;levelControls();refresh();}};
+      getView:()=>({surface_section_curves:$('section-surface-curves')?.checked!==false,inspector:{...options(),data:undefined,key:undefined,loading:undefined,error:undefined},section_view:{zoom:sectionView.zoom,pan:sectionView.pan.slice()},mesh_visible:state.meshVisible!==false,levelVisibility:{...state.levelVisibility},amr_render:$('amr-render').value,voxel_opacity:Number($('voxel-opacity').value)}),
+      restoreView(view){if($('section-surface-curves'))$('section-surface-curves').checked=view?.surface_section_curves!==false;cancelDrag();clearTimeout(requestTimer);setMeshVisible(view?.mesh_visible!==false);state.inspector=defaultInspector();if(view?.inspector){const c=view.inspector;Object.assign(options(),{enabled:c.enabled===true,axis:axes.includes(c.axis)?c.axis:'z',position:Number.isFinite(c.position)?c.position:null,field:['mesh','velocity','pressure','density','vorticity','u','v','w','mach','temperature'].includes(c.field)?c.field:'mesh',mesh:c.mesh!==false,clip:c.clip!==false});}const saved=view?.section_view;sectionView={zoom:Math.max(.25,Math.min(4096,Number(saved?.zoom)||1)),pan:Array.isArray(saved?.pan)&&saved.pan.length===2&&saved.pan.every(Number.isFinite)?saved.pan.slice():[0,0]};state.levelVisibility=view?.levelVisibility||{};$('amr-render').value=['blocks','wire_voxels','solid_voxels','translucent_voxels'].includes(view?.amr_render)?view.amr_render:'blocks';$('voxel-opacity').value=String(Math.max(1,Math.min(65,Number(view?.voxel_opacity)||12)));sectionKey=null;geometryKey=null;levelControls();refresh();}};
   }
   window.LudwigAeroInspector={create};
 })();

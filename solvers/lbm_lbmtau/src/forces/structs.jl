@@ -42,6 +42,7 @@ mutable struct ForceData
     # to the probe cell used for this triangle's (ρ, u) sample. Written by the
     # map_stresses kernel; consumed by save_surface_vtk to compute y⁺ without a
     # second probe pass. (Phase 1.7 paper-quality.)
+    normal_sign_map::AbstractArray
     wall_dist_map::AbstractArray
 
     # Running time-averages (Paper-quality item A-3).
@@ -77,6 +78,8 @@ function ForceData(n_triangles::Int, backend;
 
     wall_dist_map = KernelAbstractions.zeros(backend, Float32, n_triangles)
 
+    normal_sign_map = KernelAbstractions.zeros(backend, Float32, n_triangles)
+    fill!(normal_sign_map,1.0f0)
     return ForceData(
         0.0, 0.0, 0.0,
         0.0, 0.0, 0.0,
@@ -90,7 +93,7 @@ function ForceData(n_triangles::Int, backend;
         symmetric,
         p_map, sx_map, sy_map, sz_map,
         p_map_minus, sx_map_minus, sy_map_minus, sz_map_minus,
-        wall_dist_map,
+        normal_sign_map, wall_dist_map,
         0,                    # avg_n
         p_map_avg, cp_map_avg,
         0.0, 0.0, 0.0,        # Cd/Cl/Cs running means

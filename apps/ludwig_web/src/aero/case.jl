@@ -152,7 +152,14 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     scale = _vec3(get(t, "scale", [1,1,1]), "transform.scale"; lo=1e-5, hi=1e5)
     rotation = _vec3(get(t, "rotation_deg", [0,0,0]), "transform.rotation_deg"; lo=-360, hi=360)
     translation = _vec3(get(t, "translation", [0,0,0]), "transform.translation"; lo=-1e4, hi=1e4)
+    f_input=get(raw,"flow",Dict{String,Any}()); f_input isa AbstractDict || throw(ArgumentError("flow must be an object"))
+    alpha=_number(get(f_input,"alpha",0.),"flow.alpha";lo=-85,hi=85)
+    beta=_number(get(f_input,"beta",0.),"flow.beta";lo=-85,hi=85)
     transformed, bounds = _transform(source, source_bounds, scale, rotation)
+    if alpha!=0 || beta!=0
+        transformed=Triangle[ntuple(i->_flow_rotation(tri[i],alpha,beta),3) for tri in transformed]
+        bounds=_bounds(transformed)
+    end
     triangle_edge=_number(get(raw,"surface_triangle_max_edge_m",0.05),"surface_triangle_max_edge_m";lo=1e-4,hi=100)
     subdivision=_surface_subdivision_preview(transformed,triangle_edge)
     surface_area = 0.0
@@ -172,6 +179,8 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     boundary in ("free_air", "ground", "symmetry") ||
         throw(ArgumentError("domain.boundary must be free_air, ground, or symmetry"))
     domain["boundary"] = boundary
+    boundary=="symmetry" && beta!=0 && throw(ArgumentError("Symmetry requires beta = 0"))
+    reference=haskey(raw,"reference") ? _reference_dimensions(raw["reference"],boundary) : nothing
     sizing=_domain_sizing(get(d,"sizing","minimum"))
     haskey(d,"sizing") && (domain["sizing"]=sizing)
     ratios=_domain_proportions(get(d,"proportions",[1.,1.,1.]))
@@ -240,7 +249,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     outputs = _validate_outputs(get(raw,"outputs",Dict{String,Any}()))
     f = get(raw, "flow", Dict{String,Any}())
     f isa AbstractDict || throw(ArgumentError("flow must be an object"))
-    flow = Dict{String,Any}(
+    flow = Dict{String,Any}("alpha"=>alpha,"beta"=>beta,
         "velocity" => _number(get(f, "velocity", 20.0), "flow.velocity"; lo=0.01, hi=1000),
         "density" => _number(get(f, "density", 1.225), "flow.density"; lo=0.01, hi=1e4),
         "kinematic_viscosity" => _number(get(f, "kinematic_viscosity", 1.5e-5), "flow.kinematic_viscosity"; lo=1e-10, hi=1),
@@ -267,7 +276,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     if geometry_audit isa AbstractDict && boundary == "symmetry" && !get(geometry_audit,"outward_orientation_verified",false)
         geometry_audit["symmetry_boundary_verified"] = _open_edges_match_symmetry(transformed,bounds)
     end
-    Dict{String,Any}("model_id" => model_id,
+    Dict{String,Any}("reference"=>reference,"model_id" => model_id,
         "transform" => Dict("scale" => collect(scale), "rotation_deg" => collect(rotation), "translation" => collect(translation)),
         "domain" => domain, "requested_domain" => domain_adjustment["requested_domain"],
         "domain_adjustment" => domain_adjustment,
@@ -347,8 +356,12 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     boundary = d["boundary"]
     ext = Float64[b["max"][i]-b["min"][i] for i in 1:3]
     e = boundary == "ground" ? [ext[1],ext[3],ext[2]] : ext
-    chord = max(e[1], dx)
-    mesh_reference = max(1, round(Int, chord/dx)) * dx
+    mesh_chord = max(e[1], dx)
+    reference=get(case,"reference",nothing)
+    chord=reference===nothing || get(reference,"chord",nothing)===nothing ? mesh_chord : reference["chord"]
+    reference_area=reference===nothing || get(reference,"area",nothing)===nothing ? max(e[2]*e[3],dx^2) : reference["area"]
+    moment_setting=_reference_moment_setting(case,b,chord)
+    mesh_reference = max(1, round(Int, mesh_chord/dx)) * dx
     chord_factor = max(mesh_reference, e[1]) / (mesh_reference * chord)
     every = min(case["steps"],get(case,"display_every",max(8,8*cld(cld(case["steps"],case["frames"]),8))))
     outputs = get(case,"outputs",OUTPUT_DEFAULTS)
@@ -391,7 +404,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "  ground_up_axis: \"$(boundary == "ground" ? "y" : "z")\"",
         "  surface_resolution: $(max(1,round(Int,mesh_reference/dx)))", "  num_levels: $levels",
         "  reference_chord: $(@sprintf("%.12g", chord))", "  reference_length_for_meshing: $(@sprintf("%.12g", mesh_reference))",
-        "  reference_area_of_full_model: $(@sprintf("%.12g", max(e[2]*e[3], dx^2)))",
+        "  reference_area_of_full_model: $(@sprintf("%.12g", reference_area))",
         "  reference_dimension: \"x\"", "  minimum_facet_size: $triangle_edge", "  subdivision: $(triangle_edge>0)",
         "  fluid:", "    density: $(f["density"])", "    kinematic_viscosity: $(f["kinematic_viscosity"])",
         "    speed_of_sound: $(f["speed_of_sound"])", "  flow:", "    velocity: $(f["velocity"])",
@@ -439,7 +452,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "    inlet_density: \"local\"", "    transverse_freestream: $(boundary == "free_air")",
         "  gpu:", "    async_depth: $(gcd(8,every))",
         "  diagnostics:", "    freq: $every",
-        "  forces:", "    enabled: true", "    output_freq: $every",
+        "  forces:", "    enabled: true", "    moment_center: [$(join(moment_setting, ", "))]", "    output_freq: $every",
         "  slice:", "    mode: \"production\"", "    export_data: true", "    png: $(outputs["slice_png"])",
         "    fields: [\"velocity\", \"pressure\", \"vorticity\"]",
         "    export_fields: [\"density\", \"pressure\", \"u\", \"v\", \"w\", \"velocity_magnitude\", \"vorticity\"]",

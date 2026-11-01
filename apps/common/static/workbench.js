@@ -70,10 +70,11 @@
       const list=document.createElement('ol');
       const steps=kind==='aero'?[
         'Project: open a saved study or load STL, OBJ or GLB geometry. Save study keeps the current filename; Save study as chooses another.',
-        'Model and Domain: place the geometry, choose the boundary conditions and minimum clearances. The selected settings appear in the left pane.',
+        'Model and Domain: place the geometry, enter reference wing area, chord and moment origin, then choose boundary conditions and minimum clearances. The selected settings appear in the left pane.',
         'Mesh: select the solver, surface cell size and AMR levels, then create the mesh. Inspect the memory estimate and geometry checks.',
-        'Analysis: choose flow conditions, iterations, output folder and recorded planes before Run solver. The progress window reports activity and memory use.',
-        'Results: select Surface, Recorded planes or Images & files. Open saved results without rerunning. Display changes retain the loaded fields.',
+        'Analysis: set speed, alpha and beta, iterations and the output folder before Run solver. Symmetry fixes beta to zero. The progress window reports activity and memory use.',
+        'Results: select Surface, Recorded planes or Images & files. Set field scale limits or inspect coefficients under Reference dimensions. Display changes retain the loaded fields.',
+        'Display: Move a cutting plane offers an edge handle (Shift for fine movement), exact position and surface-section curves. Record required planes before running, or export volume VTK to inspect arbitrary sections later.',
         'Display: choose view, guides, AMR visibility and a contour palette. The palette recolours numeric fields; saved PNG images keep their original colours.'
       ]:[
         'Project / Model: choose the airfoil source and designation. The selected parameters appear in the left pane.',

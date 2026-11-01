@@ -17,7 +17,7 @@
     importing:false,renderQueued:false,selectedCut:"",cutRenderKey:null,draftDirty:false,activeConfig:null,
     resumePending:false,resumeDraftEdited:false,sourceModelId:null,labels:[],frame:null,
     vectorKey:null,vectorData:null,vectorLoading:false,vectorError:''};
-  let inspector=null,modelTools=null,resultBrowser=null;
+  let inspector=null,modelTools=null,resultBrowser=null,referenceTools=null;
   state.meshVisible=true;state.liveResults=true;
 
   function message(text, error=false) {
@@ -66,7 +66,7 @@
   function transformSettings() {
     return {scale:['x','y','z'].map(a=>inputNumber('scale-'+a,'scale '+a,{min:0.00001,max:100000})),
       rotation_deg:['x','y','z'].map(a=>inputNumber('rotate-'+a,'rotation '+a,{min:-360,max:360})),
-      translation:['x','y','z'].map(a=>inputNumber('move-'+a,'offset '+a,{min:-10000,max:10000}))};
+      flow_angles:[Number($('flow-alpha')?.value)||0,$('boundary').value==='symmetry'?0:Number($('flow-beta')?.value)||0],translation:['x','y','z'].map(a=>inputNumber('move-'+a,'offset '+a,{min:-10000,max:10000}))};
   }
   function caseSettings() {
     if(state.outdatedServer)throw new Error('This is an older workbench server. Relaunch Ludwig Workbench to use studies, automatic domain sizing and all seven AMR levels.');
@@ -83,13 +83,14 @@
     const sizing=$('domain-sizing')?.value||'minimum';
     if(!['minimum','fixed','proportions'].includes(sizing))throw new Error('Choose domain sizing.');
     const proportions=['x','y','z'].map(axis=>sizing==='proportions'?inputNumber('domain-ratio-'+axis,'domain proportion '+axis,{min:.000001,max:1000000}):(Number($('domain-ratio-'+axis)?.value)>0?Number($('domain-ratio-'+axis).value):1));
-    const transform=transformSettings();
+    const {flow_angles,...transform}=transformSettings();
     if(solver==='lbmtau'&&transform.translation.some(v=>v!==0))throw new Error('The pinned lbmtau solver cannot offset the model. Select the main solver or reset offsets.');
     if(boundary==='symmetry'&&transform.translation[1]!==0)throw new Error('Symmetry requires lateral offset Y = 0.');
     const velocity=inputNumber('velocity','flow speed',{min:0.01,max:1000}),soundSpeed=inputNumber('sound-speed','sound speed',{min:1,max:100000});
     const maxMach=lattice==='d3q39'?1.6:0.6;
     if(velocity/soundSpeed>maxMach)throw new Error(`${lattice.toUpperCase()} cases require Mach ≤ ${maxMach}.`);
-    return {model_id:state.modelId,geometry_handling:geometryHandling,transform,domain:{
+    const alpha=inputNumber('flow-alpha','angle of attack',{min:-85,max:85}),beta=boundary==='symmetry'?0:inputNumber('flow-beta','sideslip',{min:-85,max:85});
+    return {reference:referenceTools?.read(),model_id:state.modelId,geometry_handling:geometryHandling,transform,domain:{
         upstream:inputNumber('upstream','upstream clearance',{min:0.02,max:10000}),
         downstream:inputNumber('downstream','downstream clearance',{min:0.02,max:10000}),
         lateral:inputNumber('lateral','lateral clearance',{min:0.02,max:10000}),
@@ -101,7 +102,7 @@
       mesh_sizing:$('mesh-sizing').value,
       target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),
       outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,
-      flow:{velocity,density:inputNumber('density','density',{min:0.01,max:10000}),
+      flow:{alpha,beta,velocity,density:inputNumber('density','density',{min:0.01,max:10000}),
         kinematic_viscosity:inputNumber('viscosity','kinematic viscosity',{min:1e-10,max:1}),
         speed_of_sound:soundSpeed},
       steps:inputNumber('steps','solver steps',{min:8,max:1000000,integer:true}),
@@ -230,14 +231,15 @@
     let next=y*t.cx-z*t.sx;z=y*t.sx+z*t.cx;y=next;
     next=x*t.cy+z*t.sy;z=-x*t.sy+z*t.cy;x=next;
     next=x*t.cz-y*t.sz;y=x*t.sz+y*t.cz;x=next;
+    if(t.flow){const p=window.LudwigAeroReference?.multiply(window.LudwigAeroReference.rotation(t.flow),[x,y,z]);if(p)[x,y,z]=p;}
     return [x+t.d[0],y+t.d[1],z+t.d[2]];
   }
   function transformMath() {
     return rotationMath(transformSettings());
   }
-  function rotationMath(p) {
+  function rotationMath(p,flow=null) {
     const r=(p.rotation_deg||[0,0,0]).map(v=>v*Math.PI/180);
-    return {s:p.scale,d:p.translation,cx:Math.cos(r[0]),sx:Math.sin(r[0]),cy:Math.cos(r[1]),sy:Math.sin(r[1]),cz:Math.cos(r[2]),sz:Math.sin(r[2])};
+    return {flow:flow||(p.flow_angles?{alpha:p.flow_angles[0],beta:p.flow_angles[1]}:null),s:p.scale,d:p.translation,cx:Math.cos(r[0]),sx:Math.sin(r[0]),cy:Math.cos(r[1]),sy:Math.sin(r[1]),cz:Math.cos(r[2]),sz:Math.sin(r[2])};
   }
   function previewFrame() {
     if(!state.source)return null;
@@ -283,7 +285,7 @@
     const move=ground?[p.translation[0],p.translation[2],-p.translation[1]]:p.translation;
     for(let i=0;i<3;i++)offset[i]+=move[i];
     for(let i=0;i<shape.length;i++)shape[i]+=offset[i%3];
-    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,domain:{boundary,symmetry_center_y:centeredSymmetry,sizing:$('domain-sizing')?.value||'minimum'}}};
+    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_center_y:centeredSymmetry,sizing:$('domain-sizing')?.value||'minimum'}}};
   }
   function previewTriangles() {return previewFrame()?.triangles||null;}
   function binaryStl(triangles) {
@@ -348,6 +350,7 @@
     const free=Number(state.capabilities?.gpu?.free_gb),legacy=free>0?Math.min(100,Math.max(1,100*Number(caseInfo.target_vram_gb)/free)):80;
     set('target-vram',caseInfo.target_vram_percent??(sized?Math.round(legacy):80));$('target-vram').disabled=false;
     set('lattice',caseInfo.lattice||'d3q27');set('solver',caseInfo.solver);syncSolverLattice();
+    set('flow-alpha',flow.alpha||0);set('flow-beta',flow.beta||0);referenceTools?.restore(caseInfo.reference||{});syncFlowAngles();
     set('velocity',flow.velocity);set('density',flow.density);
     set('viscosity',flow.kinematic_viscosity);set('sound-speed',flow.speed_of_sound);
     set('steps',caseInfo.steps);set('frames',caseInfo.frames);
@@ -427,7 +430,8 @@
     mesh.material=material;return mesh;
   }
   function scalarColor(value,range) {
-    if(window.LudwigPalettes)return window.LudwigPalettes.sample((Number(value)-range.lo)/(range.hi-range.lo||1),$('results-palette')?.value||window.LudwigPalettes.get());
+    if(!Number.isFinite(value))return [.45,.48,.52];
+    if(window.LudwigPalettes)return window.LudwigPalettes.valueColor(Number(value),range.lo,range.hi,$('results-palette')?.value||window.LudwigPalettes.get());
     const t=Math.max(0,Math.min(1,(Number(value)-range.lo)/(range.hi-range.lo||1)))*(colorStops.length-1),
       i=Math.min(colorStops.length-2,Math.floor(t)),f=t-i;
     return colorStops[i].map((n,k)=>(n*(1-f)+colorStops[i+1][k]*f)/255);
@@ -449,7 +453,14 @@
       2*(resultBoundary()==='ground'?lat:height)+1]};
   }
   function addLabel(text,point,kind='boundary',color=null) {
-    state.labels.push({text:String(text),point,kind,color});
+    const label={text:String(text),point,kind,color};state.labels.push(label);
+    if(kind.includes('aero-axis')){const holder=$('viewer-labels');if(holder){holder.hidden=false;const node=document.createElement('span');node.className='scene-label '+kind;node.textContent=label.text;if(color)node.style.color=color;holder.appendChild(node);label.node=node;}}
+  }
+  function projectAxisLabels(){
+    if(!state.camera||!state.engine)return;const canvas=$('viewer'),width=canvas.clientWidth,height=canvas.clientHeight;if(!width||!height)return;
+    const viewport=state.camera.viewport.toGlobal(width,height),transform=state.scene.getTransformMatrix();
+    for(const label of state.labels)if(label.node){const p=BABYLON.Vector3.Project(v3(...label.point),BABYLON.Matrix.IdentityReadOnly,transform,viewport);label.node.hidden=p.z<0||p.z>1||p.x<0||p.x>width||p.y<0||p.y>height;label.node.style.left=p.x+'px';label.node.style.top=p.y+'px';}
+
   }
   function updateLabels() {
     const node=$('scene-info');if(!node)return;
@@ -537,7 +548,7 @@
     const b=frame.domain,size=b.max.map((v,i)=>v-b.min[i]),short=Math.min(...size),length=short*.17;
     const origin=b.min.map(v=>v+short*.045),colors=[[.98,.39,.36],[.40,.86,.55],[.40,.67,1]],names=['X','Y','Z'];
     for(let i=0;i<3;i++){const end=origin.slice();end[i]+=length;addArrow('domain '+names[i],origin,end,colors[i],'axis domain-axis','Domain '+names[i]);}
-    if(!frame.body)return;
+    if(referenceTools||!frame.body)return;
     const t=rotationMath(frame.config?.transform||{scale:[1,1,1],rotation_deg:[0,0,0],translation:[0,0,0]});
     t.s=[1,1,1];t.d=[0,0,0];
     const bodyLength=Math.max(short*.065,Math.max(...frame.body.max.map((v,i)=>v-frame.body.min[i]))*.48),bodyOrigin=frame.bodyOrigin||frame.body.center;
@@ -737,7 +748,7 @@
     if(config?.domain?.boundary!=='symmetry'||!state.source||!state.sourceBounds)return 0;
     const key=JSON.stringify([config.transform?.scale,config.transform?.rotation_deg,Boolean(config.domain.symmetry_center_y)]);
     if(state.symmetrySourceCache?.source===state.source&&state.symmetrySourceCache.key===key)return state.symmetrySourceCache.offset;
-    const t=rotationMath(config.transform||transformSettings());t.d=[0,0,0];let lo=Infinity,hi=-Infinity;
+    const t=rotationMath(config.transform||transformSettings(),config.flow);t.d=[0,0,0];let lo=Infinity,hi=-Infinity;
     for(let i=0;i<state.source.length;i+=3){const y=transformedPoint(state.source[i],state.source[i+1],state.source[i+2],t,state.sourceBounds.center)[1];lo=Math.min(lo,y);hi=Math.max(hi,y);}
     const offset=config.domain.symmetry_center_y?-(lo+hi)/2:-lo;
     state.symmetrySourceCache={source:state.source,key,offset};return offset;
@@ -771,8 +782,8 @@
     const hasPlacement=Array.isArray(offset)&&offset.length===3&&offset.every(Number.isFinite),rangeMode=$('surface-range-mode')?.value||'contrast',palette=$('results-palette')?.value||'spectrum';let range=null;
     let drawnSurface=null;
     const cached=state.scalarMeshCache,wantsScalar=state.mode==='surface'&&values&&hasPlacement&&surface.vertices.length>=9;
-    if(wantsScalar)range=cached?.values===values&&cached.rangeMode===rangeMode?cached.range:scalarRange(values,rangeMode);
-    const reuse=Boolean(wantsScalar&&range&&cached&&cached.scene===state.scene&&!cached.mesh.isDisposed()&&cached.vertices===surface.vertices&&cached.values===values&&cached.rangeMode===rangeMode&&cached.field===field&&cached.palette===palette&&cached.ground===groundSolverFrame()&&cached.offset.every((value,axis)=>value===offset[axis]));
+    if(wantsScalar)range=referenceTools?.range(scalarRange(values,rangeMode))||scalarRange(values,rangeMode);
+    const reuse=Boolean(wantsScalar&&range&&cached&&cached.scene===state.scene&&!cached.mesh.isDisposed()&&cached.vertices===surface.vertices&&cached.values===values&&cached.rangeMode===rangeMode&&cached.field===field&&cached.palette===palette&&cached.range.lo===range.lo&&cached.range.hi===range.hi&&cached.ground===groundSolverFrame()&&cached.offset.every((value,axis)=>value===offset[axis]));
     // Domain helpers and section fields refresh independently of the surface.
     // Keep immutable scalar buffers on the GPU while only those overlays change.
     clearSceneObjects(reuse?new Set([cached.mesh,cached.material]):null);
@@ -785,17 +796,18 @@
     else if(source)drawnSurface=addTriangleSurface(source);
     if(!wantsScalar||!range)state.scalarMeshCache=null;
     modelTools?.sync(frame,{surface:drawnSurface,fieldMode:state.mode==='surface',appearance:$('model-appearance')?.value||'neutral',widget:$('model-widget')?.value||'none',projections:$('model-projections')?.value||'none',enabled:!activeStatuses.has(state.job?.status)&&!state.importing&&!state.uploading&&!state.importedResults});
-    drawDomain(frame.domain);drawAxes(frame);drawFlow(frame);if(!imported){refreshRecordedVectors();drawRecordedVectors(frame);}
+    drawDomain(frame.domain);drawAxes(frame);referenceTools?.draw(frame);drawFlow(frame);if(!imported){refreshRecordedVectors();drawRecordedVectors(frame);}
     if(state.mode==='mesh'&&state.meshVisible!==false)drawAmr();
     inspector?.draw();
     const units=surface?.field_units?.[field]||surface?.units?.[field]||'';
     $('surface-range').textContent=range?`${imported?field+(units?` [${units}]`:'')+' · ':''}${fmt(range.lo)} to ${fmt(range.hi)}`:'';
-    if(window.LudwigPalettes)document.documentElement.style.setProperty('--result-ramp',window.LudwigPalettes.gradient(palette));
+    if(window.LudwigPalettes)document.documentElement.style.setProperty('--result-ramp',window.LudwigPalettes.gradient(palette,range?.lo,range?.hi));
+    referenceTools?.syncRange(range);
     const legend=$('surface-colour-legend');if(legend){legend.hidden=!range;if(range){
       const quantity=field==='cp'?'Pressure coefficient Cp':field==='shear'?'Shear stress':field.charAt(0).toUpperCase()+field.slice(1),unit=units||(field==='pressure'||field==='shear'?'Pa':'');
-      $('surface-legend-title').textContent=`${quantity}${unit?` [${unit}]`:''} · ${range.mode==='full'?'full data range':'high contrast (2–98%)'}`;
+      $('surface-legend-title').textContent=`${quantity}${unit?` [${unit}]`:''} · ${range.mode==='manual'?'manual limits':range.mode==='full'?'full data range':'high contrast (2–98%)'}`;
       $('surface-legend-low').textContent=Number(range.lo).toPrecision(4);$('surface-legend-high').textContent=Number(range.hi).toPrecision(4);
-      legend.title=`Actual data minimum ${Number(range.actualLo).toPrecision(6)}, maximum ${Number(range.actualHi).toPrecision(6)}. ${range.mode==='full'?'All values use the full colour scale.':'Values outside the displayed limits use the end colours. Choose Full data range to include every value in the scale.'}`;
+      legend.title=`Actual data minimum ${Number(range.actualLo).toPrecision(6)}, maximum ${Number(range.actualHi).toPrecision(6)}. ${range.mode==='manual'?'Manual colour limits; use Results > Field scale limits > Automatic to restore automatic limits.':range.mode==='full'?'All values use the full colour scale.':'Values outside the displayed limits use the end colours. Choose Full data range to include every value in the scale.'}`;
     }}
     const noSurface=state.mode==='surface'&&!range;
     state.viewNotice=imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
@@ -846,7 +858,7 @@
       const key=new BABYLON.DirectionalLight('key',new BABYLON.Vector3(-.5,-.8,.4),scene);key.intensity=.55;
       state.engine=engine;state.scene=scene;state.camera=camera;
       initModelTools();
-      engine.runRenderLoop(()=>{if(canvas.clientWidth&&canvas.clientHeight)scene.render();});window.addEventListener('resize',()=>engine.resize());
+      engine.runRenderLoop(()=>{if(canvas.clientWidth&&canvas.clientHeight){scene.render();projectAxisLabels();}});window.addEventListener('resize',()=>engine.resize());
       new ResizeObserver(()=>engine.resize()).observe(canvas.parentElement);
     }catch(error){$('viewer-overlay').textContent=`WebGL could not start: ${error.message}`;}
   }
@@ -946,7 +958,8 @@
     const n1=Number(data.n1),n2=Number(data.n2),values=data.values;
     if(!Number.isInteger(n1)||!Number.isInteger(n2)||n1<2||n2<2||n1*n2>2_000_000||!Array.isArray(values)||values.length!==n1*n2)
       throw new Error('Invalid numeric cut dimensions.');
-    const range=scalarRange(values),canvas=$('cut-canvas');if(!range)throw new Error('Numeric cut has no finite values.');
+    const raw=scalarRange(values),range=referenceTools?.range(raw,'recorded',data.field)||raw,canvas=$('cut-canvas');if(!range)throw new Error('Numeric cut has no finite values.');
+    referenceTools?.syncRange(range,'recorded',data.field);
     canvas.width=n1;canvas.height=n2;const ctx=canvas.getContext('2d'),pixels=ctx.createImageData(n1,n2);
     for(let j=0;j<n2;j++)for(let i=0;i<n1;i++){
       const value=values[i+j*n1],dst=((n2-j-1)*n1+i)*4,rgb=Number.isFinite(value)?scalarColor(value,range).map(v=>Math.round(v*255)):[33,43,51];
@@ -1018,10 +1031,10 @@
     $('metric-fit').textContent=fit;$('metric-fit').className=fits===false?'bad':fits===true?'good':'';
     const selectedBudget=selectedGpuBudget(job);$('metric-budget').textContent=finite(selectedBudget)?`${Number(selectedBudget).toFixed(1)} GB`:'Unknown';
     const draftNote=state.draftDirty?' Draft changed; build again to apply your edits.':'';
-    progress((job.message||status.replaceAll('_',' '))+draftNote,status.replaceAll('_',' '));
+    progress((job.mesh_proposal&&job.run_started_utc?status==='completed'?'Saved solver results available':status.replaceAll('_',' '):job.message||status.replaceAll('_',' '))+draftNote,status.replaceAll('_',' '));
     const meshActive=['meshing','sizing','mesh_sizing'].includes(status),meshProgress=job.mesh_progress||{};
     window.LudwigAeroLayout?.setMeshBuildProgress({active:meshActive,status:meshActive?'creating':status==='mesh_ready'?'ready':(status==='mesh_failed'||status==='cancelled'&&job.cancel_reason==='gpu_budget_exceeded')?'error':'idle',percent:status==='mesh_ready'?100:finite(meshProgress.percent)?Number(meshProgress.percent):null,stage:meshProgress.phase||'Creating mesh',message:meshProgress.detail||job.message||'',log:job.activity_log||[],jobId:job.job_id});
-    if(job.mesh_proposal){if(state.meshProposal!==job.mesh_proposal)showMeshProposal(job.mesh_proposal,job.message||'A different mesh size is required.');}
+    if(job.mesh_proposal && ['mesh_failed','cancelled'].includes(status) && !job.run_started_utc){if(state.meshProposal!==job.mesh_proposal)showMeshProposal(job.mesh_proposal,job.message||'A different mesh size is required.');}
     const percent=Number(progressInfo.percent);
     if(meshActive){if(finite(meshProgress.percent))$('job-progress').value=Number(meshProgress.percent);else $('job-progress').removeAttribute('value');if($('job-progress-label'))$('job-progress-label').textContent='Creating mesh…';}
     else{$('job-progress').value=status==='completed'?100:Number.isFinite(percent)?Math.max(0,Math.min(100,percent)):0;if($('job-progress-label'))$('job-progress-label').textContent='Solver progress';}
@@ -1032,7 +1045,7 @@
     if(!jobIdPattern.test(id))return;const modelId=state.modelId;
     const job=await api(`/api/aero/jobs/${encodeURIComponent(id)}`);if(state.modelId!==modelId)return;
     state.jobId=id;state.job=job;state.activeConfig=job.case;state.draftDirty=compatible===false;persistJob(id);
-    renderJob(job);await maybeLoadAmr(job);if(job.artifacts?.surface_latest){state.mode='surface';syncViewButtons();await maybeLoadSurface(job,true);}
+    state.restoredJobId=id;clearMeshProposal();renderJob(job);await maybeLoadAmr(job);if(job.artifacts?.surface_latest){state.mode='surface';syncViewButtons();await maybeLoadSurface(job,true);}
     if(compatible===false)progress('Historical results are loaded from the saved run. The editable study differs; create a new mesh to apply its setup.','Historical results');
     updateActions();queueRender();if(activeStatuses.has(job.status))pollLater(id,2000);
   }
@@ -1106,7 +1119,7 @@
     const details=[...Object.entries(diagnostics).filter(([key,value])=>/rho|min|max|MLUPS/i.test(key)&&Number.isFinite(value)).slice(0,6),...Object.entries(coefficients).slice(0,5)].map(([key,value])=>`${key}=${Number(value).toPrecision(5)}`);
     if(details.length)log.push({message:details.join(' | ')});
     const active=['running','waiting_for_gpu','queued','starting'].includes(job.status),status=active?job.status:['completed','failed'].includes(job.status)?job.status:job.status==='cancelled'&&job.run_started_utc?'cancelled':'idle';
-    window.LudwigAeroLayout?.setSolverProgress?.({active,status,percent:Number(monitor.progress_percent??job.progress?.percent??0),phase:monitor.phase?.label,message:monitor.phase?.detail||job.message,metrics,log,jobId:job.job_id});
+    window.LudwigAeroLayout?.setSolverProgress?.({active,status,percent:Number(monitor.progress_percent??job.progress?.percent??0),phase:state.restoredJobId===job.job_id?'Saved run':monitor.phase?.label,message:job.run_started_utc&&job.mesh_proposal?.message===job.message?'Saved solver run':monitor.phase?.detail||job.message,metrics,log,jobId:job.job_id,restored:state.restoredJobId===job.job_id});
   }
   async function viewSurfaceRecord(file){
     const jobId=state.jobId;
@@ -1148,7 +1161,7 @@
   }
   function resumeStoredJob() {
     const id=storedJobId();if(!id)return;
-    state.jobId=id;state.job={status:'resuming'};state.resumePending=true;state.resumeDraftEdited=false;
+    state.jobId=id;state.job={status:'resuming'};state.resumePending=true;state.restoredJobId=id;state.resumeDraftEdited=false;
     persistJob(id);progress('Loading the saved case and its solver artifacts…','Resuming');updateActions();pollJob(id);
   }
   function pollLater(id,ms=2000) {clearTimeout(state.pollTimer);state.pollTimer=setTimeout(()=>pollJob(id),ms);}
@@ -1206,9 +1219,9 @@
     state.meshProposal=null;window.LudwigAeroLayout?.closeMessage();invalidateMesh();buildMesh();
   }
   async function runSolver() {
-    if(!canRun())return;const folder=window.LudwigOutputControls?.read()?.folder?.trim();if(!folder){window.LudwigAeroLayout?.selectParameters('outputs','output-folder');window.LudwigAeroLayout?.showMessage('Choose an output folder before running. Each analysis will get a dated study subfolder containing its study and results.',{urgent:true,title:'Output folder required'});$('output-folder')?.focus();return;}const id=state.jobId;$('run-solver').disabled=true;
+    if(!canRun())return;const folder=window.LudwigOutputControls?.read()?.folder?.trim();if(!folder){window.LudwigAeroLayout?.selectParameters('outputs','output-folder');window.LudwigAeroLayout?.showMessage('Choose an output folder before running. Each analysis will get a dated study subfolder containing its study and results.',{urgent:true,title:'Output folder required'});$('output-folder')?.focus();return;}const id=state.jobId;state.restoredJobId=null;$('run-solver').disabled=true;
     clearImportedResults(false);state.autoSurfaceDisplay=state.liveResults!==false;progress('Starting the selected LBM solver…','Starting');
-    try{const options={study_name:$('study-name')?.value||'Aero study',study_snapshot:{name:$('study-name')?.value||'Aero study',view:window.LudwigAeroStudiesContext?.getStudyView?.()||{},source_path:state.studySource?.path||null},cuts:state.cuts.map(c=>({axis:c.axis,position:Number(c.position)})),outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),geometry_handling:$('geometry-handling')?.value||'closed_solid'};
+    try{const options={reference:referenceTools?.read(),study_name:$('study-name')?.value||'Aero study',study_snapshot:{name:$('study-name')?.value||'Aero study',view:window.LudwigAeroStudiesContext?.getStudyView?.()||{},source_path:state.studySource?.path||null},cuts:state.cuts.map(c=>({axis:c.axis,position:Number(c.position)})),outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),geometry_handling:$('geometry-handling')?.value||'closed_solid'};
       const job=await api(`/api/aero/jobs/${encodeURIComponent(id)}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(options)});renderJob(job);pollJob(id);}
     catch(error){progress(`Solver could not start: ${error.message}`,'Run refused');updateActions();}
   }
@@ -1274,6 +1287,7 @@
       b==='ground'?'Ground: Aero Lab maps source Z-up to solver Y-up. The lowest model point touches ground at zero vertical offset; positive Z offset lifts it. Cut positions use solver coordinates.':
       center?.checked?'Symmetry: the model Y centre is placed on Y = 0. The solver uses the positive half and mirrors the symmetry boundary. Disable automatic centring for an already prepared half model.':'Symmetry: the minimum Y edge of the prepared half model is placed at Y = 0. Enable automatic centring to use half of a full model.';
   }
+  function syncFlowAngles(){const symmetry=$('boundary').value==='symmetry';for(const id of ['flow-beta','reference-y'])if($(id)){$(id).disabled=symmetry;if(symmetry)$(id).value='0';}}
   function syncSolverLattice() {
     const lattice=$('lattice').value,sel=$('solver');
     const levels=$('levels');
@@ -1302,7 +1316,7 @@
   async function loadCapabilities() {
     try{
       const data=await api('/api/aero/capabilities');state.capabilities=data;
-      state.outdatedServer=data.api_revision!=='2026-11-01-boxer-workflow-v7';
+      state.outdatedServer=data.api_revision!=='2026-11-01-aerodynamic-results-v8';
       const sel=$('solver');sel.replaceChildren();
       for(const solver of data.solvers||[]){const o=document.createElement('option');o.value=solver.id;
         o.dataset.available=String(Boolean(solver.available));o.dataset.lattices=(solver.web_lattices||['d3q27']).join(',');
@@ -1336,6 +1350,7 @@
     $('boundary').addEventListener('change',()=>{if($('boundary').value==='symmetry')$('move-y').value='0';boundaryNote();renderCutRows();invalidateMesh();});
     $('symmetry-auto-center-y')?.addEventListener('change',()=>{if($('boundary').value==='symmetry'&&$('symmetry-auto-center-y').checked)$('move-y').value='0';boundaryNote();invalidateMesh();});
     $('model-projections')?.addEventListener('change',queueRender);
+    syncFlowAngles();$('boundary').addEventListener('change',syncFlowAngles);for(const id of ['flow-alpha','flow-beta'])$(id)?.addEventListener('change',invalidateMesh);
     $('mesh-visibility')?.addEventListener('click',()=>{state.meshVisible=state.meshVisible===false;inspector?.setMeshVisible?.(state.meshVisible);$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible));$('mesh-visibility').textContent=state.meshVisible?'Hide mesh':'Show mesh';queueRender();});
     $('live-results')?.addEventListener('change',()=>{state.liveResults=$('live-results').checked;state.surfaceFollowLive=true;state.cutFollowLive=true;window.LudwigAeroLayout?.syncLiveResults?.();if(state.liveResults)loadLatestResults();});
     $('results-refresh')?.addEventListener('click',()=>loadLatestResults(true));
@@ -1371,12 +1386,14 @@
     $('fit-domain').addEventListener('click',fitDisplayedDomain);
     wireRecordedCutZoom();
   }
-  if(window.LudwigAeroInspector)inspector=window.LudwigAeroInspector.create({state,$,v3,keep,addQuad,addLines,addLabel,queueRender,currentFrame,scalarColor,scalarRange,api,apiUrl,renderCutRows,invalidateMesh:recordingChanged,selectResultPane,clearCameraMotion});
+  if(window.LudwigAeroReference)referenceTools=window.LudwigAeroReference.create({state,$,queueRender,currentFrame,addArrow,addLabel,addLines,keep,v3});
+  for(const id of ['scale-apply','scale-auto','scale-target','scale-min-slider','scale-max-slider'])$(id)?.addEventListener(id.endsWith('slider')?'input':id==='scale-target'?'change':'click',()=>{if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);});
+  if(window.LudwigAeroInspector)inspector=window.LudwigAeroInspector.create({state,$,v3,keep,addQuad,addLines,addLabel,queueRender,currentFrame,scalarColor,scalarRange,api,apiUrl,renderCutRows,invalidateMesh:recordingChanged,selectResultPane,clearCameraMotion,referenceTools});
   window.LudwigAeroResultsContext={state,api,queueRender,applyImportedResults,clearImportedResults,setImportedField,showSurfaceResults,
     getPlacement:()=>({mesh_offset:state.amr?.mesh_offset||[0,0,0],case:state.activeConfig,job_id:state.jobId})};
   window.LudwigAeroStudiesContext={state,caseSettings,attachStudyResults,hydrateCase,loadStoredModel,clearPersistedJob,queueRender,updateActions,showGeometryAudit,progress,clearImportedResults,
-    getStudyView(){const view={live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-range-mode','results-palette','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
-    restoreStudyView(view){clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroLayout?.syncLiveResults?.();window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
+    getStudyView(){const view={reference_display:referenceTools?.capture(),live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-range-mode','results-palette','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
+    restoreStudyView(view){referenceTools?.restoreView(view?.reference_display);clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroLayout?.syncLiveResults?.();window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
   if(window.LudwigAeroResultBrowser)resultBrowser=window.LudwigAeroResultBrowser.create({$,isLive:()=>state.liveResults!==false,onOpenSurface:viewSurfaceRecord,onOpenCut:viewCutRecord,onOpenVolume:viewVolumeRecord,onStatus:(text,error)=>{if(error)window.LudwigAeroLayout?.showMessage(text,{urgent:true,title:'Result display'});else progress(text,'Results');}});
   window.addEventListener('ludwig-palette-change',()=>{state.cutRenderKey=null;if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);queueRender();});
   initScene();wireEvents();boundaryNote();syncSolverLattice();renderCutRows();

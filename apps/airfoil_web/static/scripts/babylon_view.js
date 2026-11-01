@@ -135,7 +135,7 @@
       const okay=finite(xv)&&finite(yv)&&finite(v);
       valid.push(okay);
       const t=okay && span>0 ? clamp((v-low)/span,0,1) : 0.5;
-      const [r,g,b]=colorAt(t);
+      const [r,g,b]=window.LudwigPalettes?window.LudwigPalettes.valueColor(v,low,high):colorAt(t);
       // Height is an intentionally normalized display quantity, not geometry.
       positions.push(okay?xv:0,(t-0.5)*0.24,okay?yv:0);
       colors.push(r,g,b,1);
