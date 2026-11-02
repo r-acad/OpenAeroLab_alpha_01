@@ -66,11 +66,12 @@
     const data=blocks.map(block=>sampleData(block,quantity));
     return data.every(Boolean)?data:null;
   }
-  function scalarRange(blocks) {
+  function scalarRange(blocks,quantity) {
     const good=blocks.flatMap(block=>Array.from(block.values,Number)).filter(finite).sort((a,b)=>a-b);
     if(good.length<4)return null;
     const percentile=q=>good[clamp(Math.round(q*(good.length-1)),0,good.length-1)];
-    return {low:percentile(.02),high:percentile(.98)};
+    const range=window.WingLegends?.resolveLimits(`airfoil:${quantity}`,good[0],good[good.length-1]);
+    return {low:range?.min??good[0],high:range?.max??good[good.length-1]};
   }
   function vector(x,y,height=0) { return new BABYLON.Vector3(Number(x),height,Number(y)); }
 
@@ -209,7 +210,7 @@
     const data=meshMode?null:sampleBlocks(point,quantity);
     const grids=meshMode?gridBlocks(mesh):null;
     if(meshMode?!grids:!data) return false;
-    const range=meshMode?null:scalarRange(data);
+    const range=meshMode?null:scalarRange(data,quantity);
     if(!meshMode&&!range)return false;
     const canvas=document.createElement("canvas");
     canvas.setAttribute("aria-label",meshMode?"Interactive CFD mesh":"Interactive three dimensional CFD scalar field");

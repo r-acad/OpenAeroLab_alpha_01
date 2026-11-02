@@ -132,6 +132,23 @@ function reference_for_case(case::AbstractDict)
     flow = get(case,"flow",Dict())
     alphas = get(case,"alphas",Float64[])
     kind = get(foil,"kind","")
+    if kind == "naca4" && get(foil,"id","")=="0012" && _flow_matches(flow,0.15,6e6) &&
+       !haskey(flow,"gurney_height") && get(flow,"cfd_te_thickness",0)==0
+        points=Dict{String,Any}[];active=false
+        for line in eachline(joinpath(DATA,"naca0012_ladson.dat"))
+            startswith(line,"zone") && active && break
+            startswith(line,"zone") && (active=occursin("80 grit",line);continue)
+            active||continue
+            a,cl,cd=parse.(Float64,split(strip(line)))
+            push!(points,Dict("alpha_deg"=>a,"cl"=>cl,"cd"=>cd,"cm"=>nothing,"cp"=>Dict()))
+        end
+        return Dict{String,Any}("name"=>"NACA 0012 · Ladson 80-grit trip",
+            "source_url"=>"https://tmbwg.github.io/turbmodels/naca0012_val.html",
+            "data_url"=>"https://tmbwg.github.io/turbmodels/NACA0012_validation/CLCD_Ladson_expdata.dat",
+            "note"=>"NASA TM 4074: M=0.15, Re=6 million, 80-grit transition trip. Experimental CL/CD polar; no Cp or CM is supplied by this dataset. The pressure solver is incompressible and fully turbulent: Mach and trip matching are approximations, not an exact model of the tunnel experiment. Steady RANS near stall can be branch dependent.",
+            "conditions"=>Dict("mach"=>.15,"reynolds"=>6e6,"alpha_tolerance_deg"=>ALPHA_TOL),
+            "points"=>points)
+    end
     (haskey(flow,"gurney_height") || get(flow,"cfd_te_thickness",0)>0 ||
      get(flow,"cfd_fully_turbulent",false) === true || get(flow,"cfd_transition_model","") == "fully_turbulent") && return nothing
     if kind == "rae2822"

@@ -27,5 +27,18 @@ function benchmark_catalog()
             "numerics_note"=>"Fine A-plus mesh retains the native profile and prescribed trips/viscosity. SST, mesh resolution, time step, run duration and stopping criteria are numerical choices; convergence and time/mesh independence must be checked.",
             "conditions_url"=>kind=="oat15a" ? "https://www.aiaa-dpw.org/TestCases/testcases.html" : reference["source_url"]))
     end
+    flow=Dict{String,Any}("mach"=>.15,"reynolds"=>6e6,"alpha_deg"=>10.0,"ncrit"=>9.0,
+        "trip_upper"=>.05,"trip_lower"=>.05,"cfd_viscosity_model"=>"constant_kinematic",
+        "cfd_freestream_temperature_k"=>288.15,"cfd_time_mode"=>"steady",
+        "lowspeed_resolution"=>"fine","lowspeed_gpu"=>true,"lowspeed_max_steps"=>12000,
+        "lowspeed_wall_cap_s"=>7200.0,"lowspeed_tu"=>0.001,"lowspeed_mut_ratio"=>0.1)
+    case=Dict{String,Any}("airfoil"=>Dict("kind"=>"naca4","id"=>"0012"),"flow"=>flow,
+        "backends"=>["lowspeed"],"sweep"=>Dict("enabled"=>true,"start"=>10.0,"stop"=>18.0,"step"=>2.0),
+        "alphas"=>collect(10.0:2.0:18.0))
+    push!(items,Dict("id"=>"naca0012-stall","kind"=>"naca4","label"=>"NACA 0012 · NASA stall polar",
+        "case"=>case,"reference"=>reference_for_case(case),"default"=>true,"unsteady"=>false,
+        "note"=>"Ladson 80-grit trip, M=0.15, Re=6 million; angles 10, 12, 14, 16 and 18 degrees bracket stall.",
+        "numerics_note"=>"GPU pressure-based SST solver, Fine mesh, fully turbulent and incompressible approximation. Finite-Mach, trip, mesh and unsteady effects remain comparison limitations; a force plateau does not prove a steady flow exists.",
+        "conditions_url"=>"https://tmbwg.github.io/turbmodels/naca0012_val.html"))
     items
 end

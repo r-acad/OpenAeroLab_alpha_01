@@ -404,16 +404,17 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log; species_b
         "sst_nonorth_correction"=>_boolean(flow,
             "cfd_sst_nonorth_correction", false),
         "auto_stop"=>_boolean(flow, "cfd_auto_stop", true),
+        "sfd_release"=>_boolean(flow,"cfd_sfd_release",true),
         "mass_ceiling"=>_number(flow, "cfd_mass_ceiling", 0.1; lo=1e-6, hi=1000.0),
         # Provisional signed global continuity gate, normalized by rho_inf*U_inf*chord.
         "mass_net_limit"=>_number(flow, "cfd_mass_net_limit", 0.001;
                                     lo=1e-8, hi=1.0),
         # Opt-in diagnostic only; does not alter marching or early-stop gates.
         "equation_probe"=>_boolean(flow, "cfd_equation_probe", false),
-        # Validation-only precision control. The ordinary worker keeps its
-        # historical Float32 SFD arrays and arithmetic path.
+        # GPU filters use Float64 by default so slow filter updates are retained.
+        # Flow variables remain Float32; the legacy filter is still selectable.
         "sfd_storage_type"=>begin
-            storage = lowercase(String(_get(flow, "cfd_sfd_storage", "float32")))
+            storage = lowercase(String(_get(flow, "cfd_sfd_storage", _boolean(flow,"cfd_gpu",true) ? "float64" : "float32")))
             storage in ("float32", "float64") ||
                 throw(ArgumentError("cfd_sfd_storage must be float32 or float64"))
             storage
@@ -1267,6 +1268,8 @@ function _transonic_worker(cfg_path::AbstractString)
         residual_scaled_limit=cfg["mass_ceiling"],
         mass_net_limit=mass_net_limit,stop_on_stall=!physical && cfg["auto_stop"]))
     last_status_time = time()
+    release_start=0
+    release_enabled=!physical && ka && get(cfg,"sfd_release",true)
     try
         snapshots=FullFieldArtifact.FieldSnapshots.Schedule(get(cfg,"snapshot_interval_seconds",600.))
         println("Field snapshots: every ",snapshots.interval/60," wall-clock minutes (0 = disabled); final fields are saved separately.")
@@ -1282,6 +1285,15 @@ function _transonic_worker(cfg_path::AbstractString)
                 s.sfd_alpha = 5.0f-5
                 @printf("CMESH2D selective frequency damping engaged at n=%d\n", n)
                 flush(stdout)
+            end
+            if release_start>0
+                fraction=clamp((n-release_start)/20000,0.0,1.0)
+                s.sfd_chi=Float32(0.005*(1-fraction)^2)
+                if fraction>=1 && s.sfd==1
+                    s.sfd=Int32(0)
+                    println("CMESH2D SFD released at n=$n; evaluating the undamped equations with fresh convergence windows")
+                    flush(stdout)
+                end
             end
             if physical
                 remaining_dt=(duration_ctu-elapsed_ctu)*chord/speed
@@ -1442,12 +1454,21 @@ function _transonic_worker(cfg_path::AbstractString)
                 end
                 prior_guard_status = monitor.last_status
                 decision = CFDConvergence.observe!(monitor, history[end])
+                if release_enabled && release_start==0 && n>=cfg["sfd_start"]+100000 &&
+                   get(decision.metrics,"forces_stationary",0.0)==1.0
+                    release_start=n
+                    println("CMESH2D stationary loads at n=$n: tapering SFD over 20000 iterations, then checking undamped continuity")
+                    monitor=CFDConvergence.Monitor(CFDConvergence.Config(
+                        sfd_start=n+20000,max_steps=cfg["steps"],residual_scaled_limit=cfg["mass_ceiling"],
+                        mass_net_limit=mass_net_limit,stop_on_stall=cfg["auto_stop"]))
+                    decision=CFDConvergence.observe!(monitor,history[end])
+                end
                 if decision.status != prior_guard_status
                     @printf("CMESH2D stop guard [%s] at n=%d: %s\n",decision.status,n,decision.reason)
                     flush(stdout)
                 end
                 decision.abort && error("CMESH2D stopped on sustained divergence at n=$n: $(decision.reason)")
-                if !physical && cfg["auto_stop"] && decision.stop
+                if !physical && cfg["auto_stop"] && decision.stop && (!release_enabled || (release_start>0 && s.sfd==0))
                     @printf("CMESH2D smart stop [%s] at n=%d/%d: %s\n", decision.status, n, cfg["steps"], decision.reason)
                     flush(stdout)
                     break
@@ -1466,6 +1487,13 @@ function _transonic_worker(cfg_path::AbstractString)
     last_record = last(history)
     actual_steps = last_record.iteration
     guard_report = CFDConvergence.convergence_report(monitor)
+    guard_report["damping_release_start"]=release_start
+    guard_report["undamped_final_state"]=s.sfd==0
+    if release_enabled && s.sfd!=0 && guard_report["early_stop_eligible"]
+        guard_report["early_stop_eligible"]=false
+        guard_report["status"]="damping_not_released"
+        guard_report["reason"]="Filtered-state gates passed, but the iteration budget ended before undamped confirmation"
+    end
     guard_report["auto_stop_enabled"] = !physical && cfg["auto_stop"]
     guard_report["stopped_early"] = actual_steps < cfg["steps"]
     guard_report["termination"] = physical ?
@@ -1742,7 +1770,7 @@ function _transonic_worker(cfg_path::AbstractString)
         "refresh_flow_bc_before_sst"=>refresh_flow_bc_before_sst,
         "characteristic_i_outlet"=>characteristic_i_outlet,
         "full_viscous_stress"=>s.fullvisc == Int32(1),
-        "sfd_engaged"=>!physical && actual_steps >= cfg["sfd_start"],
+        "sfd_engaged"=>s.sfd==1,
         "sfd_storage_type"=>sfd_storage,
         "residual_sampling_state"=>ka ? "post_step_final_primitive" : "last_rk_stage",
         "viscosity_model"=>viscosity_model,

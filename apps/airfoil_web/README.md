@@ -97,6 +97,41 @@ that changes incidence by at least 1.5 degrees begins at a small time step;
 normal step growth resumes after accepted steps. The full steady residuals,
 not stable-looking force coefficients, decide whether a polar point converged.
 
+## Plots and validation studies
+
+Results, Polar and Diagnostics expand their charts to the available viewport.
+Each chart offers **Export SVG**, including its current zoom and legend. The
+shared **Grid** and **Probe values** controls enable coordinate lines and
+nearest-sample interrogation. Results displays CL, CD and CM about `(0.25c, 0)`;
+this specified reference point is not an inferred aerodynamic center.
+Incomplete CFD surface distributions and polar points remain visible with their
+convergence status, including experimental overlays.
+
+The **Validation** menu loads RAE 2822 Case 9, ONERA OAT15A steady conditions, or
+the NACA 0012 pressure-solver stall sweep (10–18 degrees, every 2 degrees).
+References appear without requiring a solver run. The NACA comparison uses
+Ladson's tripped CL/CD data; its incompressible, fully turbulent approximation
+and geometry differences are documented with the data. Save each setup as a
+study to retain its conditions, result link, palette and field limits.
+
+Numeric flow fields use the Boxer palettes and editable automatic/manual
+limits. The legend offers numeric limits, sliders, palette selection and
+collapse. **Mach = 1** draws a black sonic contour on compressible 2D fields.
+
+The compressible A-plus mesher reduces tangential drift in near-body columns,
+fading smoothly into the outer mesh. It preserves the wall, first eight cell
+rows, wake, trailing-edge neighborhood and outer boundary. Quality checks
+reduce the correction or retain the parent mesh if necessary. Metadata records
+the applied correction; an improved shape alone does not establish accuracy.
+
+Steady GPU runs use Float64 damping filters by default. After the loads settle,
+damping is tapered off and convergence windows restart on the undamped
+equations. Force stationarity is reported separately from continuity success.
+An already small initial residual need not decrease by an arbitrary additional
+ratio; absolute, plateau, spike, mass-balance and force checks remain active.
+Snapshot output is controlled by wall time (default ten minutes), independently
+of iteration-history updates. Final fields are retained even without convergence.
+
 ## Source layout
 
 | Directory | Contents |

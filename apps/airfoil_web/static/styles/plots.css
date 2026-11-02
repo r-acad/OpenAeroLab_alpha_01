@@ -1,0 +1,36 @@
+/* The viewport determines chart dimensions, including portrait/narrow layouts. */
+#tab-results{display:flex;flex-direction:column;gap:8px;overflow:auto}
+#tab-results .results-pane-grid{flex:1;min-height:330px;grid-template-rows:minmax(220px,1fr) auto;height:auto}
+#tab-results .points-panel{height:auto;max-height:180px;overflow:auto}
+#tab-results #literature-panel{height:auto;flex:none;margin:0;padding:8px 12px}
+#literature-panel #literature-chart{display:none}
+#literature-panel .hint{margin:3px 0;font-size:10px}
+#literature-panel .chart-heading{margin:0}
+#literature-panel .chart-heading h3{font-size:11px}
+.interactive-chart{display:flex;flex-direction:column;min-height:120px;flex:1}
+.interactive-chart .plot-svg,.cp-panel .plot-svg,.history-chart .plot-svg,.polar-chart .plot-svg{width:100%;height:calc(100% - 28px);max-height:none;flex:1;min-height:0}
+.plot-legend{flex:none;min-height:18px}
+.convergence-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+.convergence-grid>div:first-child{grid-column:1/-1}
+.convergence-grid>div,.polar-grid>div{display:flex;flex-direction:column}
+.history-chart,.polar-chart{flex:1;min-height:130px}
+.polar-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:1fr 1fr}
+.polar-grid>div:first-child{grid-column:1/-1}
+.chart-tools{position:absolute;right:4px;top:0;z-index:2}
+#cp-chart .point-overlay{display:none} /* Coefficients/status are above the graph; keep the data unobstructed. */
+.chart-tools button{font-size:10px;border:1px solid var(--line);color:var(--teal-dark);background:var(--paper);border-radius:4px;padding:3px 7px}
+.chart-probe{position:absolute;left:45px;top:28px;max-width:calc(100% - 55px);padding:5px 8px;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:5px;font-size:11px;pointer-events:none;z-index:3}
+.coefficient-strip{display:flex;gap:20px;flex-wrap:wrap;font-size:14px;padding:4px 0 8px;color:var(--ink)}
+.coefficient-strip small{font-size:10px;color:var(--muted)}
+.plot-option{display:inline-flex;gap:5px;align-items:center;font-size:11px;color:var(--muted)}
+#field-scale{position:absolute;right:12px;bottom:28px;z-index:5;max-width:270px;font-size:11px}
+.field-panel{position:relative}
+.wing-legends .viewport-scale{padding:8px 10px;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:7px}
+.viewport-scale-header,.legend-actions,.viewport-scale-ticks,.legend-limits-actions{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.viewport-scale-title span,.viewport-scale-note,.viewport-scale-case{font-size:10px;color:var(--muted)}
+.viewport-scale-ramp,.legend-palette-swatch{display:block;height:12px;min-width:90px;margin:4px 0}
+.legend-action{border:1px solid var(--line);background:var(--control);color:var(--ink);padding:3px 5px;border-radius:4px;cursor:pointer}
+.legend-action svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5}
+.legend-limits{padding:6px 0}.legend-limits label{display:flex;justify-content:space-between;gap:8px}.legend-limits input[type=number]{width:120px}.legend-limits input[type=range]{width:100%}
+.legend-palette-menu{display:grid;gap:3px}.legend-palette-menu button{display:flex;gap:8px;align-items:center;font-size:11px}
+@media(max-width:680px){#tab-results .results-pane-grid{min-height:480px}.convergence-grid,.polar-grid{grid-template-columns:1fr;grid-template-rows:repeat(3,minmax(200px,1fr));overflow:auto}.convergence-grid>div:first-child,.polar-grid>div:first-child{grid-column:auto}}

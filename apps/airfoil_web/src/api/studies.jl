@@ -41,14 +41,8 @@ end
 
 function _study_atomic_write(path,data)
     mkpath(dirname(path))
-    tmp, io = mktemp(dirname(path))
-    try
-        write(io,JSON3.write(_clean(data))); close(io)
-        mv(tmp,path;force=true)
-    finally
-        isopen(io) && close(io)
-        isfile(tmp) && rm(tmp;force=true)
-    end
+    CFDBackend.FullFieldArtifact.FieldSnapshots.atomic_write(path,
+        Vector{UInt8}(codeunits(JSON3.write(_clean(data))));reserve_bytes=0)
 end
 
 function _study_recent()

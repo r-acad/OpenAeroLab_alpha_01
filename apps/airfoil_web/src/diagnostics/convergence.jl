@@ -191,7 +191,7 @@ function _residual_ok(m::Monitor, prior::Vector{Sample}, recent::Vector{Sample},
         "$(prefix)_spike_factor"=>spike,
         "$(prefix)_limit"=>cfg.margin*ceiling))
     r <= cfg.margin*ceiling &&
-        ratio <= cfg.margin*cfg.residual_ratio_limit &&
+        (ref <= cfg.margin*ceiling || ratio <= cfg.margin*cfg.residual_ratio_limit) &&
         plateau <= 1+cfg.margin*cfg.plateau_fraction &&
         spike <= cfg.residual_spike_factor
 end
@@ -341,6 +341,9 @@ function observe!(m::Monitor, row)
     mass_l2_ok = _residual_ok(m, prior, recent, :residual_l2,
                               cfg.residual_l2_limit)
     global_mass_ok = _global_mass_ok(m, prior, recent)
+    m.last_metrics["forces_stationary"] = Float64(cl_ok && cd_ok)
+    m.last_metrics["local_continuity_passed"] = Float64(mass_ok && mass_l2_ok)
+    m.last_metrics["global_continuity_passed"] = Float64(global_mass_ok)
     plausible = sample.cd >= 0 && sample.cd <= 1 && abs(sample.cl) <= 3
     passed = cl_ok && cd_ok && mass_ok && mass_l2_ok &&
              global_mass_ok && plausible
@@ -369,11 +372,11 @@ function observe!(m::Monitor, row)
     stalled = _stall_decision!(m,n)
     stalled === nothing || return stalled
     if cl_ok && cd_ok && mass_ok && mass_l2_ok && !global_mass_ok
-        return _set!(m, "stalled",
+        return _set!(m, "forces_stationary",
                      "CL/CD and local continuity are stationary but signed global mass balance is unavailable or above its limit")
     end
     if cl_ok && cd_ok && (!mass_ok || !mass_l2_ok)
-        return _set!(m, "stalled",
+        return _set!(m, "forces_stationary",
                      "CL/CD are stationary but continuity residual has not met reduction, level, and plateau gates")
     end
     _set!(m, "unsettled",

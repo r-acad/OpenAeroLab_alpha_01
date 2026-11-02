@@ -57,6 +57,7 @@ const STATIC_FILES = Dict(
     "styles/output_controls.css"=>"styles/output_controls.css", "scripts/output_controls.js"=>"scripts/output_controls.js",
     "scripts/studies.js"=>"scripts/studies.js", "scripts/benchmarks.js"=>"scripts/benchmarks.js",
     "styles/studies.css"=>"styles/studies.css",
+    "styles/plots.css"=>"styles/plots.css", "scripts/plot_controls.js"=>"scripts/plot_controls.js",
     "scripts/app.js" => "scripts/app.js", "scripts/lbm.js" => "scripts/lbm.js",
     "scripts/campaign.js" => "scripts/campaign.js", "scripts/babylon_view.js" => "scripts/babylon_view.js",
     "vendor/babylon.js" => "vendor/babylon.js",
@@ -1063,7 +1064,7 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>19,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>20,"protocols"=>["msgpack","bson"],
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),

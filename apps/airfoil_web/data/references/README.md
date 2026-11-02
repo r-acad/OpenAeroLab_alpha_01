@@ -24,6 +24,15 @@ results. No journal paper is redistributed.
   static temperature 271 K and unsteady analysis for the extended polar.
   No measured force coefficients are supplied by this dataset.
 
+`naca0012_ladson.dat` contains the unchanged Ladson force-data file from the
+[NASA Turbulence Modeling Resource](https://tmbwg.github.io/turbmodels/naca0012_val.html)
+(NASA TM 4074, 1988). The application plots its 17-point, 80-grit tripped series
+at Mach 0.15 and Re=6 million. The pressure solver is an incompressible,
+fully turbulent approximation, and the built-in NACA geometry differs from
+the TMR scaled sharp-edge definition. Near-stall comparisons are exploratory:
+the experiments have significant three-dimensional effects. No experimental
+moment or pressure-distribution values are invented for this force dataset.
+
 ## ONERA acknowledgment and redistribution conditions
 
 ONERA is acknowledged as the provider of the ONERA OAT15A geometry and data.

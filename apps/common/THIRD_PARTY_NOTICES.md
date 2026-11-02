@@ -13,6 +13,9 @@ follow `web/result_display.js`, `web/viewport-legends.js`,
 `web/aero_display.js` and `src/aerodynamic_axes.jl` at that revision.
 OpenAeroLab is distributed under the same licence; see the repository `LICENSE`.
 
+`static/boxer_legends.js` is adapted from `web/viewport-legends.js` at that
+revision. Airfoil Lab uses its palette selector, editable limits and sliders.
+
 Navigation, study/result handling and installers remain implemented for this
 repository's own application and solver environments. The setup/launch workflow
 follows OpenJFEM's root setup and Windows/Linux/Mac launcher organization.

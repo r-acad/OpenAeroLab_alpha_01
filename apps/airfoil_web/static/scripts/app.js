@@ -192,7 +192,7 @@ const AirfoilWire = { encodeMsgpack, decodeMsgpack, encodeBson, decodeBson };
 if (typeof window !== "undefined") window.AirfoilWire = AirfoilWire;
 
 const $ = id => document.getElementById(id);
-const minimumServiceRevision = 19;
+const minimumServiceRevision = 20;
 const el = Object.fromEntries([
   "cav-fs-controls", "cav-conventional-controls", "cav-speed", "cav-water-depth", "cav-air-height", "cav-fs-duration", "cav-fs-max-steps", "cav-fs-resolution", "cav-fs-vapor", "geometry-axis-label", "cav-fs-formulation", "cav-fs-formulation-note", "history-residual-title", "cfd-te-topology-field", "underwater-mesh-note",
   "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord",
@@ -1007,7 +1007,8 @@ function jobStatus(job) {
   const status = String(job.status || "queued");
   state.displayJobStatus=status;
   const stalled = status === "failed" && /stopped without convergence/i.test(String(job.message || ""));
-  el["job-title"].textContent = stalled ? "Stopped without convergence" : ({ queued: "Queued", running: "Julia solvers running", completed: "Analysis complete", partial: "Analysis finished with partial results", failed: "Analysis failed" })[status] || status;
+  const diagnosticResult=['failed','partial'].includes(status)&&!job.error&&(job.result?.results||[]).some(p=>['not_converged','stopped_without_convergence'].includes(p.status)&&finite(p.cl)&&finite(p.cd));
+  el["job-title"].textContent = diagnosticResult ? "Results saved · convergence incomplete" : stalled ? "Stopped without convergence" : ({ queued: "Queued", running: "Julia solvers running", completed: "Analysis complete", partial: "Analysis finished with partial results", failed: "Analysis failed" })[status] || status;
   el["job-message"].textContent = job.error || job.message || ({ queued: "Waiting for the worker.", running: "Computing the requested operating points.", completed: "Results are ready below." })[status] || "";
   let progress = Number(job.progress);
   if (!Number.isFinite(progress)) progress = ["completed","partial","failed"].includes(status) ? 100 : 0;
@@ -1282,7 +1283,7 @@ function polyline(series, options = {}) {
   return series.some(s => s.points?.some(p => finite(p?.x) && finite(p?.y))) ? { series, options } : null;
 }
 function polylineMarkup(series, options = {}) {
-  const W = options.compact ? 360 : 600, H = options.compact ? 170 : options.short ? 208 : 245, m = { left: 45, right: 15, top: 16, bottom: 31 };
+  const W = options.width || 600, H = options.height || 245, m = { left: 57, right: 18, top: 27, bottom: 31 };
   const all = series.flatMap(s => (s.points || []).filter(p => finite(p?.x) && finite(p?.y)));
   if (!all.length) return null;
   let xmin = Math.min(...all.map(p => p.x)), xmax = Math.max(...all.map(p => p.x));
@@ -1325,6 +1326,7 @@ class DataChart {
     this.events = {
       wheel: e=>{ e.preventDefault(); const p=this.position(e); if(!p)return; this.zoomAt(Math.exp(-e.deltaY*0.0014),p); },
       pointerdown: e=>{
+        if(e.target.closest('button,input,select'))return;
         if(![0,1,2].includes(e.button))return; const p=this.position(e); if(!p)return; e.preventDefault();
         this.drag={mode:e.button!==0||e.shiftKey||e.ctrlKey?"pan":"box",start:p,last:p,bounds:{...this.currentBounds}};
         node.setPointerCapture?.(e.pointerId);
@@ -1332,7 +1334,7 @@ class DataChart {
         node.classList.add(this.drag.mode==="pan"?"is-panning":"is-selecting");
       },
       pointermove:e=>{
-        if(!this.drag)return; const p=this.position(e); if(!p)return;
+        if(!this.drag){window.AirfoilPlotTools?.probe(this,e);return;} const p=this.position(e); if(!p)return;
         if(this.drag.mode==="box")this.drawBox(this.drag.start,p);
         else { const a=this.world(this.drag.last), b=this.world(p), v=this.currentBounds; this.bounds={xmin:v.xmin+a.x-b.x,xmax:v.xmax+a.x-b.x,ymin:v.ymin+a.y-b.y,ymax:v.ymax+a.y-b.y}; this.save(); this.draw(); }
         this.drag.last=p;
@@ -1343,13 +1345,15 @@ class DataChart {
         this.endDrag();
       },
       pointercancel:()=>this.endDrag(), contextmenu:e=>e.preventDefault(),
+      pointerleave:()=>node.querySelector('.chart-probe')?.remove(),
       dblclick:e=>{e.preventDefault();this.fit();},
       keydown:e=>{if(e.key==="Escape")this.endDrag();else if(e.key==="Home"||e.key==="f"){e.preventDefault();this.fit();}}
     };
     for(const [name,fn] of Object.entries(this.events))node.addEventListener(name,fn,{passive:false});
     chartViews.set(id,this);this.draw();
+    this.resize=new ResizeObserver(()=>{const r=node.getBoundingClientRect(),key=`${Math.round(r.width)}:${Math.round(r.height)}`;if(key!==this.sizeKey){this.sizeKey=key;this.draw();}});this.resize.observe(node);
   }
-  destroy(){this.pendingSpec=null;this.endDrag();for(const [name,fn] of Object.entries(this.events))this.node.removeEventListener(name,fn);chartViews.delete(this.id);}
+  destroy(){this.resize?.disconnect();this.pendingSpec=null;this.endDrag();for(const [name,fn] of Object.entries(this.events))this.node.removeEventListener(name,fn);chartViews.delete(this.id);}
   updateSpec(spec){if(this.drag){this.pendingSpec=spec;return;}this.spec=spec;this.draw();}
   endDrag(){this.drag=null;this.box?.remove();this.box=null;this.node.classList.remove("is-panning","is-selecting");if(this.pendingSpec){this.spec=this.pendingSpec;this.pendingSpec=null;this.draw();}}
   drawBox(a,b){const r=this.node.getBoundingClientRect(),s=this.node.querySelector("svg").getBoundingClientRect();Object.assign(this.box.style,{left:`${s.left-r.left+Math.min(a.x,b.x)*s.width/this.width}px`,top:`${s.top-r.top+Math.min(a.y,b.y)*s.height/this.height}px`,width:`${Math.abs(a.x-b.x)*s.width/this.width}px`,height:`${Math.abs(a.y-b.y)*s.height/this.height}px`});}
@@ -1358,7 +1362,7 @@ class DataChart {
   save(){chartMemory.set(this.id,{...this.bounds});}
   zoomAt(factor,p){const b=this.currentBounds,w=this.world(p),fx=(w.x-b.xmin)/(b.xmax-b.xmin),fy=(w.y-b.ymin)/(b.ymax-b.ymin);const dx=Math.max((b.xmax-b.xmin)/factor,Math.max(1,Math.abs(w.x))*Number.EPSILON*64),dy=Math.max((b.ymax-b.ymin)/factor,Math.max(1,Math.abs(w.y))*Number.EPSILON*64);if(!finite(dx)||!finite(dy))return;this.bounds={xmin:w.x-fx*dx,xmax:w.x+(1-fx)*dx,ymin:w.y-fy*dy,ymax:w.y+(1-fy)*dy};this.save();this.draw();}
   fit(){this.bounds=null;chartMemory.delete(this.id);this.draw();}
-  draw(){const plot=polylineMarkup(this.spec.series,{...this.spec.options,viewport:this.bounds});if(!plot)return;this.currentBounds=plot.bounds;this.width=plot.width;this.height=plot.height;this.margin=plot.margin;this.node.innerHTML=plot.html;if(this.id==="cp-chart")attachPointOverlay(this.id);}
+  draw(){const r=this.node.getBoundingClientRect();const plot=polylineMarkup(this.spec.series,{...this.spec.options,viewport:this.bounds,width:Math.max(240,r.width),height:Math.max(110,r.height-28)});if(!plot)return;this.currentBounds=plot.bounds;this.width=plot.width;this.height=plot.height;this.margin=plot.margin;this.node.innerHTML=plot.html;window.AirfoilPlotTools?.toolbar(this);if(this.id==="cp-chart")attachPointOverlay(this.id);}
 }
 function putChart(id, content, emptyText) {
   const node = el[id] || document.getElementById(id);
@@ -1502,7 +1506,7 @@ function renderIterationHistory(point = currentResult()) {
   ]) {
     const points = rows.map(row => ({ x: secondsAxis?row.t_seconds:physicalAxis ? row.t_ctu : row.iteration, y: finite(row[field]) ? transform(row[field]) : null })).filter(row => finite(row.x)&&finite(row.y));
     const residual=id==="history-residual";
-    putChart(id, polyline([{ name: residual ? `log₁₀ ${residualLabel}` : field.toUpperCase(), color, points }], { short: true, compact: true, markers: false, xLabel:secondsAxis?"physical time, s":physicalAxis?"t U∞ / c (CTU)":"iteration", title: `${residual?residualLabel:field} over ${physicalAxis||secondsAxis?"physical time":"CFD iterations"}` }), `Waiting for ${residual?residualLabel:field.toUpperCase()} samples.`);
+    putChart(id, polyline([{ name: residual ? `log₁₀ ${residualLabel}` : field.toUpperCase(), color, points }], { short: true, compact: true, markers: false, logY:residual, xLabel:secondsAxis?"physical time, s":physicalAxis?"t U∞ / c (CTU)":"iteration", title: `${residual?residualLabel:field} over ${physicalAxis||secondsAxis?"physical time":"CFD iterations"}` }), `Waiting for ${residual?residualLabel:field.toUpperCase()} samples.`);
   }
 }
 
@@ -1933,6 +1937,8 @@ function matchingReference(point) {
 function renderPoint() {
   const result = state.result;
   const point = currentResult();
+  const strip=document.getElementById('selected-coefficients');
+  if(strip)strip.innerHTML=point?`<span>C<sub>L</sub> <b>${numberText(point.cl,5)}</b></span><span>C<sub>D</sub> <b>${numberText(point.cd,6)}</b></span><span>C<sub>M,c/4</sub> <b>${numberText(point.cm,5)}</b></span><small>Moment about (0.25c, 0). ${validCfdPolarPoint(point)?'Convergence gate passed':escapeHtml(point.status||'Diagnostic result; convergence unconfirmed')}</small>`:'No computed coefficients yet.';
   renderSelectedGeometry();
   const cp = point?.cp || {};
   const cpPoint = p => Array.isArray(p) ? { x: Number(p[0]), y: Number(p[1]) } : { x: Number(p.x), y: Number(p.cp) };
@@ -1959,7 +1965,7 @@ function renderPoint() {
       { name: "Experimental lower", color: "#527f44", points: (refCp.lower || []).map(cpPoint), dash: "6 3" }
     );
   }
-  putChart("cp-chart", polyline(cpSeries, { invertY: true, title: "Surface pressure coefficient" }), "Surface pressure is unavailable for this point.");
+  putChart("cp-chart", polyline(cpSeries, { invertY: true, xLabel:'x/c',yLabel:'Cp',title: "Surface pressure coefficient" }), "Surface pressure is unavailable for this point.");
   const refNote = el["reference-note"];
   if (refNote) {
     refNote.classList.toggle("hidden", !referenceMatch);
@@ -2273,7 +2279,9 @@ function renderSamples(point, key) {
   const count=blocks.reduce((sum,block)=>sum+block.pts.length,0),structured=blocks.every(block=>block.structured);
   const sorted=blocks.flatMap(block=>block.pts.map(p=>p.v)).sort((a,b)=>a-b);
   const percentile=q=>sorted[Math.min(sorted.length-1,Math.max(0,Math.round(q*(sorted.length-1))))];
-  const vmin=percentile(0.02),vmax=percentile(0.98);
+  const range=window.WingLegends?.resolveLimits(`airfoil:${key}`,sorted[0],sorted[sorted.length-1]);
+  const vmin=range?.min??sorted[0],vmax=range?.max??sorted[sorted.length-1];
+  const sonic=document.getElementById('field-sonic')?.checked && point?.backend==='transonic' && !selected.fields?.speed_column ? window.AirfoilPlotTools.isolines(scalarFieldBlocks(selected.fields,'mach'),1) : [];
   const palette=Array.from({length:256},(_,i)=>`rgb(${ramp(i/255,vmin,vmax).join(",")})`);
   const color=v=>palette[Math.max(0,Math.min(255,Math.round((v-vmin)/(vmax-vmin||1)*255)))];
   const mesh=currentMesh(point),wall=meshWall(mesh),si=spatialCoordinatesSI(point,mesh),units=quantityUnits(point,key,mesh);
@@ -2296,6 +2304,7 @@ function renderSamples(point, key) {
       }
     }
     if(state.meshOverlay)drawMeshLines(ctx,plot,inspectableMesh(currentMesh(point)));
+    if(sonic.length){ctx.save();ctx.strokeStyle='#000';ctx.lineWidth=1.5;ctx.beginPath();for(const [a,b] of sonic){ctx.moveTo(plot.x(a[0]),plot.y(a[1]));ctx.lineTo(plot.x(b[0]),plot.y(b[1]));}ctx.stroke();ctx.restore();}
     drawStreamlines(ctx,plot,currentMesh(point));
     if(gx.length===gy.length&&gx.length>1)drawFoil(ctx,plot,gx,gy);
     drawBaffles(ctx,plot,currentMesh(point));
@@ -2313,10 +2322,11 @@ function renderSamples(point, key) {
     for(const block of blocks)for(const p of block.pts){const d=(p.x-x)**2+(p.y-y)**2;if(d<d2){best=p;d2=d;}}
     return best&&Math.sqrt(d2)*spatialViews.field.scale<35?`${spatialCoordinateText(x,y,si)} ? ${quantityLabel(point,key)} ${numberText(best.v,4)} ${units}`:spatialCoordinateText(x,y,si);
   },{axisUnits:si?"m":"chord"});
-  const clipped=sorted.length>10&&(vmin>sorted[0]||vmax<sorted[sorted.length-1]);
+  const clipped=range?.manual;
   const sampling=selected.full?"full cell field":`sampled preview, stride ${Number(point?.fields?.sample_stride)||"?"}`;
   const topology=blocks.length>1?` · ${blocks.map(block=>block.id||"block").join(" + ")} blocks`:"";
-  fieldLegend(quantityLabel(point,key),vmin,vmax,`${units}${si?" · coordinates in metres":""} · ${count} ${selected.full?"cells":"samples"} · ${sampling}${topology}${structured?" · triangle interpolation":" · points"}${clipped?` · color scale 2–98% (raw ${numberText(sorted[0],3)} to ${numberText(sorted[sorted.length-1],3)})`:""}`);
+  fieldLegend(quantityLabel(point,key),vmin,vmax,`${units} · ${count} ${selected.full?"cells":"samples"} · ${sampling}${topology}${clipped?' · manual colour limits':''}${sonic.length?' · black: Mach = 1':''}`);
+  window.WingLegends?.render(document.getElementById('field-scale'),[{kind:'flow',paletteKey:'flow',title:quantityLabel(point,key),unit:units,min:vmin,max:vmax,limitKey:`airfoil:${key}`,gradient:window.LudwigPalettes.gradient(window.LudwigPalettes.get(),vmin,vmax)}],{scope:'airfoil'});
   const artifact=safeHref(point?.fields?.artifact);
   if(artifact){const a=document.createElement("a");a.href=artifact;a.target="_blank";a.rel="noopener noreferrer";a.textContent="Download sampled field";el["field-legend"].append(a);}
   const fullArtifact=safeHref(point?.fields?.full_artifact);
@@ -2363,6 +2373,7 @@ function renderField(point = currentResult()) {
   if (window.AirfoilLBM?.renderField(point)) return;
   const choice = el["field-kind"].value;
   const [kind, key] = choice.split(":", 2);
+  if(!['sample','live'].includes(kind))window.WingLegends?.render(document.getElementById('field-scale'),[]);
   const mesh = kind === "mesh" ? inspectableMesh(currentMesh(point)) : currentMesh(kind === "live" ? livePoint() : point);
   if(kind!=="surface")chartViews.get("field-view")?.destroy();
   const selectedField = kind === "live" ? {fields:livePoint()?.fields,full:true} : kind === "sample" ? inspectableFields(point) : null;
@@ -2384,7 +2395,10 @@ function renderField(point = currentResult()) {
       const count = fieldCellCount(selectedField?.fields);
       const blocks=fieldBlocks(selectedField?.fields),range=window.AirfoilBabylon?.scalarColorRange?.();
       const extra=`${quantityUnits(displayPoint,key,mesh)}${spatialCoordinatesSI(displayPoint,mesh)?" · coordinates in metres":""} · ${count} ${selectedField?.full ? "full field cells" : "sampled preview points"}${blocks.length>1?` · ${blocks.map(block=>block.id).join(" + ")} blocks`:""} · vertex interpolation · drag to orbit · right drag to pan · scroll to zoom`;
-      if(range)fieldLegend(quantityLabel(displayPoint,key),range.low,range.high,extra);
+      if(range){
+        fieldLegend(quantityLabel(displayPoint,key),range.low,range.high,extra);
+        window.WingLegends?.render(document.getElementById('field-scale'),[{kind:'flow',paletteKey:'flow',title:quantityLabel(displayPoint,key),unit:quantityUnits(displayPoint,key,mesh),min:range.low,max:range.high,limitKey:`airfoil:${key}`,gradient:window.LudwigPalettes.gradient(window.LudwigPalettes.get(),range.low,range.high)}]);
+      }
       else el["field-legend"].textContent=`${quantityLabel(displayPoint,key)} · ${extra}`;
     }
     return;
@@ -2462,7 +2476,7 @@ function renderPolars() {
   const diagnostic=rawRows.filter(r => isCfdBackend(r.backend) && !validCfdPolarPoint(r));
   const cfdRows = rawRows.filter(r => isCfdBackend(r.backend));
   const risingMass = cfdRows.filter(r => finite(r.diagnostics?.residual_ratio) && r.diagnostics.residual_ratio >= 1);
-  const reference = el["show-reference"].checked ? state.result?.reference : null;
+  const reference = el["show-reference"].checked ? (state.result?.reference || state.previewReference) : null;
   // Wind-tunnel lift at NEARBY conditions (NACA 0012 with the low-speed CFD): own Re/Mach in the legend, never matched.
   const nearby = el["show-reference"].checked && Array.isArray(state.job?.nearby_experiments) ? state.job.nearby_experiments.filter(e=>Array.isArray(e?.points)&&e.points.length) : [];
   const alphas = rawRows.map(r=>Number(r.alpha_deg)).filter(finite);
@@ -2470,13 +2484,13 @@ function renderPolars() {
   el["polar-note"].classList.toggle("hidden", !cfdRows.length && !reference && !nearby.length);
   el["polar-note"].textContent = [
     nearby.length ? `Wind-tunnel lift at nearby conditions, not matched to this case: ${nearby.map(e=>`${e.name} (${e.conditions})`).join("; ")}; digitized by NASA TMR, approximate. The CFD is Re ${finite(Number(state.analysisCase?.flow?.reynolds))?(Number(state.analysisCase.flow.reynolds)/1e6).toPrecision(3)+"M":"as set"}, incompressible and fully turbulent.` : "",
-    cfdRows.some(r=>r.backend==="lowspeed") ? "Connected low-speed CFD points reached the solver's own steady stop (momentum, k and omega residuals and the far-field circulation settled) on the coarse demo mesh; version 2 is not yet validated." : "",
+    cfdRows.some(r=>r.backend==="lowspeed") ? "Connected pressure-solver points passed its steady stop; hollow markers retain incomplete results. Inspect the recorded mesh and residuals. A steady RANS branch near stall is not a time-averaged stall validation." : "",
     cfdRows.some(r=>r.backend==="lbm") ? "LBM 3D points are the means of the last third of each run's force history (periodic span); grid and span independence are not established. Friction (viscous) drag from the LBM surface-force routine is underestimated (measured 0.22-0.71 of exact in a laminar channel test); drag values are mostly pressure drag. Under investigation. The LBM curved-wall conditions place the effective wall about 1.1-1.3 cells inside the fluid (measured in laminar channel tests; independent of resolution), so bodies are effectively about that much thicker on each side and surface shear is misread. Root cause identified (a write-location defect in the linear Bouzidi family, a double relaxation in the grad condition, and the solid-cell marking); fixes are in development. LBM results are development-only until then." : "",
     cfdRows.some(r=>!["lowspeed","lbm"].includes(r.backend)) ? "Connected steady CFD points passed the continuity and force-history guard. Physical means are connected only when sampling, stationarity, block independence and timestep refinement qualify; their legend identifies the mean. Aerodynamic and stall parity remain unvalidated." : "",
     diagnostic.length ? `${diagnostic.length} unverified CFD point${diagnostic.length === 1 ? " is" : "s are"} shown as hollow, unconnected markers.` : "",
     risingMass.length ? `${risingMass.length} CFD point${risingMass.length === 1 ? " has" : "s have"} a continuity residual that did not fall after damping.` : "",
     reference ? (reference.points.some(p => finite(p.cl) || finite(p.cd) || finite(p.cm))
-      ? `${reference.name} includes published force markers at the matched validation condition; these are isolated reference points, not a measured polar.`
+      ? new Set(reference.points.map(p=>p.alpha_deg)).size>1 ? `${reference.name}: published lift and drag polar at the reference Mach and Reynolds number.` : `${reference.name} includes published force markers at the matched validation condition; these are isolated reference points, not a measured polar.`
       : `${reference.name} supplies experimental Cp only; no measured CL, CD, or CM is available for a polar overlay.`) : ""
   ].filter(Boolean).join(" ");
   for (const [key, id, digits] of [["cl", "polar-cl", 3], ["cd", "polar-cd", 4], ["cm", "polar-cm", 3]]) {
@@ -2491,7 +2505,7 @@ function renderPolars() {
       if (pts.length) series.push({name:`${e.name}, ${e.conditions} · nearby condition, digitized`,color:["#8a5a1f","#4f6d8f"][i%2],points:pts,connect:false,dash:"2 3"});
     });
     const hasNegativeDrag = key === "cd" && series.some(s => s.points.some(p => p.y < 0));
-    putChart(id, polyline(series, { short: true, title: `${key.toUpperCase()} versus angle of attack`, digits, singlePad: key === "cd" ? 0.005 : 0, nonnegative: key === "cd" && !hasNegativeDrag }), `No ${key.toUpperCase()} polar values were returned.`);
+    putChart(id, polyline(series, { short: true, xLabel:'alpha (degrees)',yLabel:key==='cm'?'CM,c/4':key.toUpperCase(),title: `${key.toUpperCase()} versus angle of attack`, digits, singlePad: key === "cd" ? 0.005 : 0, nonnegative: key === "cd" && !hasNegativeDrag }), `No ${key.toUpperCase()} polar values were returned.`);
   }
 }
 function renderTable() {
@@ -2525,11 +2539,12 @@ function renderResult() {
     });
     el["job-message"].textContent=`${details.join("; ")}${experimental.length>3?`; ${experimental.length-3} more saved states`:""}. Instantaneous inviscid fields and pressure loads are diagnostic; cavitation, drag and stall parity remain unqualified.`;
   } else if (stalled.length && stalled.length===incomplete.length && ["completed","partial","failed"].includes(state.job?.status)) {
-    el["job-title"].textContent = "Analysis stopped before convergence";
+    el["job-title"].textContent = "Results saved · convergence incomplete";
     el["job-message"].textContent = `${stalled.length} operating point${stalled.length===1?"":"s"} reached a persistent residual plateau. Results remain diagnostic; inspect the stop reason and history.`;
   } else if (incomplete.length && ["completed","partial","failed"].includes(state.job?.status)) {
-    el["job-title"].textContent = incomplete.length === result.results.length ? "Analysis failed" : "Analysis finished with partial results";
-    el["job-message"].textContent = `${incomplete.length} operating point${incomplete.length === 1 ? "" : "s"} did not complete. See the point status and notes below.`;
+    const diagnostic=incomplete.every(p=>finite(p.cl)&&finite(p.cd)&&(p.fields||p.cp));
+    el["job-title"].textContent = diagnostic ? "Results saved · convergence incomplete" : "Analysis needs attention";
+    el["job-message"].textContent = diagnostic ? "Computed coefficients and fields remain available, including comparison with experiments. Stable loads alone do not establish continuity convergence." : `${incomplete.length} operating point(s) need attention. See their status and log.`;
   }
   el["download-result"].disabled = false;
   renderSelection(); renderPolars(); renderTable();syncRunStatusDetails();refreshPointOverlays();
@@ -2891,10 +2906,17 @@ document.querySelectorAll(".view-tools").forEach(tools => tools.addEventListener
   else if (action === "zoom-in") plot.zoomAt(1.5);
   else if (action === "zoom-out") plot.zoomAt(1/1.5);
 }));
-window.addEventListener("ludwig-palette-change",()=>{if(state.activeTab==="field")renderField();else spatialViews.field?.schedule();});
+window.addEventListener("ludwig-palette-change",()=>{window.WingLegends?.setPalette('flow',window.LudwigPalettes.get());if(state.activeTab==="field")renderField();else spatialViews.field?.schedule();});
 setTheme(el["theme-mode"].value); updateSetup(); loadHealth(); scheduleGeometryPreview();
 
 // Saved results (a separate line: the Node viewer tests remove the line above exactly).
 loadRecentResults();
 
 window.AirfoilManagedFlowKeys=["alpha_deg", "cav_air_mode", "cav_channel_height", "cav_depth_chords", "cav_domain", "cav_duration_ctu", "cav_fluid", "cav_frames", "cav_trip_x", "cav_warm_steps", "cfd_auto_stop", "cfd_block_ctu", "cfd_burnin_ctu", "cfd_duration_ctu", "cfd_freestream_temperature_k", "cfd_gpu", "cfd_mass_ceiling", "cfd_mesh", "cfd_n_base", "cfd_resolution", "cfd_rk_weight_closure", "cfd_sfd_enabled", "cfd_sfd_storage", "cfd_steps", "cfd_streamline_admission", "cfd_streamline_align", "cfd_streamline_fallback", "cfd_streamline_mode", "cfd_te_thickness", "cfd_te_topology", "cfd_time_mode", "cfd_transition_model", "cfd_viscosity_model", "display_every", "gurney_height", "lowspeed_gpu", "lowspeed_mut_ratio", "lowspeed_resolution", "lowspeed_topology", "lowspeed_tu", "mach", "ncrit", "reynolds", "sigma", "trip_lower", "trip_upper"];
+
+window.WingLegends?.configure({getPalette:()=>window.LudwigPalettes.get(),
+  setPalette:name=>window.LudwigPalettes.set(name),
+  palettes:Object.entries(window.LudwigPalettes.labels).map(([value,label])=>({value,label,gradient:entry=>window.LudwigPalettes.gradient(value,entry.min,entry.max)})),
+  onLimitsChange:()=>renderField(),onChange:()=>window.AirfoilStudies?.markDirty()});
+document.getElementById('field-sonic')?.addEventListener('change',()=>renderField());
+document.getElementById('chart-interrogate')?.addEventListener('change',()=>{for(const view of chartViews.values())view.node.querySelector('.chart-probe')?.remove();});

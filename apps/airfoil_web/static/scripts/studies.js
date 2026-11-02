@@ -59,7 +59,8 @@ window.AirfoilStudies = (() => {
     if(busy||!await allowReplace())return;
     restoring=true;
     try {
-      detach();restoreControls(defaults);path=null;etag=null;resultLink=null;
+        detach();restoreControls(defaults);path=null;etag=null;resultLink=null;
+        window.WingLegends?.restore(null);
       state.savedLowspeedTopology=null;state.machEdited=false;state.reynoldsEdited=false;
       updateSetup();scheduleGeometryPreview();await window.AirfoilBenchmarks.restore(null);
       switchTab('geometry');dirty=false;status('New study. Save to choose its location.');closeMenus();
@@ -85,6 +86,8 @@ window.AirfoilStudies = (() => {
       const managed=new Set(window.AirfoilManagedFlowKeys||[]);
       state.studyFlowExtras=Object.fromEntries(Object.entries(study.request.flow).filter(([key])=>!(key in represented)&&!managed.has(key)));
       path=data.path;etag=data.etag;resultLink=study.results;
+      window.WingLegends?.restore(study.view?.color_scales);
+        if(study.view?.color_scales?.palettes?.flow)window.LudwigPalettes?.set(study.view.color_scales.palettes.flow);
       await window.AirfoilBenchmarks.restore(study.view?.benchmark_id);
       scheduleGeometryPreview();
       let resultsOpened=false;
@@ -132,7 +135,7 @@ window.AirfoilStudies = (() => {
       }
       const link=state.job?.id?{job_id:state.job.id}:resultLink;
       const data=await api('save',{path:destination,etag:expected,request,controls,results:link,
-        view:{tab:state.activeTab,benchmark_id:window.AirfoilBenchmarks.selectedId}});
+        view:{tab:state.activeTab,benchmark_id:window.AirfoilBenchmarks.selectedId,color_scales:window.WingLegends?.capture()}});
       path=data.path;etag=data.etag;resultLink=data.study.results;dirty=edits!==revision;
       status(data.message+(dirty?' Newer edits still need saving.':''));closeMenus();return true;
     } catch(error){displayError(error);status(error.message);return false;}

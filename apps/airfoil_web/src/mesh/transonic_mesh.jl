@@ -7,6 +7,7 @@
 
 include(joinpath(@__DIR__, "nested_refined_mesh.jl"))
 include(joinpath(@__DIR__, "mesh_volume_redistribution.jl"))
+include(joinpath(@__DIR__, "normal_collar.jl"))
 
 "Sharp C mesh with locally concentrated surface columns around the leading edge."
 function _sharp_nose_mesh(af::CMeshGen.AirfoilPts; n_foil::Int, n_wake::Int,
@@ -224,7 +225,7 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         condition_geometry::Bool=true,
         cfd_te_thickness::Float64=0.0,
         stall_layer::Bool=false,
-        le_ds_scale::Float64=1.0)
+        le_ds_scale::Float64=1.0, normal_collar::Bool=true)
     far_extent >= 10 || throw(ArgumentError("far_extent must be at least 10 chords"))
     n_base >= 1 || throw(ArgumentError("n_base must be positive"))
     outer_angle = isnothing(farfield_angle_deg) ? alpha_deg : farfield_angle_deg
@@ -439,6 +440,7 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
     if stall_layer
         sl = _stall_layer_mesh(mesh); mesh = sl.mesh; stall_info = sl.info
     end
+    collar_info = normal_collar ? _normal_collar!(mesh) : Dict{String,Any}("applied"=>false,"reason"=>"disabled")
     # Passing mesh directly would attach the cavitation channel's slip-wall
     # and inlet tags to this external-flow case. The raw-array overload
     # preserves the gas solver's characteristic far-field boundary everywhere.
@@ -501,6 +503,7 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         "mesh_area_min"=>quality.area_min, "mesh_folds"=>quality.nfold,
         "quality_report"=>quality_report)
     merge!(metadata,refinement_metadata)
+    metadata["normal_collar"] = collar_info
     stall_info === nothing || (metadata["stall_layer"] = stall_info;
         metadata["mesh_family"] *= " + stall layer v1 (cells <= 2.5e-3 c to 0.2 c)")
     (; mesh, metrics, metadata, foil_indices, surface_indices, base_indices)
