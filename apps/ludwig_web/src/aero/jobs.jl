@@ -142,16 +142,17 @@ end
 function capabilities()
     solvers = [Dict("id" => name, "label" => label,
                     "available" => !Sys.isapple() && isfile(joinpath(root, "src", "main.jl")),
-                    "reason" => Sys.isapple() ? "The CUDA solver is not available on macOS. Model placement and saved result viewing remain available." : "",
-                    "placement" => name == "main",
+                    "reason" => Sys.isapple() ? "The CUDA solver is not available on macOS. Model placement and saved result viewing remain available." : name=="pond_thermal" ? "Experimental thermal finite-volume solver on the same Cartesian AMR mesh. Inviscid slip or laminar no-slip walls; no turbulence model or validated aircraft predictions." : "",
+                    "placement" => name != "lbmtau",
                     "web_lattices" => name == "main" ? ["d3q27", "d3q39"] : ["d3q27"])
                for (name, label, root) in (("main", "Main LBM solver", MAIN_SOLVER),
-                                            ("lbmtau", "Pinned lbmtau snapshot", PINNED_SOLVER))]
+                                            ("lbmtau", "Pinned lbmtau snapshot", PINNED_SOLVER),
+                                            ("pond_thermal", "Thermal kinetic FV (experimental)", MAIN_SOLVER))]
     _response(200, Dict("ok" => true, "solvers" => solvers,
                         "api_revision" => WORKBENCH_API_REVISION,
                         "repository_id" => _workbench_repository_id(PUBLIC_ROOT),
                         "features" => Dict("studies"=>true,"free_air_domain_expansion"=>true,
-                                           "volume_cuts"=>true,"max_amr_levels"=>7),
+                                           "volume_cuts"=>true,"max_amr_levels"=>7,"pond_thermal"=>true),
                         "web_lattices" => [Dict("lattice" => "d3q27", "collision_operator" => "cumulant", "max_levels" => 7),
                                            Dict("lattice" => "d3q39", "collision_operator" => "entropic",
                                                 "solver" => "main", "max_mach" => 1.6, "max_levels" => 7)],
@@ -166,7 +167,7 @@ function capabilities()
 end
 
 function _solver_command(state::AbstractDict, kind::String; case_dir_override=nothing)
-    solver_root = state["case"]["solver"] == "main" ? MAIN_SOLVER : PINNED_SOLVER
+    solver_root = state["case"]["solver"] == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER
     julia = joinpath(Sys.BINDIR, Base.julia_exename())
     project = joinpath(solver_root, "src")
     main = joinpath(project, "main.jl")
@@ -205,7 +206,7 @@ function _mesh_probe!(id::String, state::AbstractDict, case::AbstractDict, index
     summary = _validate_build_summary(_read_build_summary(summary_path))
     Int(summary["num_levels"]) == case["levels"] ||
         error("VRAM sizing probe $index used $(summary["num_levels"]) levels instead of $(case["levels"]); inspect the resolved domain and native solver log")
-    gpu_memory_estimate_gb(summary, case["lattice"])
+    gpu_memory_estimate_gb(summary, _memory_lattice(case))
 end
 
 "Select the finest built mesh whose conservative GPU estimate stays under the requested target."
@@ -366,7 +367,7 @@ function _run_solver(id::String, kind::String)
         _load_job(id)["status"] == "cancelled" && return
         if success(proc)
             if kind == "mesh"
-                actual = build_summary(id; lattice=get(state["case"], "lattice", "d3q27"),allow_incomplete=false)
+                actual = build_summary(id; lattice=_memory_lattice(state["case"]),allow_incomplete=false)
                 actual === nothing && error("Solver exited without a build-only summary")
                 Int(actual["num_levels"]) == state["case"]["levels"] ||
                     error("Built mesh has $(actual["num_levels"]) AMR levels instead of $(state["case"]["levels"]); inspect the resolved domain and solver log")
@@ -379,7 +380,18 @@ function _run_solver(id::String, kind::String)
                 _patch_job(id, Dict("status" => "mesh_ready", "message" => "Mesh built; inspect the domain and VRAM estimate."*note,
                                     "actual" => actual,"estimate"=>measured_state["estimate"]))
             else
-                _patch_job(id, Dict("status" => "completed", "message" => "Solver completed"))
+                if _pond_case(state["case"])
+                    summary_path=joinpath(dir,"RESULTS","thermal_fv_summary.toml")
+                    isfile(summary_path) || error("Thermal kinetic FV exited without its final diagnostic summary; inspect solver.log")
+                    summary=TOML.parsefile(summary_path)
+                    get(summary,"status","")=="completed_steps" &&
+                        get(summary,"steps",-1)==state["case"]["steps"] ||
+                        error("Thermal kinetic FV did not finish the requested iterations; inspect its diagnostic summary and solver.log")
+                    _patch_job(id,Dict("status"=>"completed","converged"=>false,
+                        "solver_summary"=>summary,"message"=>"Requested thermal kinetic FV steps completed. Steady convergence was not assessed; this is an experimental inviscid/laminar result."))
+                else
+                    _patch_job(id, Dict("status" => "completed", "message" => "Solver completed"))
+                end
             end
             try
                 _sync_exports!(id;force=true)
@@ -388,7 +400,7 @@ function _run_solver(id::String, kind::String)
                 _patch_job(id,Dict("export_warning" => sprint(showerror,e)))
             end
         else
-            error("LBM solver exited with code $(proc.exitcode); see solver.log")
+            error("Solver exited with code $(proc.exitcode); see solver.log")
         end
     catch e
         if _load_job(id)["status"] != "cancelled"
@@ -591,7 +603,7 @@ function start_run(id::String,req::Union{Nothing,HTTP.Request}=nothing)
         _apply_run_output_updates!(state,updates)
         _require_run_output_folder(state["case"])
         state["study_name"]=_study_name(get(updates,"study_name",get(state,"study_name","Aero study")))
-        actual = build_summary(id; lattice=get(state["case"], "lattice", "d3q27"),allow_incomplete=false)
+        actual = build_summary(id; lattice=_memory_lattice(state["case"]),allow_incomplete=false)
         actual === nothing && throw(ArgumentError("Build-only summary is missing"))
         for (index,cut) in enumerate(state["case"]["cuts"])
             axis=findfirst(==(cut["axis"]),("x","y","z"))
@@ -683,7 +695,7 @@ function job_response(id::String)
         state["export_warning"] = sprint(showerror,error)
     end
     actual = try
-        build_summary(id; lattice=get(state["case"], "lattice", "d3q27"))
+        build_summary(id; lattice=_memory_lattice(state["case"]))
     catch error
         error isa ArgumentError || rethrow()
         # Inspection must remain usable even if a completed output is damaged.

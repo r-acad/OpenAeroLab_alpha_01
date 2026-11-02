@@ -83,6 +83,16 @@
       </div><div class="open-links"><a class="open-link" href="/aero-lab">Open Aero Lab →</a><a class="open-link" href="/airfoil-lab#solver-heading">Open Airfoil Lab →</a></div></details>
     </section>
 
+    <section aria-labelledby="thermal-fv-title">
+      <div class="section-head"><p class="eyebrow">Experimental selectable backend</p><h2 id="thermal-fv-title">Thermal kinetic finite volume</h2></div>
+      <details class="solver-card" id="pond-thermal"><summary><span class="summary-copy"><span class="type">3D geometry · GPU/AMR</span><strong>Thermal kinetic FV</strong><span>Mass, momentum and total energy on the LBM Cartesian mesh</span></span><span class="badge research">Experimental</span></summary><div class="details-grid">
+        <p><b>Application.</b> Transonic-flow development on the same Cartesian AMR geometry used by Aero Lab's LBM solvers. Freestream Mach 0.05–1.5 is an input limit, not a validated accuracy range.</p>
+        <p><b>Mathematical method.</b> Analytic Maxwellian kinetic flux-vector splitting advances five conserved variables. Shared finite-volume faces couple neighbouring cells and refinement levels; the solver has its own fields and time step. D3Q27 is used only while constructing the CPU mesh.</p>
+        <p><b>Maturity.</b> Experimental inviscid slip or laminar no-slip walls. There is no turbulence model and no established aircraft drag or stall validation. Reaching the requested iteration count does not establish steady convergence. Inspect diagnostic histories, wall resolution and mesh sensitivity.</p>
+        <p><b>Workflow.</b> Aero Lab → Mesh → Backend and lattice → Thermal kinetic FV. Set Mach or speed, temperature and CFL under Analysis; save the setup as a study. Surface fields and numeric/VTK cuts are opened under Results.</p>
+      </div><a class="open-link" href="/aero-lab">Open Aero Lab →</a></details>
+    </section>
+
     <section aria-labelledby="research-title">
       <div class="section-head"><p class="eyebrow">Source and test paths</p><h2 id="research-title">Research paths outside the selectable backends</h2><p>These are visible here so their existence is clear. They are not enabled as workbench run options.</p></div>
 

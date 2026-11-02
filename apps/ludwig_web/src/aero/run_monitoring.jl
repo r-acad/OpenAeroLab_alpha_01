@@ -138,7 +138,7 @@ function _monitor_phase(id,state,iteration)
         end
     end
     active_export===nothing || return Dict("key"=>"writing_results","label"=>"Writing result fields","detail"=>"$(active_export.stage), iteration $(active_export.step)")
-    iteration>0 ? Dict("key"=>"solving","label"=>"Solving on GPU","detail"=>"Iteration $iteration") :
+    iteration>0 ? Dict("key"=>"solving","label"=>"Solving","detail"=>"Iteration $iteration") :
         Dict("key"=>"initializing","label"=>"Initializing solver","detail"=>get(state,"message","Preparing the solver"))
 end
 

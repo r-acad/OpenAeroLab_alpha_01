@@ -72,7 +72,7 @@
     if(state.outdatedServer)throw new Error('This is an older workbench server. Relaunch Ludwig Workbench to use studies, automatic domain sizing and all seven AMR levels.');
     if(!state.modelId)throw new Error('Load a model first.');
     const solver=$('solver').value;
-    if(!solver)throw new Error('Select an available LBM solver.');
+    if(!solver)throw new Error('Select an available solver.');
     const lattice=$('lattice').value;
     const geometryHandling=$('geometry-handling')?.value||'closed_solid';
     if(!['closed_solid','two_sided_open'].includes(geometryHandling))throw new Error('Select a solver geometry handling mode.');
@@ -86,9 +86,10 @@
     const {flow_angles,...transform}=transformSettings();
     if(solver==='lbmtau'&&transform.translation.some(v=>v!==0))throw new Error('The pinned lbmtau solver cannot offset the model. Select the main solver or reset offsets.');
     if(boundary==='symmetry'&&transform.translation[1]!==0)throw new Error('Symmetry requires lateral offset Y = 0.');
-    const velocity=inputNumber('velocity','flow speed',{min:0.01,max:1000}),soundSpeed=inputNumber('sound-speed','sound speed',{min:1,max:100000});
-    const maxMach=lattice==='d3q39'?1.6:0.6;
-    if(velocity/soundSpeed>maxMach)throw new Error(`${lattice.toUpperCase()} cases require Mach ≤ ${maxMach}.`);
+    const thermal=thermalFlowSettings();
+    const velocity=thermal?.velocity??inputNumber('velocity','flow speed',{min:0.01,max:1000}),soundSpeed=thermal?.speed_of_sound??inputNumber('sound-speed','sound speed',{min:1,max:100000});
+    const maxMach=thermal?1.5:lattice==='d3q39'?1.6:0.6;
+    if(velocity/soundSpeed>maxMach)throw new Error(`Selected backend requires Mach ≤ ${maxMach}.`);
     const alpha=inputNumber('flow-alpha','angle of attack',{min:-85,max:85}),beta=boundary==='symmetry'?0:inputNumber('flow-beta','sideslip',{min:-85,max:85});
     return {reference:referenceTools?.read(),model_id:state.modelId,geometry_handling:geometryHandling,transform,domain:{
         upstream:inputNumber('upstream','upstream clearance',{min:0.02,max:10000}),
@@ -104,7 +105,7 @@
       outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,
       flow:{alpha,beta,velocity,density:inputNumber('density','density',{min:0.01,max:10000}),
         kinematic_viscosity:inputNumber('viscosity','kinematic viscosity',{min:1e-10,max:1}),
-        speed_of_sound:soundSpeed},
+        speed_of_sound:soundSpeed,...thermal},
       steps:inputNumber('steps','solver steps',{min:8,max:1000000,integer:true}),
       frames:inputNumber('frames','output frames',{min:2,max:40,integer:true}),
       cuts:state.cuts.map(c=>{
@@ -353,6 +354,8 @@
     set('flow-alpha',flow.alpha||0);set('flow-beta',flow.beta||0);referenceTools?.restore(caseInfo.reference||{});syncFlowAngles();
     set('velocity',flow.velocity);set('density',flow.density);
     set('viscosity',flow.kinematic_viscosity);set('sound-speed',flow.speed_of_sound);
+    set('flow-input-mode',flow.input_mode||'speed');set('flow-mach',flow.mach??flow.velocity/flow.speed_of_sound);
+    set('flow-temperature',flow.temperature_k??288.15);set('flow-cfl',flow.cfl??.25);set('flow-wall-model',flow.wall_model||'slip');syncThermalFlow();
     set('steps',caseInfo.steps);set('frames',caseInfo.frames);
     state.cuts=Array.isArray(caseInfo.cuts)?caseInfo.cuts.map(c=>({axis:c.axis,position:c.position})):[];
     window.LudwigOutputControls?.restore(caseInfo);updateVramTarget();showGeometryAudit(caseInfo.geometry_audit);
@@ -466,7 +469,7 @@
     const node=$('scene-info');if(!node)return;
     const frame=state.frame||{},lines=['Boundary colours: inlet = translucent yellow; outlet = blue; lower face = green.'];
     if(state.viewNotice)lines.unshift(state.viewNotice);
-    if(resultBoundary()==='free_air')lines.push('Green lower face is a visual floor reference; the free-air slip boundary is unchanged.');
+    if(resultBoundary()==='free_air')lines.push((state.amr?state.activeConfig?.solver:$('solver').value)==='pond_thermal'?'Green lower face is a visual floor reference; its kinetic far-field boundary remains open.':'Green lower face is a visual floor reference; the free-air slip boundary is unchanged.');
     lines.push(`Solver geometry: ${$('geometry-handling')?.value==='two_sided_open'?'Two-sided / intentional open surface':'Closed solid · verify topology'}. Wall intersections use both triangle sides; coincident backfaces are not duplicated.`);
     if(state.modelToolStatus)lines.push(state.modelToolStatus);
     if(frame.domain)lines.push(`Domain minimum [m]: ${frame.domain.min.map(fmt).join(', ')}\nDomain maximum [m]: ${frame.domain.max.map(fmt).join(', ')}`);
@@ -508,6 +511,17 @@
     }
     {
       const velocity=Number((state.amr?state.activeConfig?.flow?.velocity:null)??$('velocity').value);
+      const thermal=(state.amr?state.activeConfig?.solver:$('solver').value)==='pond_thermal';
+      const wall=(state.amr?state.activeConfig?.flow?.wall_model:$('flow-wall-model')?.value)||'slip';
+      if(thermal){
+        const farfield=`Characteristic far field · freestream at ${fmt(velocity)} m/s\nIncoming characteristics use freestream; outgoing use interior state`;
+        addLabel(`X− · inlet at x = ${fmt(a[0])} m\n${farfield}`,[a[0],mid[1],mid[2]],'boundary inlet');
+        addLabel(`X+ · outlet at x = ${fmt(c[0])} m\n${farfield}`,[c[0],mid[1],mid[2]],'boundary outlet');
+        addLabel(boundary==='ground'?`Y− · ground at y = ${fmt(a[1])} m\n${wall==='slip'?'Inviscid slip · zero normal velocity':'Stationary laminar wall · no slip'}`:boundary==='symmetry'?`Y− · symmetry at y = ${fmt(a[1])} m\nSlip / mirror · zero normal velocity`:`Y− · lateral boundary\n${farfield}`,[mid[0],a[1],mid[2]],'boundary '+(boundary==='ground'?'ground':boundary==='symmetry'?'symmetry':''));
+        addLabel(`Y+ · outer boundary\n${farfield}`,[mid[0],c[1],mid[2]],'boundary');
+        addLabel(`Z− · bottom boundary\n${farfield}`,[mid[0],mid[1],a[2]],'boundary');
+        addLabel(`Z+ · top boundary\n${farfield}`,[mid[0],mid[1],c[2]],'boundary');
+      }else{
       addLabel(`X− · inlet at x = ${fmt(a[0])} m\nPrescribed +X velocity ${fmt(velocity)} m/s · local density`,[a[0],mid[1],mid[2]],'boundary inlet');
       addLabel(`X+ · outlet at x = ${fmt(c[0])} m\nExtrapolated outflow · pressure is not fixed`,[c[0],mid[1],mid[2]],'boundary outlet');
       addLabel(boundary==='ground'?'Y− · ground at y = 0\nStationary wall · no slip (u = v = w = 0)':boundary==='symmetry'?'Y− · symmetry at y = 0\nSlip / mirror · zero normal velocity':'Y− · lateral far field\nFreestream velocity condition',
@@ -516,6 +530,7 @@
         [mid[0],c[1],mid[2]],'boundary');
       addLabel(boundary==='ground'?'Z− · lateral boundary\nSlip / mirror · zero normal velocity':'Z− · bottom boundary\nSlip / mirror · zero normal velocity',[mid[0],mid[1],a[2]],'boundary');
       addLabel(boundary==='ground'?'Z+ · lateral boundary\nSlip / mirror · zero normal velocity':'Z+ · top boundary\nSlip / mirror · zero normal velocity',[mid[0],mid[1],c[2]],'boundary');
+      }
     }
     if(mode==='all'){
       const up=groundSolverFrame()?1:2,lateral=groundSolverFrame()?2:1,grid=[];
@@ -824,7 +839,7 @@
     if(dataset.amr_url){try{active.amr=await api(dataset.amr_url);}catch(error){console.warn('Imported AMR metadata could not be displayed:',error);}}
     if(activeStatuses.has(state.job?.status)||state.resumePending||state.importing||state.uploading||initialJob!==state.jobId||initialModel!==state.modelId)throw new Error('The current case changed or became active. Read the results again after it finishes.');
     state.importedResults=active;state.importedSurface=surface;state.importedResultsReference=null;
-    if(state.inspector){state.inspector.data=null;state.inspector.key=null;state.inspector.error='';if(!surface){state.inspector.enabled=true;state.inspector.field=['velocity','pressure','density','u','v','w','vorticity'].includes(state.importedField)?state.importedField:'mesh';if(!dataset.volume&&dataset.cuts?.length){state.inspector.axis=dataset.cuts[0].axis;state.inspector.position=dataset.cuts[0].position;}}}
+    if(state.inspector){state.inspector.data=null;state.inspector.key=null;state.inspector.error='';if(!surface){state.inspector.enabled=true;state.inspector.field=['velocity','pressure','density','u','v','w','vorticity','mach','temperature'].includes(state.importedField)?state.importedField:'mesh';if(!dataset.volume&&dataset.cuts?.length){state.inspector.axis=dataset.cuts[0].axis;state.inspector.position=dataset.cuts[0].position;}}}
     state.mode=surface?(Object.keys(surface.fields||{}).length?'surface':'geometry'):'mesh';syncViewButtons();if(state.camera)state.camera._aeroFit=false;
     inspector?.levelControls();updateResultsAvailability();queueRender();
   }
@@ -1283,25 +1298,50 @@
     const b=$('boundary').value,center=$('symmetry-auto-center-y');
     $('move-y').disabled=b==='symmetry';$('move-y').title=b==='symmetry'?'Y placement is controlled by the symmetry plane':'';
     if(center){center.disabled=b!=='symmetry';const row=center.closest?.('label');if(row)row.hidden=b!=='symmetry';}
-    $('boundary-note').textContent=b==='free_air'?'Free air: X flow, Y lateral, Z up. The distant top and bottom faces use slip boundaries; increase vertical clearance if they affect the flow.':
+    $('boundary-note').textContent=b==='free_air'?($('solver').value==='pond_thermal'?'Free air: X flow, Y lateral, Z up. All outer faces use characteristic freestream/outflow boundaries. Increase clearances to assess far-field sensitivity.':'Free air: X flow, Y lateral, Z up. The distant top and bottom faces use slip boundaries; increase vertical clearance if they affect the flow.'):
       b==='ground'?'Ground: Aero Lab maps source Z-up to solver Y-up. The lowest model point touches ground at zero vertical offset; positive Z offset lifts it. Cut positions use solver coordinates.':
       center?.checked?'Symmetry: the model Y centre is placed on Y = 0. The solver uses the positive half and mirrors the symmetry boundary. Disable automatic centring for an already prepared half model.':'Symmetry: the minimum Y edge of the prepared half model is placed at Y = 0. Enable automatic centring to use half of a full model.';
   }
   function syncFlowAngles(){const symmetry=$('boundary').value==='symmetry';for(const id of ['flow-beta','reference-y'])if($(id)){$(id).disabled=symmetry;if(symmetry)$(id).value='0';}}
   function syncSolverLattice() {
-    const lattice=$('lattice').value,sel=$('solver');
+    const sel=$('solver'),thermal=sel.value==='pond_thermal';
+    if(thermal)$('lattice').value='d3q27';
+    const lattice=$('lattice').value;
+    $('lattice').disabled=thermal;
+    $('lattice-label').textContent=thermal?'Mesh layout':'LBM lattice / collision';
+    $('lattice').querySelector('option[value="d3q27"]').textContent=thermal?'Cartesian AMR · thermal finite volume':'D3Q27 + cumulant';
     const levels=$('levels');
     for(const option of levels.options)option.disabled=false;
     levels.title='Choose 1 to 7 AMR levels; inspect the built lattice and GPU memory estimate before running.';
     for(const option of sel.options){
       if(!option.value)continue;
-      option.disabled=option.dataset.available!=='true'||!String(option.dataset.lattices||'d3q27').split(',').includes(lattice);
+      option.disabled=option.dataset.available!=='true'||(option.value!=='pond_thermal'&&!String(option.dataset.lattices||'d3q27').split(',').includes(lattice));
     }
     if(sel.selectedOptions[0]?.disabled){const first=Array.from(sel.options).find(o=>o.value&&!o.disabled);sel.value=first?.value||'';}
-    $('lattice-title').textContent=lattice==='d3q39'?'D3Q39 + entropic':'D3Q27 + cumulant';
-    $('lattice-note').textContent=lattice==='d3q39'?
+    $('lattice-title').textContent=thermal?'Thermal kinetic FV · experimental':lattice==='d3q39'?'D3Q39 + entropic':'D3Q27 + cumulant';
+    $('lattice-note').textContent=thermal?'Conservative mass, momentum and total-energy fluxes on the same Cartesian AMR cells. Mach 0.05–1.5; inviscid slip or experimental laminar no-slip walls. No turbulence model or established aircraft validation.':lattice==='d3q39'?
       'Compressible flow, Mach at most 1.6. Uses the main solver with up to 7 AMR levels, thermal energy, and a conservative GPU memory allowance. Development path; check mesh, AMR interfaces, and convergence. D3Q19 remains retired.':
       'Incompressible regime, Mach at most 0.6. Both solver sources support this web workflow. D3Q19 remains retired.';
+    syncThermalFlow();boundaryNote();
+  }
+  function thermalFlowSettings() {
+    if($('solver').value!=='pond_thermal')return null;
+    const input_mode=$('flow-input-mode').value,temperature_k=inputNumber('flow-temperature','freestream temperature',{min:100,max:2000}),gamma=1.4,gas_constant=287.05;
+    const speed_of_sound=Math.sqrt(gamma*gas_constant*temperature_k);
+    const velocity=input_mode==='mach'?inputNumber('flow-mach','freestream Mach',{min:.05,max:1.5})*speed_of_sound:inputNumber('velocity','flow speed',{min:.01,max:10000});
+    const mach=velocity/speed_of_sound;if(mach<.05||mach>1.5)throw new Error('Thermal kinetic FV requires freestream Mach from 0.05 to 1.5.');
+    return {input_mode,temperature_k,gamma,gas_constant,speed_of_sound,velocity,mach,cfl:inputNumber('flow-cfl','CFL number',{min:.01,max:.4}),wall_model:$('flow-wall-model').value};
+  }
+  function syncThermalFlow() {
+    const thermal=$('solver').value==='pond_thermal',machInput=$('flow-input-mode').value==='mach';
+    $('thermal-flow-controls').hidden=!thermal;
+    $('velocity').disabled=thermal&&machInput;$('velocity').max=thermal?'10000':'1000';$('flow-mach').disabled=!machInput;
+    $('sound-speed').disabled=thermal;$('viscosity').disabled=thermal&&$('flow-wall-model').value==='slip';
+    if(!thermal)return;
+    try{const flow=thermalFlowSettings();$('sound-speed').value=flow.speed_of_sound;
+      if(machInput)$('velocity').value=flow.velocity;else $('flow-mach').value=flow.mach;
+      $('thermal-flow-summary').textContent=`Mach ${flow.mach.toFixed(4)} · U∞ ${flow.velocity.toFixed(3)} m/s · a∞ ${flow.speed_of_sound.toFixed(3)} m/s. ${flow.wall_model==='slip'?'Inviscid: molecular viscosity is not applied.':'Molecular viscosity only; no turbulence closure.'}`;
+    }catch(error){$('thermal-flow-summary').textContent=error.message;}
   }
   function updateVramTarget(gpu=state.capabilities?.gpu) {
     const node=$('target-vram-resolved');if(!node)return;
@@ -1316,7 +1356,7 @@
   async function loadCapabilities() {
     try{
       const data=await api('/api/aero/capabilities');state.capabilities=data;
-      state.outdatedServer=data.api_revision!=='2026-11-02-timed-snapshots-v10';
+      state.outdatedServer=data.features?.studies!==true||Number(data.features?.max_amr_levels)<7;
       const sel=$('solver');sel.replaceChildren();
       for(const solver of data.solvers||[]){const o=document.createElement('option');o.value=solver.id;
         o.dataset.available=String(Boolean(solver.available));o.dataset.lattices=(solver.web_lattices||['d3q27']).join(',');
@@ -1336,10 +1376,13 @@
   function wireEvents() {
     $('model-file').addEventListener('change',event=>importModel(event.target.files?.[0]));
     for(const id of ['scale-x','scale-y','scale-z','rotate-x','rotate-y','rotate-z','move-x','move-y','move-z',
-      'upstream','downstream','lateral','height','domain-ratio-x','domain-ratio-y','domain-ratio-z','surface-dx','levels','velocity','density','viscosity','sound-speed','steps','frames','solver'])
+      'upstream','downstream','lateral','height','domain-ratio-x','domain-ratio-y','domain-ratio-z','surface-dx','levels','velocity','density','viscosity','sound-speed','steps','frames'])
       $(id).addEventListener('input',invalidateMesh);
     $('surface-triangle-max-edge-mm')?.addEventListener('input',invalidateMesh);
     $('lattice').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
+    $('solver').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
+    for(const id of ['flow-input-mode','flow-mach','flow-temperature','flow-cfl','flow-wall-model'])$(id).addEventListener('input',()=>{syncThermalFlow();invalidateMesh();});
+    $('velocity').addEventListener('input',syncThermalFlow);
     $('domain-sizing')?.addEventListener('change',()=>{boundaryNote();invalidateMesh();});
     $('mesh-sizing').addEventListener('change',()=>{updateVramTarget();invalidateMesh();});
     $('target-vram').addEventListener('input',()=>{updateVramTarget(state.job?.estimate?.gpu);

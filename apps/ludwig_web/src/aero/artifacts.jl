@@ -85,7 +85,11 @@ function gpu_memory_estimate_gb(summary::AbstractDict, lattice::AbstractString="
     # Force maps and uploaded surface data are not part of CPU grid summarysize.
     # Reserve 128 bytes per actual (possibly symmetry-clipped) sampled facet.
     surface_gb=128.0*Float64(get(summary,"geometry_triangles",0))/1e9
-    max(calibrated, 1.15 * cpu_grid_gb + (lattice == "d3q39" ? 1.6 : 0.7)) + surface_gb
+    estimate=max(calibrated, 1.15 * cpu_grid_gb + (lattice == "d3q39" ? 1.6 : 0.7)) + surface_gb
+    # Count all allocated levels (including covered parents), so this remains
+    # conservative before the finite-volume leaf/face adapter has run.
+    lattice=="pond_thermal" && (estimate=max(estimate,1800.0*sum(Float64(level["cells"]) for level in levels)/1e9+.7+surface_gb))
+    estimate
 end
 
 function _validate_build_summary(raw::AbstractDict)
@@ -166,7 +170,8 @@ function build_summary(id::AbstractString; lattice::AbstractString="d3q27",allow
     result["cpu_grid_gb"] = Float64(raw["bytes_allocated_total"]) / 1e9
     result["memory_gb"] = gpu_memory_estimate_gb(raw, lattice)
     result["surface_geometry_allowance_gb"]=128.0*Float64(get(raw,"geometry_triangles",0))/1e9
-    result["memory_basis"] = lattice == "d3q39" ?
+    result["memory_basis"] = lattice == "pond_thermal" ?
+        "provisional thermal kinetic FV allowance: 1800 bytes per allocated Cartesian cell for leaf states, shared faces and work buffers, plus 0.7 GB overhead and surface sampling; at least the LBM build-memory estimate. Measured allocations remain subject to validation" : lattice == "d3q39" ?
         "conservative D3Q39 flow + thermal allowance: 3 x calibrated D3Q27 per-cell costs, plus 1.6 GB overhead; at least 1.15 x CPU grid bytes plus overhead; plus 128 bytes per surface sampling triangle" :
         "estimated GPU run memory from active cells and measured per-cell costs, with 0.7 GB device overhead; at least 1.15 x CPU grid bytes plus overhead; plus 128 bytes per surface sampling triangle"
     result
@@ -372,7 +377,7 @@ end
 
 function slice_json(id::AbstractString, file::AbstractString, field::AbstractString)
     selected = String(field)
-    selected in ("velocity", "density", "pressure", "vorticity", "u", "v", "w") ||
+    selected in ("velocity", "density", "pressure", "vorticity", "u", "v", "w", "mach", "temperature") ||
         throw(ArgumentError("Unknown cut field"))
     path = _slice_path(id, file)
     path === nothing && return _bad("Numeric cut not found", 404)

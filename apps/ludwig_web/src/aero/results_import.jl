@@ -246,8 +246,17 @@ function _build_result_metadata!(id,files,options)
     bounds=amr!==nothing ? Dict("min"=>[0.,0.,0.],"max"=>amr["domain_size"]) : volume!==nothing ? volume["bounds"] :
         surface!==nothing ? Dict("min"=>surface["bounds"]["min"].+offset,"max"=>surface["bounds"]["max"].+offset) : nothing
     if bounds===nothing && !isempty(cuts)
-        h,arrays=LBMSliceFormat.read_lbmslice(joinpath(directory,cuts[1]["file"]));origin=Float64.(h["origin_m"]);spacing=Float64(h["spacing_m"]);axes=Dict("x"=>1,"y"=>2,"z"=>3);hi=copy(origin)
-        array=first(values(arrays));hi[axes[h["axis1"]]]+=size(array,1)*spacing;hi[axes[h["axis2"]]]+=size(array,2)*spacing;bounds=Dict("min"=>origin,"max"=>hi)
+        h,arrays=LBMSliceFormat.read_lbmslice(joinpath(directory,cuts[1]["file"]))
+        raw_origin=Float64.(h["origin_m"]);spacing=Float64(h["spacing_m"]);axes=Dict("x"=>1,"y"=>2,"z"=>3)
+        a1=axes[h["axis1"]];a2=axes[h["axis2"]];normal=axes[h["normal_axis"]]
+        origin=length(raw_origin)==3 ? raw_origin : zeros(3)
+        if length(raw_origin)==2
+            origin[a1]=raw_origin[1];origin[a2]=raw_origin[2];origin[normal]=Float64(h["normal_coord_m"])
+        elseif length(raw_origin)!=3
+            throw(ArgumentError("Native slice origin must contain two plane coordinates or three domain coordinates"))
+        end
+        hi=copy(origin);array=first(values(arrays))
+        hi[a1]+=size(array,1)*spacing;hi[a2]+=size(array,2)*spacing;bounds=Dict("min"=>origin,"max"=>hi)
     end
     bounds===nothing && throw(ArgumentError("Results contain no surface, volume or numeric slice"))
     fields=surface===nothing ? String[] : collect(keys(surface["fields"]))

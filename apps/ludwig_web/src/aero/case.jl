@@ -196,12 +196,12 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     lengths = _domain_lengths(domain,extent)
     all(isfinite, lengths) || throw(ArgumentError("Transformed model or domain is too large"))
     solver = string(get(raw, "solver", "main"))
-    solver in ("main", "lbmtau") || throw(ArgumentError("Unknown LBM solver backend"))
+    solver in ("main", "lbmtau", "pond_thermal") || throw(ArgumentError("Unknown Aero Lab solver backend"))
     lattice = string(get(raw, "lattice", "d3q27"))
     lattice in ("d3q27", "d3q39") || throw(ArgumentError("Aero Lab lattice must be d3q27 or d3q39"))
     lattice == "d3q39" && solver != "main" && throw(ArgumentError("D3Q39 in Aero Lab requires the main LUDWIG solver"))
-    isfile(joinpath(solver == "main" ? MAIN_SOLVER : PINNED_SOLVER, "src", "main.jl")) ||
-        throw(ArgumentError("Selected LBM solver is unavailable"))
+    isfile(joinpath(solver == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER, "src", "main.jl")) ||
+        throw(ArgumentError("Selected solver is unavailable"))
     if solver == "lbmtau" && any(x -> !iszero(x), translation)
         throw(ArgumentError("The pinned lbmtau solver cannot place a model at an offset; select the main solver"))
     end
@@ -250,13 +250,14 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     f = get(raw, "flow", Dict{String,Any}())
     f isa AbstractDict || throw(ArgumentError("flow must be an object"))
     flow = Dict{String,Any}("alpha"=>alpha,"beta"=>beta,
-        "velocity" => _number(get(f, "velocity", 20.0), "flow.velocity"; lo=0.01, hi=1000),
+        "velocity" => _number(get(f, "velocity", 20.0), "flow.velocity"; lo=0.01, hi=solver=="pond_thermal" ? 10000 : 1000),
         "density" => _number(get(f, "density", 1.225), "flow.density"; lo=0.01, hi=1e4),
         "kinematic_viscosity" => _number(get(f, "kinematic_viscosity", 1.5e-5), "flow.kinematic_viscosity"; lo=1e-10, hi=1),
         "speed_of_sound" => _number(get(f, "speed_of_sound", 343.0), "flow.speed_of_sound"; lo=1, hi=1e5))
+    solver=="pond_thermal" && _pond_flow!(flow,f)
     mach = flow["velocity"] / flow["speed_of_sound"]
-    mach <= (lattice == "d3q39" ? 1.6 : 0.6) ||
-        throw(ArgumentError("$lattice Aero Lab cases require Mach <= $(lattice == "d3q39" ? 1.6 : 0.6)"))
+    max_mach=solver=="pond_thermal" ? 1.5 : lattice=="d3q39" ? 1.6 : 0.6
+    mach <= max_mach || throw(ArgumentError("Selected Aero Lab backend requires Mach <= $max_mach"))
     cuts_raw = get(raw, "cuts", Any[])
     cuts_raw isa AbstractVector && length(cuts_raw) <= 6 ||
         throw(ArgumentError("cuts must be a list of at most six planes"))
@@ -313,6 +314,7 @@ function _estimate(case; gpu=_gpu_memory())
     lattice_factor = get(case, "lattice", "d3q27") == "d3q39" ? 3.0 : 1.0
     memory = lattice_factor*(coarse*462 + intermediate*462 + fine*700)/1e9 +
              (lattice_factor > 1 ? 1.6 : 0.7)
+    _pond_case(case) && (memory=max(memory,1800cells/1e9+.7))
     # Uploaded centers/normals/areas, stress maps, averages and temporary force
     # buffers scale with surface facets independently of allocated fluid cells.
     surface_memory=get(get(case,"surface_subdivision",Dict()),"gpu_surface_allowance_gb",0.0)
@@ -382,7 +384,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     dom = Dict("upstream" => d["upstream"], "downstream" => d["downstream"],
                "lateral" => solver_lateral, "height" => solver_height)
     placement = String[]
-    if case["solver"] == "main"
+    if case["solver"] in ("main","pond_thermal")
         !iszero(so[1]) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + so[1]))")
         !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
         !iszero(so[3]) && push!(placement, "    object_center_z_m: $(@sprintf("%.12g", snapped_z/2 + so[3]))")
@@ -413,7 +415,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "    output_startup_slices: true", "    output_startup_volume: false",
         "    build_only: $build_only", "    output_dir: \"RESULTS\"",
         "    output_fields:", "      density: true", "      velocity: true", "      velocity_magnitude: true",
-        "      pressure: true", "      mach: $(d3q39)", "      temperature: $(d3q39)",
+        "      pressure: true", "      mach: $(d3q39 || _pond_case(case))", "      temperature: $(d3q39 || _pond_case(case))",
         "      obstacle: true", "      level: true",
         # A zero min_dx bypasses the native VRAM/domain auto-sizer, which can
         # shrink clearances or drop levels. The explicit reference length and
@@ -424,6 +426,12 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "advanced:", "  solver_preset: \"vanilla\"", "  numerics:", "    lattice: \"$lattice\"",
         "    collision_operator: \"$(d3q39 ? "entropic" : "cumulant")\"",
         "    compressible_mode: $d3q39", "    u_lattice: 0.08", "    tau_min: $(d3q39 ? 0.505 : 0.501)",
+        (_pond_case(case) ? ["    pond_thermal:","      enabled: true",
+            "      cfl: $(f["cfl"])","      gamma: $(f["gamma"])",
+            "      temperature_k: $(f["temperature_k"])","      gas_constant: $(f["gas_constant"])",
+            "      wall_model: \"$(f["wall_model"])\"",
+            "      export_surface_vtk: $(outputs["surface_vtk"])",
+            "      export_surface_lbmp: $(outputs["surface_lbmp"])"] : String[])...,
         (d3q39 ? ["    eos_thermodynamic: true", "    shifted_lattice:",
                   "      auto: false", "      shift_x: $(f["velocity"] / f["speed_of_sound"] >= 1.2 ? 1 : 0)",
                   "      shift_y: 0", "      shift_z: 0"] : String[])...,
@@ -455,7 +463,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "  forces:", "    enabled: true", "    moment_center: [$(join(moment_setting, ", "))]", "    output_freq: $every",
         "  slice:", "    mode: \"production\"", "    export_data: true", "    png: $(outputs["slice_png"])",
         "    fields: [\"velocity\", \"pressure\", \"vorticity\"]",
-        "    export_fields: [\"density\", \"pressure\", \"u\", \"v\", \"w\", \"velocity_magnitude\", \"vorticity\"]",
+        "    export_fields: [\"density\", \"pressure\", \"u\", \"v\", \"w\", \"velocity_magnitude\", \"vorticity\"$(_pond_case(case) ? ", \"mach\", \"temperature\"" : "")]",
         "    planes:", plane_lines..., "    export_window: \"domain\"", "    export_level: \"finest\"",
     ]
     join(lines, "\n") * "\n"

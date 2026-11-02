@@ -12,7 +12,7 @@
 #                                              {plane: "xy", z: <m>} (domain frame, metres)
 #   advanced.slice.fields        list          PNG fields (renderer names, e.g. "velocity", "vorticity")
 #   advanced.slice.png           Bool (true)   false: no slice PNG at all (startup, per step, final)
-#   advanced.slice.export_fields list          numeric fields (default: all seven, see LBMIO_ALL_EXPORT_FIELDS)
+#   advanced.slice.export_fields list          numeric fields (default: seven, see LBMIO_DEFAULT_EXPORT_FIELDS)
 #   advanced.slice.export_window "domain" | "finest" | [a1_min, a1_max, a2_min, a2_max] (m)
 #   advanced.slice.export_level  "finest" | level number: the export spacing is that level's dx
 #   advanced.slice.export_max_cells Int (4194304): above it the spacing doubles (next coarser level)
@@ -27,7 +27,8 @@ using .LBMSliceFormat
 import TOML
 
 # ── lbm-io-opts globals: ONE block; the defaults reproduce the legacy behaviour ──
-const LBMIO_ALL_EXPORT_FIELDS = ("density", "pressure", "u", "v", "w", "velocity_magnitude", "vorticity")
+const LBMIO_DEFAULT_EXPORT_FIELDS = ("density", "pressure", "u", "v", "w", "velocity_magnitude", "vorticity")
+const LBMIO_ALL_EXPORT_FIELDS = (LBMIO_DEFAULT_EXPORT_FIELDS..., "mach", "temperature")
 const LBMIO_PNG_FIELD_NAMES = (:mach, :density, :velocity, :vorticity, :temperature, :schlieren,
                                :schlieren_calibrated, :pressure, :pressure_rel, :cp, :pi_neq,
                                :velocity_highpass, :velocity_highpass_calibrated, :local_shift,
@@ -38,7 +39,7 @@ global LBMIO_SLICE_PLANES = nothing     # nothing ⇒ the legacy three PNG plane
 global LBMIO_SLICE_FIELDS = nothing     # nothing ⇒ the legacy field set; else Vector{Symbol}
 global LBMIO_SLICE_PNG = true
 global LBMIO_SLICE_CUSTOM = false       # planes, fields or png=false given ⇒ main.jl takes the new PNG branch
-global LBMIO_EXPORT_FIELDS = collect(LBMIO_ALL_EXPORT_FIELDS)
+global LBMIO_EXPORT_FIELDS = collect(LBMIO_DEFAULT_EXPORT_FIELDS)
 global LBMIO_EXPORT_WINDOW = :domain    # :domain | :finest | NTuple{4,Float64}
 global LBMIO_EXPORT_LEVEL = 0           # 0 = the finest level
 global LBMIO_EXPORT_MAX_CELLS = 4_194_304
@@ -120,7 +121,7 @@ function lbmio_load_options!(cfg)
     global LBMIO_SLICE_PLANES = nothing
     global LBMIO_SLICE_FIELDS = nothing
     global LBMIO_SLICE_PNG = true
-    global LBMIO_EXPORT_FIELDS = collect(LBMIO_ALL_EXPORT_FIELDS)
+    global LBMIO_EXPORT_FIELDS = collect(LBMIO_DEFAULT_EXPORT_FIELDS)
     global LBMIO_EXPORT_WINDOW = :domain
     global LBMIO_EXPORT_LEVEL = 0
     global LBMIO_EXPORT_MAX_CELLS = 4_194_304
@@ -161,6 +162,9 @@ function lbmio_load_options!(cfg)
             s = lowercase(strip(String(r)))
             s in LBMIO_ALL_EXPORT_FIELDS ||
                 error("advanced.slice.export_fields[$i] = $(repr(r)) is unknown; valid: $(join(LBMIO_ALL_EXPORT_FIELDS, ", "))")
+            if s in ("mach","temperature") && safe_get(cfg,"advanced","numerics","pond_thermal","enabled";default=false)!==true
+                error("Numeric $s plane export currently requires the thermal kinetic FV backend; legacy LBM numeric plane fields remain unchanged")
+            end
             s in fields || push!(fields, s)
         end
         global LBMIO_EXPORT_FIELDS = [f for f in LBMIO_ALL_EXPORT_FIELDS if f in fields]   # canonical order
@@ -709,6 +713,7 @@ function lbmio_build_only_case(runtime_selection, output_claim, sim_start_dateti
         n_samples=0, min_Cd=0.0, max_Cd=0.0, min_Cl=0.0, max_Cl=0.0, min_Cs=0.0, max_Cs=0.0,
         force_divergence_flag=false, force_peak_Cd=0.0, force_peak_Cl=0.0, force_peak_Cs=0.0,
         force_ratio_Cd=0.0, force_ratio_Cl=0.0, force_ratio_Cs=0.0,
-        collision_operator=COLLISION_OPERATOR, ma_physical=params.u_physical / 343.0,
+        collision_operator=COLLISION_OPERATOR,
+        ma_physical=params.u_physical / (POND_THERMAL_ENABLED ? SPEED_OF_SOUND_PHYSICAL : 343.0),
         compressibility_correction=COMPRESSIBILITY_CORRECTION, output_dir=abspath(OUT_DIR)))
 end

@@ -140,6 +140,8 @@ function _export_category(relative)
     ext==".lbmslice" && return "numeric_cuts"
     ext in (".png",".svg",".jpg",".jpeg") && return "images"
     ext==".csv" && return "histories"
+    name=="thermal_state.jls" && return "checkpoints"
+    name=="thermal_fv_summary.toml" && return "diagnostics"
     ext in (".log",".txt") && return "logs"
     name in ("build_only_summary.toml","amr_data.json") && return "mesh"
     "setup"
@@ -192,7 +194,7 @@ function _selected_export(relative::String, opts)
     ext == ".png" && return opts["slice_png"]
     ext == ".csv" && return opts["csv_history"]
     ext in (".vtu", ".vtk", ".vtp", ".vti", ".vtm", ".pvtu", ".pvd") && return opts["volume_vtk"]
-    name in ("build_only_summary.toml", "amr_data.json") && return true
+    name in ("build_only_summary.toml", "amr_data.json", "thermal_fv_summary.toml", "thermal_state.jls") && return true
     false
 end
 

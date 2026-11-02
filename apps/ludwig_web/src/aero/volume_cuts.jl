@@ -173,6 +173,7 @@ function _volume_cell_array(grid,name)
 end
 
 function _volume_velocity_scale(case)
+    _pond_case(case) && return 1.0 # Thermal FV volume fields are already SI.
     flow=case["flow"]
     get(case,"lattice","d3q27")=="d3q39" ? Float64(flow["speed_of_sound"])/sqrt(2/3) : Float64(flow["velocity"])/.08
 end
@@ -201,7 +202,10 @@ function _volume_sample_plane(grid,axis::String,position::Real,field::String,cas
     size(array,1)==expected || throw(ArgumentError("Saved field component count is invalid"))
     scale=_volume_velocity_scale(case)
     factor=source in ("Velocity","Vorticity") ? scale : 1.0
-    units=source=="Velocity" ? "m/s" : source=="Vorticity" ? "1/s" : source=="Pressure" ? "lattice" : "1"
+    units=source=="Velocity" ? "m/s" : source=="Vorticity" ? "1/s" :
+        _pond_case(case) && source=="Pressure" ? "Pa" :
+        _pond_case(case) && source=="Density" ? "kg/m³" :
+        _pond_case(case) && source=="Temperature" ? "K" : source=="Pressure" ? "lattice" : "1"
     obstacle=_volume_cell_array(grid,"Obstacle");level=_volume_cell_array(grid,"Level")
     selected=fill(NaN,n1,n2);cellsize=fill(Inf,n1,n2);owner=zeros(Int,n1,n2)
     b=grid["bounds"];component=field=="u" ? 1 : field=="v" ? 2 : field=="w" ? 3 : field=="vorticity" ? normal : 1

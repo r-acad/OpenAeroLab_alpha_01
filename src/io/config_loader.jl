@@ -179,6 +179,7 @@ global NUMERICAL_EQUILIBRIUM = false
 # byte-identical. The PonD FV path evolves conserved MOMENTS (ρ,ρu) via shared face fluxes,
 # NOT populations via stream-collide — it is dispatched separately from the LBM operators.
 global POND_ENABLED = false
+global POND_THERMAL_ENABLED = false
 
 # Phase C (2026-06-24): automatic regime selection. Populated in load_case_configuration.
 global REGIME_MA = 0.0
@@ -1484,6 +1485,11 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     # PonD opt-in (default OFF ⇒ byte-identical existing cases). When enabled it overrides
     # the regime lattice choice: PonD uses the 39-velocity set for the 2nd-order Grad closure.
     global POND_ENABLED = safe_get(CFG, "advanced", "numerics", "pond", "enabled"; default=false)
+    local _thermal_fv_enabled = safe_get(CFG, "advanced", "numerics", "pond_thermal", "enabled"; default=false)
+    _thermal_fv_enabled isa Bool || error("advanced.numerics.pond_thermal.enabled must be true or false")
+    global POND_THERMAL_ENABLED = _thermal_fv_enabled
+    POND_THERMAL_ENABLED && POND_ENABLED && error("Select either legacy PonD or thermal kinetic FV, not both")
+    POND_THERMAL_ENABLED && LATTICE_TYPE != :d3q27 && error("Thermal kinetic FV uses lattice: d3q27 for the shared CPU mesh build; it evolves its own conserved fields")
     if POND_ENABLED
         global LATTICE_TYPE = :pond
     end
@@ -1510,6 +1516,15 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     # directly from CFG here because SPEED_OF_SOUND_PHYSICAL is set a few blocks
     # below — this check runs before that global is assigned.
     local _sos_check = Float64(safe_get(CFG, "basic", "fluid", "speed_of_sound"; default=343.0))
+    if POND_THERMAL_ENABLED
+        local _thermal_gamma=Float64(safe_get(CFG,"advanced","numerics","pond_thermal","gamma";default=1.4))
+        local _thermal_temperature=Float64(safe_get(CFG,"advanced","numerics","pond_thermal","temperature_k";default=288.15))
+        local _thermal_gas_constant=Float64(safe_get(CFG,"advanced","numerics","pond_thermal","gas_constant";default=287.05))
+        all(isfinite,(_thermal_gamma,_thermal_temperature,_thermal_gas_constant)) &&
+            1<_thermal_gamma<=5/3 && 100<=_thermal_temperature<=2000 && _thermal_gas_constant>0 ||
+            error("Invalid thermal kinetic FV ideal-gas parameters")
+        _sos_check=sqrt(_thermal_gamma*_thermal_gas_constant*_thermal_temperature)
+    end
     local _Ma_phys_autocheck = FLOW_VELOCITY / _sos_check
     local _variable_nu_sgs_explicit = config_has_path(CFG, "advanced", "numerics", "variable_nu_sgs", "enabled")
     if !_variable_nu_sgs_explicit && LATTICE_TYPE == :d3q39 && _Ma_phys_autocheck >= 0.6 && SURFACE_RESOLUTION <= 256
@@ -1522,18 +1537,18 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     # Π_neq adaptive SGS (ported to cumulant in Phase B) is the gold standard. Auto-on
     # only when (a) the user didn't set variable_nu_sgs.enabled, (b) D3Q27, and (c) Re
     # is high (REGIME_RE_HIGH_RE_THRESHOLD). User-set value always wins.
-    if !_variable_nu_sgs_explicit && LATTICE_TYPE == :d3q27 && REGIME_RE >= REGIME_RE_HIGH_RE_THRESHOLD
+    if !POND_THERMAL_ENABLED && !_variable_nu_sgs_explicit && LATTICE_TYPE == :d3q27 && REGIME_RE >= REGIME_RE_HIGH_RE_THRESHOLD
         global VARIABLE_NU_SGS = true
         @printf("[Stability] Auto-enabled variable_nu_sgs for D3Q27 high-Re (Re=%.3g ≥ %.0e); the gold-standard Π_neq adaptive SGS.\n",
                 REGIME_RE, REGIME_RE_HIGH_RE_THRESHOLD)
     end
-    if _Ma_phys_autocheck > 0.3 && LATTICE_TYPE == :d3q27 && !COMPRESSIBILITY_CORRECTION
+    if !POND_THERMAL_ENABLED && _Ma_phys_autocheck > 0.3 && LATTICE_TYPE == :d3q27 && !COMPRESSIBILITY_CORRECTION
         println("[Regime] ⚠ Ma_physical = $(round(_Ma_phys_autocheck, digits=3)) > 0.3 with D3Q27 and no compressibility_correction.")
         println("[Regime]    D3Q27 O(u²) equilibrium develops significant compressibility bias above Ma=0.3.")
         println("[Regime]    Recommendation: set advanced.numerics.lattice: \"d3q39\" and collision_operator: \"entropic\",")
         println("[Regime]    or enable advanced.numerics.compressibility_correction: true to extend D3Q27 to Ma ≈ 0.6.")
     end
-    if _Ma_phys_autocheck > 0.8 && LATTICE_TYPE == :d3q27
+    if !POND_THERMAL_ENABLED && _Ma_phys_autocheck > 0.8 && LATTICE_TYPE == :d3q27
         error("Ma_physical = $(round(_Ma_phys_autocheck, digits=3)) > 0.8 with D3Q27. " *
               "D3Q27 cannot stably resolve transonic flow; switch to lattice: \"d3q39\" " *
               "and collision_operator: \"entropic\".")
@@ -1554,7 +1569,14 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     # When enabled, u_lattice is auto-computed so Ma_lattice = Ma_physical.
     # This enables true supersonic flow with shock waves on the D3Q39 lattice.
     global COMPRESSIBLE_MODE = safe_get(CFG, "advanced", "numerics", "compressible_mode"; default=false)
-    global SPEED_OF_SOUND_PHYSICAL = Float64(safe_get(CFG, "basic", "fluid", "speed_of_sound"; default=343.0))
+    global SPEED_OF_SOUND_PHYSICAL = POND_THERMAL_ENABLED ? _sos_check :
+        Float64(safe_get(CFG, "basic", "fluid", "speed_of_sound"; default=343.0))
+
+    if POND_THERMAL_ENABLED
+        COMPRESSIBLE_MODE && error("Thermal kinetic FV uses its own energy equation; set the LBM compressible_mode flag to false")
+        .05 <= _Ma_phys_autocheck <= 1.5 || error("Experimental thermal kinetic FV requires freestream Mach in [0.05, 1.5]")
+        println("[ThermalFV] Cartesian AMR mesh uses D3Q27 storage during CPU construction only; the thermal finite-volume solver advances its own conserved fields.")
+    end
 
     if COMPRESSIBLE_MODE
         if LATTICE_TYPE != :d3q39

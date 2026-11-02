@@ -281,7 +281,12 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
     else
         solver_mode = "$(lattice_label) | Incompressible"
     end
-    println("    LBM SOLVER | $(solver_mode) | WALE LES | SURFACE FORCE METHOD")
+    if POND_THERMAL_ENABLED
+        println("    THERMAL KINETIC FV | EXPERIMENTAL | Native Cartesian AMR mesh")
+        println("    Lattice $lattice_label is used for mesh construction only; no LBM evolution or WALE model.")
+    else
+        println("    LBM SOLVER | $(solver_mode) | WALE LES | SURFACE FORCE METHOD")
+    end
     println("    Case: $(basename(CASE_DIR)) | $(sim_start_datetime)")
     println("="^70)
     
@@ -308,6 +313,10 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
     # (before any backend selection, GPU call or time step). src/io/lbm_io_opts.jl.
     if LBMIO_BUILD_ONLY
         return lbmio_build_only_case(runtime_selection, output_claim, sim_start_datetime)
+    end
+    if POND_THERMAL_ENABLED
+        include(joinpath(@__DIR__, "collision", "pond", "pond_thermal_case.jl"))
+        return Base.invokelatest(run_pond_thermal_case!,runtime_selection,output_claim,sim_start_datetime)
     end
     force_cleanup()
 

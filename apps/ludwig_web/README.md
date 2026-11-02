@@ -24,6 +24,21 @@ source and **D3Q39 + entropic** (Mach at most 1.6) from the main solver. D3Q39
 cases accept 1 to 7 AMR levels and enable compressible mode, the thermal energy
 model, and thermodynamic pressure. The D3Q39 GPU allowance is deliberately
 conservative because only short web cases have been run so far.
+Aero Lab also offers **Thermal kinetic FV (experimental)** on the same Cartesian
+AMR mesh. This separate finite-volume backend evolves mass, momentum and total
+energy using analytic Maxwellian flux splitting; the D3Q27 selection used for
+CPU mesh construction does not select an LBM collision operator for its run.
+Set freestream Mach (0.05–1.5) or speed, static temperature, and CFL under
+Analysis. Ideal air uses gamma 1.4 and R = 287.05 J/(kg K); sound speed is derived
+consistently from temperature. Slip walls give an inviscid calculation; no-slip
+walls use molecular viscosity only. There is no turbulence model or established
+aircraft drag/stall validation. Completion means the requested step count was
+reached, not that a steady convergence criterion passed.
+Thermal settings are retained in studies. Numeric cuts and volume snapshots
+include physical velocity, density, pressure, temperature and Mach; Results
+provides the corresponding quantities. The provisional GPU estimate reserves
+1800 bytes per allocated cell plus overhead and never falls below the existing
+LBM mesh estimate. It is an admission allowance, not a measured allocation.
 In VRAM target mode, the app runs CPU build-only probes and selects the finest
 cell size whose conservative run-memory estimate fits the requested percentage
 of currently available VRAM. The GUI shows the corresponding GB value and any
@@ -329,9 +344,11 @@ started server keeps its console open while it hosts the app. Automated callers
 can set `LUDWIG_WEB_NO_PAUSE=1` to skip the success and failure prompts, and
 `LUDWIG_WEB_NO_BROWSER=1` to suppress browser opening.
 
-PonD (Particles-on-Demand) remains a research solver family. GPU finite-volume,
+The original PonD (Particles-on-Demand) modules remain a research solver family. GPU finite-volume,
 thermal, DUGKS, STL immersed-boundary and sparse/AMR modules exist, with canonical
 benchmark and kernel checks. The current top-level PonD dispatch still uses a
 separate uniform-grid sphere driver; general geometry and AMR are not connected
 to Aero Lab. It is therefore described in the solver guide, not offered as a
-selectable validated backend.
+selectable validated backend. The new `pond_thermal` Aero Lab option is a
+separate conservative thermal finite-volume path; it does not activate the
+legacy `advanced.numerics.pond.enabled` driver or its truncated kinetic quadrature.
