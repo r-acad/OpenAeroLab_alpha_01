@@ -25,6 +25,9 @@
 .plot-option{display:inline-flex;gap:5px;align-items:center;font-size:11px;color:var(--muted)}
 #field-scale{position:absolute;right:12px;bottom:28px;z-index:5;max-width:270px;font-size:11px}
 .field-panel{position:relative}
+#field-resolution-status{flex:none;padding:6px 9px;margin-bottom:5px;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:5px;font-size:11px}
+#field-resolution-status[hidden]{display:none}
+#field-resolution-retry{font-size:11px;border:1px solid var(--line);border-radius:4px;background:var(--paper);color:var(--teal-dark);padding:3px 6px}
 .wing-legends .viewport-scale{padding:8px 10px;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:7px}
 .viewport-scale-header,.legend-actions,.viewport-scale-ticks,.legend-limits-actions{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .viewport-scale-title span,.viewport-scale-note,.viewport-scale-case{font-size:10px;color:var(--muted)}

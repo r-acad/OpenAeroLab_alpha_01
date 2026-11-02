@@ -36,7 +36,7 @@ window.AirfoilStudies = (() => {
     state.finishAnalysis?.();state.finishAnalysis=null;
     Object.assign(state,{job:null,result:null,analysisCase:null,analysisGeometryKey:null,analysisMeshKey:null,preview:null,
       previewReference:null,requestedAlpha:null,liveField:null,liveFieldLoading:null,liveAutoShown:false,meshKeys:'',embeddedAirfoil:null,studyFlowExtras:{}});
-    state.fullMeshes.clear();state.meshLoading.clear();state.fullFields.clear();state.fieldLoading.clear();
+    state.fullMeshes.clear();state.meshLoading.clear();state.fullFields.clear();state.fieldLoading.clear();state.fieldErrors?.clear();
     chartMemory.clear();spatialMemory.geometry=null;spatialMemory.field=null;
     resetLog();window.AirfoilBabylon?.hide();clearError();
     el['job-title'].textContent='Ready';el['job-message'].textContent='Choose the setup, then run an analysis.';

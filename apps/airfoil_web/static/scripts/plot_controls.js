@@ -55,16 +55,52 @@ window.AirfoilPlotTools = (() => {
     const name=view.spec.options.logY?best.name.replace(/^log₁₀\s*/,''):best.name;
     box.textContent=`${name}: ${view.spec.options.xLabel||'x'} = ${best.x.toPrecision(7)}, ${view.spec.options.yLabel||(view.spec.options.logY?'residual':'value')} = ${value.toPrecision(7)}`;
   }
-  // Marching triangles avoids ambiguous saddle connections and uses each block's connectivity.
+  // Bilinear contours use the original quadrilateral samples without imposing
+  // a diagonal. Trace the actual bilinear level set, including its saddle case.
+  function quadIsoline(a,b,c,d,level) {
+    const p=[a,b,c,d],f=p.map(q=>q.v-level);
+    if(f.some(v=>!Number.isFinite(v))||Math.min(...f)>0||Math.max(...f)<0)return [];
+    const turns=p.map((q,k)=>{const r=p[(k+1)%4],s=p[(k+2)%4];return (r.x-q.x)*(s.y-r.y)-(r.y-q.y)*(s.x-r.x);});
+    if(turns.some(v=>!Number.isFinite(v)||Math.abs(v)<1e-14)||!turns.every(v=>v*turns[0]>0))return [];
+    const uv=[[0,0],[1,0],[1,1],[0,1]],cross=[];
+    for(let k=0;k<4;k++){
+      const n=(k+1)%4;if((f[k]<0)===(f[n]<0))continue;
+      const t=f[k]/(f[k]-f[n]);cross.push({edge:k,q:uv[k].map((v,h)=>v+t*(uv[n][h]-v))});
+    }
+    if(cross.length!==2&&cross.length!==4)return [];
+    const A=f[0],B=f[1]-f[0],C=f[3]-f[0],D=f[0]-f[1]+f[2]-f[3];
+    const world=([u,v])=>[(1-u)*(1-v)*a.x+u*(1-v)*b.x+u*v*c.x+(1-u)*v*d.x,(1-u)*(1-v)*a.y+u*(1-v)*b.y+u*v*c.y+(1-u)*v*d.y];
+    let pairs;
+    if(cross.length===2)pairs=[[cross[0].q,cross[1].q]];
+    else {
+      const saddle=(f[0]*f[2]-f[1]*f[3])/D;
+      if(Math.abs(saddle)<1e-13 && Math.abs(D)>1e-13){const center=[-C/D,-B/D];return cross.map(e=>[world(e.q),world(center)]);}
+      pairs=(f[0]<0)===(saddle<0)?[[cross[0].q,cross[1].q],[cross[2].q,cross[3].q]]:[[cross[0].q,cross[3].q],[cross[1].q,cross[2].q]];
+    }
+    const out=[];
+    for(const [s,t] of pairs){
+      const alongU=Math.abs(t[0]-s[0])>=Math.abs(t[1]-s[1]);let previous=world(s);
+      for(let k=1;k<=8;k++){
+        let q=t;
+        if(k<8){
+          if(alongU){const u=s[0]+(t[0]-s[0])*k/8;q=[u,-(A+B*u)/(C+D*u)];}
+          else{const v=s[1]+(t[1]-s[1])*k/8;q=[-(A+C*v)/(B+D*v),v];}
+          if(q.some(v=>!Number.isFinite(v)||v< -1e-9||v>1+1e-9))continue;
+        }
+        const next=world(q);out.push([previous,next]);previous=next;
+      }
+    }
+    return out;
+  }
   function isolines(blocks,level=1) {
     const segments=[];
     for(const {pts,ni,nj,structured} of blocks||[]){if(!structured)continue;
-      const triangle=(ids)=>{const out=[];for(let k=0;k<3;k++){
-        const a=pts[ids[k]],b=pts[ids[(k+1)%3]];if((a.v<level)===(b.v<level))continue;
-        const t=(level-a.v)/(b.v-a.v);out.push([a.x+t*(b.x-a.x),a.y+t*(b.y-a.y)]);
-      }if(out.length===2)segments.push(out);};
-      for(let j=0;j<nj-1;j++)for(let i=0;i<ni-1;i++){const a=j*ni+i,b=a+1,c=a+ni,d=c+1;triangle([a,b,d]);triangle([a,d,c]);}
+      for(let j=0;j<nj-1;j++)for(let i=0;i<ni-1;i++){
+        const a=j*ni+i,b=a+1,d=a+ni,c=d+1;
+        const lo=Math.min(pts[a].v,pts[b].v,pts[c].v,pts[d].v),hi=Math.max(pts[a].v,pts[b].v,pts[c].v,pts[d].v);
+        if(lo<=level&&hi>=level)segments.push(...quadIsoline(pts[a],pts[b],pts[c],pts[d],level));
+      }
     }return segments;
   }
-  return {toolbar,probe,isolines,exportChart};
+  return {toolbar,probe,isolines,quadIsoline,exportChart};
 })();

@@ -8,6 +8,7 @@
 include(joinpath(@__DIR__, "nested_refined_mesh.jl"))
 include(joinpath(@__DIR__, "mesh_volume_redistribution.jl"))
 include(joinpath(@__DIR__, "normal_collar.jl"))
+include(joinpath(@__DIR__, "shock_layer_mesh.jl"))
 
 "Sharp C mesh with locally concentrated surface columns around the leading edge."
 function _sharp_nose_mesh(af::CMeshGen.AirfoilPts; n_foil::Int, n_wake::Int,
@@ -225,7 +226,8 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         condition_geometry::Bool=true,
         cfd_te_thickness::Float64=0.0,
         stall_layer::Bool=false,
-        le_ds_scale::Float64=1.0, normal_collar::Bool=true)
+        le_ds_scale::Float64=1.0, normal_collar::Bool=true,
+        shock_layer::Bool=true)
     far_extent >= 10 || throw(ArgumentError("far_extent must be at least 10 chords"))
     n_base >= 1 || throw(ArgumentError("n_base must be positive"))
     outer_angle = isnothing(farfield_angle_deg) ? alpha_deg : farfield_angle_deg
@@ -441,6 +443,26 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         sl = _stall_layer_mesh(mesh); mesh = sl.mesh; stall_info = sl.info
     end
     collar_info = normal_collar ? _normal_collar!(mesh) : Dict{String,Any}("applied"=>false,"reason"=>"disabled")
+    shock_info=Dict{String,Any}("applied"=>false,"reason"=>"disabled")
+    shock_quality=nothing
+    if shock_layer
+        parent_quality=_transonic_quality_report(mesh)
+        refusals=String[]
+        for factor in (1.0,1.25,1.5,2.0)
+            try
+                sl=_shock_layer_mesh(mesh;height_cap=clamp(0.004*144/n_normal,0.002,0.01)*factor)
+                q=_transonic_quality_report(sl.mesh)
+                (!parent_quality["air_reference_gates"]["passed"] || q["air_reference_gates"]["passed"]) || error("shock layer failed air quality gates")
+                (!parent_quality["provisional_wake_gates"]["passed"] || q["provisional_wake_gates"]["passed"]) || error("shock layer failed wake quality gates")
+                mesh=sl.mesh;shock_quality=q
+                shock_info=merge(sl.info,Dict("applied"=>true,"refusals"=>refusals))
+                break
+            catch err
+                push!(refusals,"cap factor $factor: "*sprint(showerror,err))
+            end
+        end
+        get(shock_info,"applied",false) || (shock_info=Dict("applied"=>false,"reason"=>"quality fallback retained parent mesh","refusals"=>refusals))
+    end
     # Passing mesh directly would attach the cavitation channel's slip-wall
     # and inlet tags to this external-flow case. The raw-array overload
     # preserves the gas solver's characteristic far-field boundary everywhere.
@@ -452,7 +474,7 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
     quality = CMeshGen.mesh_quality(mesh)
     quality.nfold == 0 && quality.area_min > 0 ||
         error("transonic mesh has folded or nonpositive-area cells")
-    quality_report = _transonic_quality_report(mesh)
+    quality_report = shock_quality === nothing ? _transonic_quality_report(mesh) : shock_quality
     mesh_refinement === :aplus_nested_refined &&
         !quality_report["provisional_wake_gates"]["passed"] &&
         error("nested mesh failed the provisional wake-cut skew/aspect gates")
@@ -504,6 +526,8 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         "quality_report"=>quality_report)
     merge!(metadata,refinement_metadata)
     metadata["normal_collar"] = collar_info
+    metadata["shock_layer"] = shock_info
+    get(shock_info,"applied",false) && (metadata["mesh_family"] *= " + graded off-wall shock layer")
     stall_info === nothing || (metadata["stall_layer"] = stall_info;
         metadata["mesh_family"] *= " + stall layer v1 (cells <= 2.5e-3 c to 0.2 c)")
     (; mesh, metrics, metadata, foil_indices, surface_indices, base_indices)

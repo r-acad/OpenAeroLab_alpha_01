@@ -124,6 +124,21 @@ rows, wake, trailing-edge neighborhood and outer boundary. Quality checks
 reduce the correction or retain the parent mesh if necessary. Metadata records
 the applied correction; an improved shape alone does not establish accuracy.
 
+The A-plus mesh also adds smoothly graded normal rows through the off-wall
+shock envelope. Fine uses a nominal 0.004-chord height cap through 0.65 chord
+from the surface, followed by gradual growth to the far field. The first twelve
+wall layers and the wall/outer contours remain exact. This increases the total
+cell count (about 2.5–2.7 times for the Fine RAE/OAT examples). Mesh metadata
+records the actual row count, cap and any quality fallback. Both upper and lower
+sides share one row map to keep the nose and trailing-edge joins continuous.
+
+Field colors and sonic contours use bilinear interpolation on the original
+sample quadrilaterals. This removes the artificial display diagonal without
+averaging CFD samples or changing the saved solution. It cannot repair an
+under-resolved or unconverged simulation; existing studies retain their old grids.
+The Mach-one contour waits for the full-resolution field instead of using the
+decimated preview. Loading failures appear beside the field with a retry button.
+
 Steady GPU runs use Float64 damping filters by default. After the loads settle,
 damping is tapered off and convergence windows restart on the undamped
 equations. Force stationarity is reported separately from continuity success.

@@ -1252,7 +1252,7 @@ async function runAnalysis() {
   state.analysisMeshKey=meshSettingsKey();
   state.requestedAlpha = value.flow.alpha_deg; state.meshKeys = "";
   state.fullMeshes.clear(); state.meshLoading.clear();
-  state.fullFields.clear(); state.fieldLoading.clear(); state.liveField=null; state.liveFieldLoading=null; state.liveAutoShown=false;
+  state.fullFields.clear(); state.fieldLoading.clear(); state.fieldErrors.clear(); state.liveField=null; state.liveFieldLoading=null; state.liveAutoShown=false;
   chartMemory.clear();
   el["convergence-panel"].classList.toggle("hidden", !value.backends.some(backend=>isCfdBackend(backend)));
   spatialMemory.geometry = null; spatialMemory.field = null;
@@ -1750,6 +1750,19 @@ function inspectableMesh(preview) {
 }
 // A completed CFD point may publish a separate full-resolution field artifact.
 // The small field in the job result remains the live preview while it loads.
+state.fieldErrors = new Map();
+function fieldResolutionStatus(point=currentResult(),message=null) {
+  const node=document.getElementById('field-resolution-status');if(!node)return;
+  const url=safeHref(point?.fields?.full_artifact),error=message||state.fieldErrors.get(url);
+  const pending=url&&!state.fullFields.has(url);
+  node.hidden=!pending&&!error;
+  node.querySelector('span').textContent=error?`Full-resolution field needs attention: ${error}`:pending?'Loading all CFD cells; the preview is decimated. Mach = 1 appears when full data is ready.':'';
+  node.querySelector('button').hidden=!error;
+}
+document.getElementById('field-resolution-retry')?.addEventListener('click',()=>{
+  const url=safeHref(currentResult()?.fields?.full_artifact);
+  state.fieldErrors.delete(url);state.fullFields.delete(url);renderField();
+});
 function validFullField(field) {
   if (field?.kind === "structured_blocks") {
     const blocks=field.blocks;
@@ -1872,11 +1885,12 @@ function fieldQuantities(fields) {
 function inspectableFields(point) {
   const preview = point?.fields;
   const url = safeHref(preview?.full_artifact);
-  if (!url) return { fields: preview, full: false };
+  if (!url) return { fields: preview, full: validFullField(preview) };
   const loaded = state.fullFields.get(url);
-  if (loaded) return { fields: loaded.kind==="structured_blocks" ? {...preview,...loaded,sample_stride:1} : { ...preview, samples: loaded.samples,
+  fieldResolutionStatus(point);
+  if (loaded) return { fields: loaded.kind==="structured_blocks" ? {...preview,...loaded,sample_stride:1} : { ...preview, ...loaded,
     sample_shape: [loaded.ni, loaded.nj], sample_stride: 1 }, full: true };
-  if (!state.fieldLoading.has(url)) {
+  if (!state.fieldLoading.has(url)&&!state.fieldErrors.has(url)) {
     state.fieldLoading.add(url);
     const done=beginOperation(`field:${url}`, "Loading full CFD field…");
     loadFullFieldArtifact(url).then(full => {
@@ -1895,10 +1909,15 @@ function inspectableFields(point) {
         throw new Error("Full CFD field belongs to a different final iteration");
       while (state.fullFields.size >= 3) state.fullFields.delete(state.fullFields.keys().next().value);
       state.fullFields.set(url, full);
-      if (state.activeTab === "field" &&
-          safeHref(currentResult()?.fields?.full_artifact) === url) renderField();
-    }).catch(err => { el["field-legend"].title = `Full CFD field unavailable: ${err.message}`; })
-      .finally(() => {state.fieldLoading.delete(url);done();});
+      state.fieldErrors.delete(url);
+    }).catch(err => {state.fieldErrors.set(url,err.message);})
+      .finally(() => {
+        state.fieldLoading.delete(url);done();
+        if(state.activeTab==="field"&&safeHref(currentResult()?.fields?.full_artifact)===url){
+          fieldResolutionStatus();
+          try{renderField();}catch(err){fieldResolutionStatus(currentResult(),`Rendering failed: ${err.message}`);}
+        }
+      });
   }
   return { fields: preview, full: false };
 }
@@ -2169,9 +2188,9 @@ function ramp(t,lo=0,hi=1) {
   const k = Math.max(0, Math.min(1, t * (stops.length - 1) - a));
   return stops[a].map((v, i) => Math.round(v * (1 - k) + stops[a+1][i] * k));
 }
-// Rasterize the sampled curvilinear cells with linear scalar interpolation.
-// Each pixel comes from an actual neighboring sample triangle; no synthetic
-// field detail is introduced between the CFD samples. Folded cells are blank.
+// Bilinear interpolation on the original sample quadrilaterals. A fixed
+// display diagonal otherwise leaves triangular imprints in stretched cells.
+// Values stay inside the four-sample range; folded cells remain blank.
 function rasterizeStructuredSamples(pts, ni, nj, plot, vmin, vmax, pixelRatio = 1) {
   const width = Math.max(1, Math.round(plot.width * pixelRatio));
   const height = Math.max(1, Math.round(plot.height * pixelRatio));
@@ -2186,24 +2205,32 @@ function rasterizeStructuredSamples(pts, ni, nj, plot, vmin, vmax, pixelRatio = 
   }));
   let drawnCells = 0, rejectedCells = 0;
   const signed = (a, b, c) => (b.wx-a.wx)*(c.wy-a.wy) - (b.wy-a.wy)*(c.wx-a.wx);
-  function triangle(a, b, c) {
-    const minx = Math.max(0, Math.floor(Math.min(a.x,b.x,c.x)));
-    const maxx = Math.min(width-1, Math.ceil(Math.max(a.x,b.x,c.x)));
-    const miny = Math.max(0, Math.floor(Math.min(a.y,b.y,c.y)));
-    const maxy = Math.min(height-1, Math.ceil(Math.max(a.y,b.y,c.y)));
+  function quadrilateral(a, b, c, d) {
+    const minx = Math.max(0, Math.floor(Math.min(a.x,b.x,c.x,d.x)));
+    const maxx = Math.min(width-1, Math.ceil(Math.max(a.x,b.x,c.x,d.x)));
+    const miny = Math.max(0, Math.floor(Math.min(a.y,b.y,c.y,d.y)));
+    const maxy = Math.min(height-1, Math.ceil(Math.max(a.y,b.y,c.y,d.y)));
     if (maxx < minx || maxy < miny) return;
-    const abx = b.x-a.x, aby = b.y-a.y, acx = c.x-a.x, acy = c.y-a.y;
-    const area = abx*acy - aby*acx;
+    const bx=b.x-a.x,by=b.y-a.y,cx=d.x-a.x,cy=d.y-a.y;
+    const dx=a.x-b.x+c.x-d.x,dy=a.y-b.y+c.y-d.y;
+    const area=bx*cy-by*cx;
     if (!Number.isFinite(area) || Math.abs(area) < 1e-12) return;
-    const inv = 1/area, dvb = b.v-a.v, dvc = c.v-a.v;
+    const inv=1/area;
     for (let y=miny; y<=maxy; y++) {
-      const dy = y+0.5-a.y;
       for (let x=minx; x<=maxx; x++) {
-        const dx = x+0.5-a.x;
-        const wb = (dx*acy-dy*acx)*inv;
-        const wc = (abx*dy-aby*dx)*inv;
-        if (wb < -1e-9 || wc < -1e-9 || wb+wc > 1+1e-9) continue;
-        const value = a.v + wb*dvb + wc*dvc;
+        const px=x+0.5-a.x,py=y+0.5-a.y;
+        let u=(px*cy-py*cx)*inv,v=(bx*py-by*px)*inv,valid=true;
+        for(let k=0;k<8;k++){
+          const rx=bx*u+cx*v+dx*u*v-px,ry=by*u+cy*v+dy*u*v-py;
+          if(Math.abs(rx)+Math.abs(ry)<1e-7)break;
+          const j11=bx+dx*v,j12=cx+dx*u,j21=by+dy*v,j22=cy+dy*u,det=j11*j22-j12*j21;
+          if(!Number.isFinite(det)||Math.abs(det)<1e-12){valid=false;break;}
+          u-=(rx*j22-ry*j12)/det;v-=(j11*ry-j21*rx)/det;
+        }
+        if(!valid||!Number.isFinite(u)||!Number.isFinite(v)||u< -1e-8||v< -1e-8||u>1+1e-8||v>1+1e-8)continue;
+        if(Math.abs(bx*u+cx*v+dx*u*v-px)+Math.abs(by*u+cy*v+dy*u*v-py)>1e-5)continue;
+        u=Math.max(0,Math.min(1,u));v=Math.max(0,Math.min(1,v));
+        const value=(1-u)*(1-v)*a.v+u*(1-v)*b.v+u*v*c.v+(1-u)*v*d.v;
         const t = (value - vmin)/span;
         const color = palette[Math.max(0,Math.min(255,Math.round(t*255)))];
         const offset = (y*width+x)*4;
@@ -2216,13 +2243,12 @@ function rasterizeStructuredSamples(pts, ni, nj, plot, vmin, vmax, pixelRatio = 
   for (let j=0; j<nj-1; j++) for (let i=0; i<ni-1; i++) {
     const a=vertices[j*ni+i], b=vertices[j*ni+i+1];
     const d=vertices[(j+1)*ni+i], c=vertices[(j+1)*ni+i+1];
-    const area1=signed(a,b,c), area2=signed(a,c,d);
-    if (!Number.isFinite(area1) || !Number.isFinite(area2) ||
-        Math.abs(area1)<1e-14 || Math.abs(area2)<1e-14 || area1*area2<=0) {
+    const corners=[signed(a,b,c),signed(b,c,d),signed(c,d,a),signed(d,a,b)];
+    if(corners.some(v=>!Number.isFinite(v)||Math.abs(v)<1e-14)||!corners.every(v=>v*corners[0]>0)) {
       rejectedCells++; continue;
     }
     drawnCells++;
-    triangle(a,b,c); triangle(a,c,d);
+    quadrilateral(a,b,c,d);
   }
   // Cell centers on opposite sides of the C-grid wake cut leave occasional
   // one-pixel holes. Fill only fully enclosed pixels, so the far-field edge
@@ -2281,7 +2307,7 @@ function renderSamples(point, key) {
   const percentile=q=>sorted[Math.min(sorted.length-1,Math.max(0,Math.round(q*(sorted.length-1))))];
   const range=window.WingLegends?.resolveLimits(`airfoil:${key}`,sorted[0],sorted[sorted.length-1]);
   const vmin=range?.min??sorted[0],vmax=range?.max??sorted[sorted.length-1];
-  const sonic=document.getElementById('field-sonic')?.checked && point?.backend==='transonic' && !selected.fields?.speed_column ? window.AirfoilPlotTools.isolines(scalarFieldBlocks(selected.fields,'mach'),1) : [];
+  const sonic=document.getElementById('field-sonic')?.checked && selected.full && point?.backend==='transonic' && !selected.fields?.speed_column ? window.AirfoilPlotTools.isolines(scalarFieldBlocks(selected.fields,'mach'),1) : [];
   const palette=Array.from({length:256},(_,i)=>`rgb(${ramp(i/255,vmin,vmax).join(",")})`);
   const color=v=>palette[Math.max(0,Math.min(255,Math.round((v-vmin)/(vmax-vmin||1)*255)))];
   const mesh=currentMesh(point),wall=meshWall(mesh),si=spatialCoordinatesSI(point,mesh),units=quantityUnits(point,key,mesh);
@@ -2373,6 +2399,7 @@ function renderField(point = currentResult()) {
   if (window.AirfoilLBM?.renderField(point)) return;
   const choice = el["field-kind"].value;
   const [kind, key] = choice.split(":", 2);
+  if(kind!=="sample")document.getElementById('field-resolution-status')?.setAttribute('hidden','');
   if(!['sample','live'].includes(kind))window.WingLegends?.render(document.getElementById('field-scale'),[]);
   const mesh = kind === "mesh" ? inspectableMesh(currentMesh(point)) : currentMesh(kind === "live" ? livePoint() : point);
   if(kind!=="surface")chartViews.get("field-view")?.destroy();
@@ -2770,7 +2797,7 @@ async function openSavedJob(id=el["recent-select"].value,{restoreForm=true,rethr
     state.analysisMeshKey=formUpdated?meshSettingsKey():null;
     if(formUpdated)scheduleGeometryPreview();
     state.requestedAlpha=state.analysisCase.flow?.alpha_deg??null;state.meshKeys="";
-    state.fullMeshes.clear();state.meshLoading.clear();state.fullFields.clear();state.fieldLoading.clear();state.liveField=null;state.liveFieldLoading=null;state.liveAutoShown=false;
+    state.fullMeshes.clear();state.meshLoading.clear();state.fullFields.clear();state.fieldLoading.clear();state.fieldErrors.clear();state.liveField=null;state.liveFieldLoading=null;state.liveAutoShown=false;
     chartMemory.clear();spatialMemory.geometry=null;spatialMemory.field=null;
     el["convergence-panel"].classList.toggle("hidden",!state.analysisCase.backends.some(isCfdBackend));
     resetLog();window.AirfoilBabylon?.hide();el["download-result"].disabled=true;
