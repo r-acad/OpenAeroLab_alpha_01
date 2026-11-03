@@ -562,7 +562,9 @@ function freeair_config(k::AbstractDict; backend=CPU())
     check_speed_gate(k)        # W7's PROVISIONAL gate (the second review's R1), after PB_SPEED=auto applied its table
     cfg = PBConfig(; mu=1/k["PB_RE"], dt=k["PB_DT"], nonorth=1.0, n_outer_max=k["PB_N_OUTER_MAX"], backend, turbulence_settings(k)...,
                    speed_settings(k)...,
-                   cpl_visc_nonorth=get(k, "PB_CPL_VISC_NONORTH", :jacobian), cpl_au=get(k, "PB_CPL_AU", 0.8),  # W6b (the review of W6, R2)
+                   cpl_visc_nonorth=get(k, "PB_CPL_VISC_NONORTH", :jacobian), cpl_au=get(k, "PB_CPL_AU", 0.8),
+                   cpl_eta=get(k, "PB_CPL_ETA", 0.1), cpl_sweeps=get(k, "PB_CPL_SWEEPS", 1),
+                   cpl_vcycles=get(k, "PB_CPL_VCYCLES", 1),
                    speed_dev=get(k, "PB_SPEED_DEV", false),
                    domain=:freeair)    # the PROVISIONAL gate's case class (the merge review of cf838408, M2; no arithmetic)
     check_speed_config(cfg)    # and on the configuration itself, its backend included (the third review's G1)
@@ -579,6 +581,8 @@ function freeair_config_line(cfg, fs::FreeStream, k::AbstractDict)
                  k["PB_VORTEX_RELAX"], k["PB_VORTEX_EVERY"])
     s *= " vortex_tol=1e-06"                         # freeair_drive!'s (freeair_run!'s default; the review of the integration, F6 a)
     s *= " cpl_visc_nonorth=" * string(cfg.cpl_visc_nonorth) * @sprintf(" cpl_au=%.4g", cfg.cpl_au)       # W6b
+    (cfg.cpl_eta != 0.1 || cfg.cpl_sweeps != 1 || cfg.cpl_vcycles != 1) &&
+        (s *= @sprintf(" cpl_eta=%.4g cpl_sweeps=%d cpl_vcycles=%d", cfg.cpl_eta, cfg.cpl_sweeps, cfg.cpl_vcycles))
     # W7's speed settings, printed only when one differs from its default (so the receipt of a default run is the one before W7);
     # the CPU launch shape counts as one (the W7 review's finding 3: a balanced CPU run's receipt showed no trace of it)
     spd = (sync=:all, line_solver=:thomas, prec_precision=:f64, kw_precision=:f64, cpl_gs=:mgs, graphs=:off, dot=:chunk)

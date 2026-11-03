@@ -282,6 +282,12 @@ const PB_KNOBS = [
            "free air run: cpl_au, SIMPLEC's alpha_u in the coupled step's preconditioner only (the momentum block's diagonal a/au, " *
            "D = V/(a^t + (1/au - 1) a)); 0.8 PBConfig's default; W6b measured 0.99 on A2's high-aspect-ratio near wake (the review " *
            "of W6, R2)"),
+    PBKnob("PB_CPL_ETA", "0.1", _parse_float(1e-4, 0.999; name="PB_CPL_ETA"),
+           "free air coupled run: relative FGMRES forcing term; a larger value may reduce linear work but needs a converged outer solve"),
+    PBKnob("PB_CPL_SWEEPS", "1", _parse_int(1, 8; name="PB_CPL_SWEEPS"),
+           "free air coupled run: alternating j and i momentum line sweeps per block preconditioner application"),
+    PBKnob("PB_CPL_VCYCLES", "1", _parse_int(1, 8; name="PB_CPL_VCYCLES"),
+           "free air coupled run: pressure multigrid V cycles per block preconditioner application"),
     PBKnob("PB_CPL_VISC_NONORTH", "jacobian", _parse_choice(("jacobian", "deferred"); name="PB_CPL_VISC_NONORTH"),
            "free air run: cpl_visc_nonorth, the coupled step's J with (jacobian, PBConfig's default) or without (deferred: " *
            "converged by the outer iteration) the momentum's viscous non-orthogonal part (W6b; the review of W6, R2)"),
@@ -594,7 +600,8 @@ const W6B_FREEAIR_ONLY_KNOBS = ("PB_TURB_OMEGA_BOUND", "PB_CPL_AU", "PB_CPL_VISC
 """Every knob only the free-air run reads, refused in the tunnel domain by `read_knobs`: W6b's, PB_TURB_MUT_BASE (27 Oct 2026,
 records air/mutbase/), and PB_BAFFLE and PB_START_RAMP (27 Oct 2026, the baffle review's F4: the plate's loads and the ramp
 start belong to the free-air run). (The merge of pbcav-baffle into pbcav, 27 Oct 2026: the union of both branches' lists.)"""
-const FREEAIR_ONLY_KNOBS = (W6B_FREEAIR_ONLY_KNOBS..., "PB_TURB_MUT_BASE", "PB_BAFFLE", "PB_START_RAMP", "PB_BAFFLE_REFINE")
+const FREEAIR_ONLY_KNOBS = (W6B_FREEAIR_ONLY_KNOBS..., "PB_TURB_MUT_BASE", "PB_BAFFLE", "PB_START_RAMP", "PB_BAFFLE_REFINE",
+                            "PB_CPL_ETA", "PB_CPL_SWEEPS", "PB_CPL_VCYCLES")
 
 """
     mesh_call(vals, src=nothing) -> CMeshCall
