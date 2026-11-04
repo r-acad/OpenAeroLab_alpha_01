@@ -22,7 +22,7 @@ const M=CMeshSolverKA
     end
 end
 
-function airfoil_implicit_smoke(backend)
+function airfoil_implicit_smoke(backend; jfnk=false)
     xs=[.5*(1-cospi(k/24)) for k in 0:24]
     yt(x)=x==1.0 ? 0.0 : 5*.12*(.2969*sqrt(x)-.126x-.3516x^2+.2843x^3-.1036x^4)
     foil=CMeshGen.AirfoilPts(vcat(reverse(xs),xs[2:end]),
@@ -37,20 +37,33 @@ function airfoil_implicit_smoke(backend)
     M.set_freestream_ka!(s,.2,2.0)
     s.nu_lam=1.0f-4
     M.set_sst_ka!(s)
-    work=M.build_implicit_line_workspace(s)
-    result=M.step_implicit_line_ka!(s,work,.45f0)
+    work=jfnk ? M.build_jfnk_airfoil_workspace(s;m=6) :
+                M.build_implicit_line_workspace(s)
+    step=jfnk ? M.step_jfnk_airfoil_ka! : M.step_implicit_line_ka!
+    result=step(s,work,.45f0)
     @test isfinite(result.merit_before)
     @test result.accepted
     @test result.merit_after < result.merit_before
     @test all(isfinite,s.rho) && minimum(s.rho)>0
     @test all(isfinite,s.T) && minimum(s.T)>0
-    @test_throws ArgumentError M.step_implicit_line_ka!(s,work,0.0f0)
+    @test_throws ArgumentError step(s,work,0.0f0)
     M.sst_step_ka!(s)
     @test all(isfinite,s.tk) && all(isfinite,s.tom)
+    if jfnk
+        ctrl=M.build_jfnk_airfoil_controller(s;m=4)
+        r=M.step_jfnk_rans_ka!(s,ctrl)
+        @test r.accepted && ctrl.iterations==1
+        @test r.pseudo_cfl_next>=r.pseudo_cfl_used
+        @test all(isfinite,s.tk) && all(isfinite,s.tom)
+    end
 end
 
 @testset "single-phase airfoil implicit flow CPU" begin
     airfoil_implicit_smoke(CPU())
+end
+
+@testset "single-phase airfoil JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true)
 end
 
 if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
@@ -58,5 +71,8 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     @test CUDA.functional()
     @testset "single-phase airfoil implicit flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend())
+    end
+    @testset "single-phase airfoil JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true)
     end
 end
