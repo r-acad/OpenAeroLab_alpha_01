@@ -7,6 +7,9 @@ if project=="third_party/JXfoil"
         response=LudwigWeb.app_handler(HTTP.Request("GET",route))
         response.status==200 || error("Workbench smoke check failed: $route ($(response.status))")
     end
+elseif project=="src/octree_q19"
+    using OctreeQ19, WriteVTK, YAML
+    println("CPU octree D3Q19 package loaded; no GPU is required.")
 elseif project=="tools/postprocess"
     using CairoMakie, GeometryBasics, JSON3
     fig=Figure(size=(160,100));ax=Axis(fig[1,1]);lines!(ax,[0,1],[0,1])

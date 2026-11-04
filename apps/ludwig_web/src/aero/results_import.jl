@@ -246,7 +246,7 @@ function _build_result_metadata!(id,files,options)
     bounds=amr!==nothing ? Dict("min"=>[0.,0.,0.],"max"=>amr["domain_size"]) : volume!==nothing ? volume["bounds"] :
         surface!==nothing ? Dict("min"=>surface["bounds"]["min"].+offset,"max"=>surface["bounds"]["max"].+offset) : nothing
     if bounds===nothing && !isempty(cuts)
-        h,arrays=LBMSliceFormat.read_lbmslice(joinpath(directory,cuts[1]["file"]))
+        h=_slice_header(joinpath(directory,cuts[1]["file"]))
         raw_origin=Float64.(h["origin_m"]);spacing=Float64(h["spacing_m"]);axes=Dict("x"=>1,"y"=>2,"z"=>3)
         a1=axes[h["axis1"]];a2=axes[h["axis2"]];normal=axes[h["normal_axis"]]
         origin=length(raw_origin)==3 ? raw_origin : zeros(3)
@@ -255,8 +255,8 @@ function _build_result_metadata!(id,files,options)
         elseif length(raw_origin)!=3
             throw(ArgumentError("Native slice origin must contain two plane coordinates or three domain coordinates"))
         end
-        hi=copy(origin);array=first(values(arrays))
-        hi[a1]+=size(array,1)*spacing;hi[a2]+=size(array,2)*spacing;bounds=Dict("min"=>origin,"max"=>hi)
+        hi=copy(origin)
+        hi[a1]+=h["n1"]*spacing;hi[a2]+=h["n2"]*spacing;bounds=Dict("min"=>origin,"max"=>hi)
     end
     bounds===nothing && throw(ArgumentError("Results contain no surface, volume or numeric slice"))
     fields=surface===nothing ? String[] : collect(keys(surface["fields"]))
@@ -279,7 +279,9 @@ function _store_result_sources(paths,raw;uploaded=nothing)
     options=existing===nothing ? _import_result_options(raw) : existing["options"]
     for (name,source,bytes) in paths
         ext=lowercase(splitext(name)[2]);ext in RESULT_EXTENSIONS || throw(ArgumentError("Unsupported result extension $ext"))
-        count=bytes===nothing ? filesize(source) : length(bytes);0<count<=MAX_RESULT_BYTES || throw(ArgumentError("Result file must contain at most 512 MB"))
+        count=bytes===nothing ? filesize(source) : length(bytes)
+        limit=bytes===nothing && ext==".lbmslice" ? 16_000_000_000 : MAX_RESULT_BYTES
+        0<count<=limit || throw(ArgumentError("Result file exceeds the interactive import limit (512 MB for uploads; 16 GB for local native planes)"))
         stored="source_$(length(files)+1)$ext";destination=joinpath(directory,stored)
         bytes===nothing ? cp(source,destination;force=false) : write(destination,bytes)
         item=Dict{String,Any}("name"=>basename(name),"original_path"=>source,"stored_name"=>stored,"bytes"=>count)
@@ -364,10 +366,10 @@ function imported_cut(id,req)
     end
     choices=filter(c->c["axis"]==axis && abs(c["position"]-position)<=1e-7*max(1,abs(position)),meta["cuts"])
     isempty(choices) && return _bad("No imported volume or recorded plane contains this requested field and position",404)
-    cut=last(sort(choices;by=c->c["step"]));h,arrays=LBMSliceFormat.read_lbmslice(joinpath(_result_dir(id),cut["file"]))
-    key=field=="velocity" ? "velocity_magnitude" : field=="vorticity" ? "vorticity_$(h["normal_axis"])" : field
-    haskey(arrays,key) || return _bad("The imported plane does not contain that field",404)
-    array=arrays[key];stride=max(1,ceil(Int,sqrt(length(array)/500000)));sampled=array[1:stride:end,1:stride:end]
+    cut=last(sort(choices;by=c->c["step"]));h,arrays,key,stride=_sample_numeric_slice(joinpath(_result_dir(id),cut["file"]),field)
+    sampled=arrays[key]
+    owner_levels=haskey(arrays,"level") ? Int.(vec(arrays["level"])) : Int[]
+    origin=[Float64(x)+(1-stride)*Float64(h["spacing_m"])/2 for x in h["origin_m"]]
     units="";for spec in h["arrays"];spec["name"]==key && (units=String(spec["units"]));end
-    _response(200,Dict("ok"=>true,"source"=>"native_slice","field"=>field,"units"=>units,"axis1"=>h["axis1"],"axis2"=>h["axis2"],"normal_axis"=>axis,"normal_coord_m"=>position,"origin_m"=>h["origin_m"],"spacing_m"=>h["spacing_m"]*stride,"n1"=>size(sampled,1),"n2"=>size(sampled,2),"values"=>[isfinite(v) ? Float64(v) : nothing for v in vec(sampled)],"step"=>h["step"],"dataset_id"=>id))
+    _response(200,Dict("ok"=>true,"source"=>"native_slice","field"=>field,"units"=>units,"axis1"=>h["axis1"],"axis2"=>h["axis2"],"normal_axis"=>axis,"normal_coord_m"=>position,"origin_m"=>origin,"spacing_m"=>h["spacing_m"]*stride,"n1"=>size(sampled,1),"n2"=>size(sampled,2),"values"=>[isfinite(v) ? Float64(v) : nothing for v in vec(sampled)],"owner_levels"=>owner_levels,"step"=>h["step"],"dataset_id"=>id))
 end

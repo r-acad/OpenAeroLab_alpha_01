@@ -70,6 +70,8 @@ end
 function gpu_memory_estimate_gb(summary::AbstractDict, lattice::AbstractString="d3q27")
     levels = summary["levels"]
     isempty(levels) && throw(ArgumentError("Build summary has no mesh levels"))
+    # the CPU octree solver reports its stored slots directly: RAM, no device overhead
+    lattice == "q19_octree" && return haskey(summary,"estimated_run_bytes_total") ? Float64(summary["estimated_run_bytes_total"])/1e9 : 2.5Float64(summary["bytes_allocated_total"])/1e9+0.75
     calibrated = if length(levels) == 1
         668.0 * Float64(levels[1]["cells"]) / 1e9 + 0.7
     else
@@ -103,7 +105,8 @@ function _validate_build_summary(raw::AbstractDict)
     for key in ("total_cells","total_blocks","bytes_allocated_total","num_levels")
         require(positive_count(raw[key]),"$key must be a positive integer")
     end
-    require(raw["num_levels"] <= 7,"num_levels must be from 1 to 7")
+    octree = get(raw,"mesh","") == "octree"
+    require(raw["num_levels"] <= (octree ? Q19_MAX_LEVELS : 7),"num_levels must be from 1 to $(octree ? Q19_MAX_LEVELS : 7)")
     for key in ("domain_size_m","mesh_offset_m","coarse_grid_cells")
         values=raw[key]
         require(values isa AbstractVector && length(values)==3,"$key must have three entries")
@@ -170,7 +173,8 @@ function build_summary(id::AbstractString; lattice::AbstractString="d3q27",allow
     result["cpu_grid_gb"] = Float64(raw["bytes_allocated_total"]) / 1e9
     result["memory_gb"] = gpu_memory_estimate_gb(raw, lattice)
     result["surface_geometry_allowance_gb"]=128.0*Float64(get(raw,"geometry_triangles",0))/1e9
-    result["memory_basis"] = lattice == "pond_thermal" ?
+    result["memory_basis"] = lattice == "q19_octree" ?
+        "CPU octree solver: conservative RAM allowance for mesh, population/density/velocity and AMR transfer buffers, thread forces and bounded exports; includes reserve and process overhead. No GPU." : lattice == "pond_thermal" ?
         "provisional thermal kinetic FV allowance: 1800 bytes per allocated Cartesian cell for leaf states, shared faces and work buffers, plus 0.7 GB overhead and surface sampling; at least the LBM build-memory estimate. Measured allocations remain subject to validation" : lattice == "d3q39" ?
         "conservative D3Q39 flow + thermal allowance: 3 x calibrated D3Q27 per-cell costs, plus 1.6 GB overhead; at least 1.15 x CPU grid bytes plus overhead; plus 128 bytes per surface sampling triangle" :
         "estimated GPU run memory from active cells and measured per-cell costs, with 0.7 GB device overhead; at least 1.15 x CPU grid bytes plus overhead; plus 128 bytes per surface sampling triangle"
@@ -375,28 +379,50 @@ function _slice_path(id::AbstractString, file::AbstractString)
     _case_file(id, "run", relative)
 end
 
+"Read only selected columns of one field and its AMR owner level, bounded for multi-GB native planes."
+function _sample_numeric_slice(path::AbstractString,selected::AbstractString;max_samples=500_000)
+    h=_slice_header(path)
+    get(h,"with_fields",false)===true || throw(ArgumentError("No flow fields in this cut yet"))
+    key=selected=="velocity" ? "velocity_magnitude" : selected=="vorticity" ? "vorticity_$(h["normal_axis"])" : String(selected)
+    specs=Dict(String(s["name"])=>s for s in h["arrays"])
+    haskey(specs,key) || throw(ArgumentError("Requested field is unavailable in this cut"))
+    n1=Int(h["n1"]);n2=Int(h["n2"])
+    0<n1<=10_000_000 && 0<n2<=10_000_000 && Int128(n1)*n2<=10_000_000_000 || throw(ArgumentError("Invalid numeric cut dimensions"))
+    stride=max(1,ceil(Int,sqrt(Float64(n1)*n2/max_samples)))
+    while cld(n1,stride)*cld(n2,stride)>max_samples;stride+=1;end
+    arrays=Dict{String,Matrix}()
+    open(path,"r") do io
+        seek(io,16);base=Int(ltoh(read(io,UInt64)))
+        for name in (key,"level")
+            haskey(specs,name) || continue
+            spec=specs[name];T=spec["dtype"]=="float32" ? Float32 : spec["dtype"]=="uint8" ? UInt8 : throw(ArgumentError("Unsupported cut array type"))
+            offset=Int(spec["offset"]);bytes=Int(spec["nbytes"])
+            offset>=0 && bytes==n1*n2*sizeof(T) && base+offset+bytes<=filesize(path) || throw(ArgumentError("Invalid cut array bounds"))
+            column=Vector{T}(undef,n1);sampled=Matrix{T}(undef,cld(n1,stride),cld(n2,stride))
+            for (jj,j) in enumerate(1:stride:n2)
+                seek(io,base+offset+(j-1)*n1*sizeof(T));read!(io,column)
+                for (ii,i) in enumerate(1:stride:n1);sampled[ii,jj]=column[i];end
+            end
+            arrays[name]=sampled
+        end
+    end
+    h,arrays,key,stride
+end
+
 function slice_json(id::AbstractString, file::AbstractString, field::AbstractString)
     selected = String(field)
     selected in ("velocity", "density", "pressure", "vorticity", "u", "v", "w", "mach", "temperature") ||
         throw(ArgumentError("Unknown cut field"))
     path = _slice_path(id, file)
     path === nothing && return _bad("Numeric cut not found", 404)
-    filesize(path) <= 300_000_000 || return _bad("Numeric cut is too large to serve as JSON", 413)
-    h, arrays = try
-        LBMSliceFormat.read_lbmslice(path)
-    catch
-        return _bad("Numeric cut is incomplete or invalid", 409)
+    h, arrays, key, stride = try
+        _sample_numeric_slice(path,selected)
+    catch error
+        return _bad("Numeric cut is unavailable: "*sprint(showerror,error),409)
     end
-    get(h, "with_fields", false) === true || return _bad("No flow fields in this cut yet", 404)
-    key = selected == "velocity" ? "velocity_magnitude" :
-          selected == "vorticity" ? "vorticity_$(h["normal_axis"])" : selected
-    haskey(arrays, key) || return _bad("Requested field is unavailable in this cut", 404)
-    array = arrays[key]
-    n1, n2 = size(array)
-    # Keep the interactive canvas and JSON response bounded for large solver planes.
-    stride = max(1, ceil(Int, sqrt(n1*n2 / 500_000)))
-    sampled = array[1:stride:end, 1:stride:end]
+    sampled = arrays[key]
     values = Any[isfinite(x) ? Float64(x) : nothing for x in vec(sampled)]
+    owner_levels = haskey(arrays,"level") ? Int.(vec(arrays["level"])) : Int[]
     raw_origin = h["origin_m"]
     spacing = Float64(h["spacing_m"])
     origin = [Float64(x) + (1 - stride)*spacing/2 for x in raw_origin]
@@ -414,7 +440,7 @@ function slice_json(id::AbstractString, file::AbstractString, field::AbstractStr
         "normal_axis" => h["normal_axis"], "normal_coord_m" => h["normal_coord_m"],
         "origin_m" => origin, "spacing_m" => spacing*stride,
         "decimation_stride" => stride, "step" => h["step"],
-        "values" => values))
+        "values" => values, "owner_levels" => owner_levels))
 end
 
 function slice_json(id::AbstractString, file::AbstractString, req::HTTP.Request)

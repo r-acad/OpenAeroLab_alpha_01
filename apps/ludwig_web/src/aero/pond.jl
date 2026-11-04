@@ -1,6 +1,6 @@
 "Thermal finite-volume backend; the mesh is built by the main Cartesian AMR mesher."
 _pond_case(case::AbstractDict) = get(case,"solver","")=="pond_thermal"
-_memory_lattice(case::AbstractDict) = _pond_case(case) ? "pond_thermal" : get(case,"lattice","d3q27")
+
 
 function _pond_flow!(flow::AbstractDict, input::AbstractDict)
     mode=String(get(input,"input_mode","speed"))

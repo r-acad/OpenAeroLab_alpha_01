@@ -22,12 +22,12 @@ function _mesh_limits(case)
     lengths=_domain_lengths(case["domain"],ext)
     dx=Float64(case["surface_dx"]);levels=Int(case["levels"]);h0=dx*2.0^(levels-1)
     coarse=prod(8.0*_stable_grid_block_count(length,h0,8;minimum_blocks=4) for length in lengths)
-    fine=levels==1 ? 0.0 : prod(body./dx .+ 16)
+    fine=_q19_case(case) ? _q19_cells_estimate(case,0,get(case,"surface_area_m2",0.0),dx,levels) : levels==1 ? 0.0 : prod(body./dx .+ 16)
     pyramid=levels==1 || all(_roundoff_snap_grid_integer(length/(32h0))>=1 for length in lengths)
     reasons=String[]
     pyramid || push!(reasons,"The fixed domain cannot retain $levels AMR levels at this cell size.")
     coarse<=MESH_CELL_LIMIT || push!(reasons,"The coarse lattice exceeds 30 million cells.")
-    fine<=MESH_CELL_LIMIT || push!(reasons,"The conservative near-body fine-cell envelope exceeds 30 million cells.")
+    fine<=MESH_CELL_LIMIT || push!(reasons,_q19_case(case) ? "The octree surface-band estimate exceeds 30 million cells; increase surface cell size before building." : "The conservative near-body fine-cell envelope exceeds 30 million cells.")
     Dict{String,Any}("valid"=>isempty(reasons),"reasons"=>reasons,"coarse_cells"=>coarse,
         "fine_envelope_cells"=>fine,"pyramid_fits"=>pyramid)
 end
@@ -88,7 +88,7 @@ function _mesh_proposal(case,gpu,budget;reason=nothing)
     why=reason===nothing ? join(_mesh_limits(case)["reasons"]," ") : String(reason)
     if choice===nothing
         return Dict{String,Any}("available"=>false,"reason"=>why,"requested_surface_dx"=>requested,
-            "budget_gb"=>budget,"message"=>"No coarser mesh preserving this geometry and domain fits the current limits and GPU budget. Raise the VRAM target, reduce the requested domain, or select another device.")
+            "budget_gb"=>budget,"message"=>_q19_case(case) ? "No coarser octree mesh preserving this geometry and domain fits the current build limits. Increase surface cell size or revise fixed domain dimensions; this CPU solver uses RAM, not VRAM." : "No coarser mesh preserving this geometry and domain fits the current limits and GPU budget. Raise the VRAM target, reduce the requested domain, or select another device.")
     end
     proposed=choice.case;dx=proposed["surface_dx"]
     message="Suggested surface cell size $(round(dx,sigdigits=6)) m ($(case["levels"]) → $(proposed["levels"]) AMR levels); estimated $(round(choice.estimate["memory_gb"],digits=2)) GB"
@@ -97,7 +97,7 @@ function _mesh_proposal(case,gpu,budget;reason=nothing)
     message*=_domain_sizing(get(case["domain"],"sizing","minimum"))!="fixed" ?
         "All requested AMR levels are retained; physical clearances remain minima and far faces may grow. " :
         "The fixed section clearances are preserved; native block snapping is reported after building. "
-    message*="Apply this proposal or choose automatic VRAM sizing."
+    message*=_q19_case(case) ? "Apply this proposal, then inspect the CPU RAM estimate." : "Apply this proposal or choose automatic VRAM sizing."
     Dict{String,Any}("available"=>true,"reason"=>why,"requested_surface_dx"=>requested,
         "suggested_surface_dx"=>dx,"suggested_levels"=>proposed["levels"],
         "estimated_memory_gb"=>choice.estimate["memory_gb"],"budget_gb"=>budget,
@@ -127,6 +127,14 @@ function _mesh_progress!(state,percent,phase,detail)
 end
 
 function _mesh_log_milestone(line,levels)
+    # the CPU octree solver's build-only log
+    occursin("[BuildOnly] LUDWIG D3Q19 CPU octree",line) && return (5.,"compile","Starting the CPU octree mesh generator")
+    occursin("[BuildOnly] geometry:",line) && return (10.,"geometry","Geometry placed; refining the octree around it")
+    m=match(r"\[BuildOnly\] L(\d+): dx=",line)
+    m===nothing || return (15+70*parse(Int,m[1])/max(levels,1),"level_build","Octree level $(m[1])/$levels counted")
+    occursin("[BuildOnly] mesh built in",line) && return (88.,"export","Octree built; writing mesh.oct and the inspection data")
+    occursin("[SliceData]",line) && return (96.,"export","Level and obstacle planes written")
+    occursin("[BuildOnly] done in",line) && return (99.,"summary","Mesh counts and memory summary written")
     occursin("[BuildOnly] basic.simulation.build_only",line) && return (5.,"compile","Initializing the CPU-only native geometry builder")
     occursin("[Domain] Loading captured STL",line) && return (8.,"geometry","Loading the immutable geometry for this build")
     m=match(r"--- Level (\d+) ---",line)

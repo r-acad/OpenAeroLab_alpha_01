@@ -6,6 +6,7 @@ const ROOT = normpath(joinpath(@__DIR__, "..", ".."))
 const VERSION_REQUIRED = VersionNumber(strip(read(joinpath(@__DIR__, "julia_version.txt"), String)))
 const PROJECTS = [
     (name="Web workbenches and JXfoil", path="third_party/JXfoil", cuda=false),
+    (name="CPU octree D3Q19 solver (experimental)", path="src/octree_q19", cuda=false),
     (name="Main LBM and C-mesh solvers", path="src", cuda=true),
     (name="Pinned LBM backend", path="solvers/lbm_lbmtau/src", cuda=true),
     (name="Pressure solver", path="solvers/pbcav_s1030/src/pbcav", cuda=true),

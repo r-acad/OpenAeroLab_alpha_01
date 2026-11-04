@@ -196,11 +196,13 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     lengths = _domain_lengths(domain,extent)
     all(isfinite, lengths) || throw(ArgumentError("Transformed model or domain is too large"))
     solver = string(get(raw, "solver", "main"))
-    solver in ("main", "lbmtau", "pond_thermal") || throw(ArgumentError("Unknown Aero Lab solver backend"))
+    solver in ("main", "lbmtau", "pond_thermal", "q19_octree") || throw(ArgumentError("Unknown Aero Lab solver backend"))
     lattice = string(get(raw, "lattice", "d3q27"))
-    lattice in ("d3q27", "d3q39") || throw(ArgumentError("Aero Lab lattice must be d3q27 or d3q39"))
+    lattice in ("d3q27", "d3q39", "d3q19") || throw(ArgumentError("Aero Lab lattice must be d3q27, d3q39 or d3q19"))
     lattice == "d3q39" && solver != "main" && throw(ArgumentError("D3Q39 in Aero Lab requires the main LUDWIG solver"))
-    isfile(joinpath(solver == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER, "src", "main.jl")) ||
+    lattice == "d3q19" && solver != "q19_octree" && throw(ArgumentError("D3Q19 is the lattice of the CPU octree solver"))
+    solver == "q19_octree" && lattice != "d3q19" && throw(ArgumentError("The CPU octree solver uses the D3Q19 lattice"))
+    (solver == "q19_octree" ? _q19_available() : isfile(joinpath(solver == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER, "src", "main.jl"))) ||
         throw(ArgumentError("Selected solver is unavailable"))
     if solver == "lbmtau" && any(x -> !iszero(x), translation)
         throw(ArgumentError("The pinned lbmtau solver cannot place a model at an offset; select the main solver"))
@@ -219,7 +221,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         abs(translation[3]) <= domain["height"] ||
             throw(ArgumentError("Vertical translation moves the model outside the domain"))
     end
-    levels = _integer(get(raw, "levels", 3), "levels"; lo=1, hi=7)
+    levels = _integer(get(raw, "levels", 3), "levels"; lo=1, hi=solver == "q19_octree" ? Q19_MAX_LEVELS : 7)
     domain_adjustment = _expand_minimum_domain!(domain,extent,dx,levels)
     lengths = domain_adjustment["resolved_size_m"]
     target_raw = get(raw, "target_vram_gb", nothing)
@@ -231,6 +233,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     mesh_sizing in ("manual","vram") || throw(ArgumentError("mesh_sizing must be manual or vram"))
     fitting = mesh_sizing == "vram"
     fitting && !target_requested && throw(ArgumentError("VRAM sizing requires a target percentage or GB value"))
+    fitting && solver == "q19_octree" && throw(ArgumentError("VRAM sizing is not available for the CPU octree solver; choose a manual surface cell size"))
     coarse_dx = dx * 2.0^(levels - 1)
     if enforce_mesh_limits && !fitting && levels > 1 &&
             any(_roundoff_snap_grid_integer(length/(32coarse_dx))<1 for length in lengths)
@@ -240,7 +243,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     !enforce_mesh_limits || fitting || coarse_cells <= 30_000_000 || throw(ArgumentError(
         "The requested domain has over 30 million coarse cells; increase surface cell size or levels, or reduce the domain"))
     fine_envelope = prod(max.(resolved .+ 16*dx, 16*dx)) / dx^3
-    !enforce_mesh_limits || fitting || levels == 1 || fine_envelope <= 30_000_000 || throw(ArgumentError(
+    !enforce_mesh_limits || fitting || solver=="q19_octree" || levels == 1 || fine_envelope <= 30_000_000 || throw(ArgumentError(
         "The near-body fine-cell envelope is too large; increase surface cell size or reduce model size"))
     steps = _integer(get(raw, "steps", 800), "steps"; lo=8, hi=1_000_000)
     frames = _integer(get(raw, "frames", 12), "frames"; lo=2, hi=40)
@@ -256,7 +259,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         "speed_of_sound" => _number(get(f, "speed_of_sound", 343.0), "flow.speed_of_sound"; lo=1, hi=1e5))
     solver=="pond_thermal" && _pond_flow!(flow,f)
     mach = flow["velocity"] / flow["speed_of_sound"]
-    max_mach=solver=="pond_thermal" ? 1.5 : lattice=="d3q39" ? 1.6 : 0.6
+    max_mach=solver=="pond_thermal" ? 1.5 : solver=="q19_octree" ? Q19_MAX_MACH : lattice=="d3q39" ? 1.6 : 0.6
     mach <= max_mach || throw(ArgumentError("Selected Aero Lab backend requires Mach <= $max_mach"))
     cuts_raw = get(raw, "cuts", Any[])
     cuts_raw isa AbstractVector && length(cuts_raw) <= 6 ||
@@ -294,6 +297,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         "symmetry_adjustment" => Dict("center_y"=>boundary == "symmetry" && center_y,
             "message"=>boundary == "symmetry" && center_y ?
                 "The full model is centered on Y=0. The native mesher clips its positive-Y half for the symmetry domain; the original geometry remains unchanged. Symmetry assumes the geometry and flow are mirrored across this plane." : ""),
+        "octree" => solver == "q19_octree" ? _q19_settings(raw) : nothing,
         "bounds" => bounds), transformed
 end
 
@@ -319,8 +323,15 @@ function _estimate(case; gpu=_gpu_memory())
     # buffers scale with surface facets independently of allocated fluid cells.
     surface_memory=get(get(case,"surface_subdivision",Dict()),"gpu_surface_allowance_gb",0.0)
     memory += surface_memory
-    result = Dict{String,Any}("cells" => cells, "memory_gb" => memory, "budget_gb" => gpu["budget_gb"],
-         "fits" => memory <= gpu["budget_gb"], "basis" => "shape envelope; replaced by solver build-only counts",
+    q19=_q19_case(case)
+    if q19
+        # the octree keeps surface bands instead of block shells: a thin-band envelope in RAM, no GPU budget
+        cells=_q19_cells_estimate(case,coarse,get(case,"surface_area_m2",0.0),dx,L)
+        memory=Q19_BYTES_PER_SLOT*1.25*cells/1e9+0.3
+    end
+    result = Dict{String,Any}("cells" => cells, "memory_gb" => memory, "budget_gb" => q19 ? nothing : gpu["budget_gb"],
+         "fits" => q19 ? nothing : memory <= gpu["budget_gb"],
+         "basis" => q19 ? "octree surface-band envelope in RAM at $(round(Int,Q19_BYTES_PER_SLOT)) bytes per stored slot; replaced by the generator's counts" : "shape envelope; replaced by solver build-only counts",
          "domain_size_m" => [lx,ly,lz], "coarse_grid_cells" => dims,
          "gpu" => gpu,"measured"=>false)
     result["surface_geometry_allowance_gb"]=surface_memory
@@ -353,6 +364,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     d = case["domain"]; f = case["flow"]; b = transformed_bounds
     lattice = get(case, "lattice", "d3q27")
     d3q39 = lattice == "d3q39"
+    q19 = _q19_case(case)
     dx = case["surface_dx"]; levels = case["levels"]
     triangle_edge=Float64(get(case,"surface_triangle_max_edge_m",0.0))
     boundary = d["boundary"]
@@ -384,7 +396,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     dom = Dict("upstream" => d["upstream"], "downstream" => d["downstream"],
                "lateral" => solver_lateral, "height" => solver_height)
     placement = String[]
-    if case["solver"] in ("main","pond_thermal")
+    if case["solver"] in ("main","pond_thermal","q19_octree")
         !iszero(so[1]) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + so[1]))")
         !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
         !iszero(so[3]) && push!(placement, "    object_center_z_m: $(@sprintf("%.12g", snapped_z/2 + so[3]))")
@@ -424,7 +436,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         # The app gates memory using measured active-block counts.
         "  vram_budget_gb: 1000000000", "  safety_factor: 1.15",
         "advanced:", "  solver_preset: \"vanilla\"", "  numerics:", "    lattice: \"$lattice\"",
-        "    collision_operator: \"$(d3q39 ? "entropic" : "cumulant")\"",
+        "    collision_operator: \"$(d3q39 ? "entropic" : q19 ? "rr" : "cumulant")\"",
         "    compressible_mode: $d3q39", "    u_lattice: 0.08", "    tau_min: $(d3q39 ? 0.505 : 0.501)",
         (_pond_case(case) ? ["    pond_thermal:","      enabled: true",
             "      cfl: $(f["cfl"])","      gamma: $(f["gamma"])",
@@ -465,6 +477,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "    fields: [\"velocity\", \"pressure\", \"vorticity\"]",
         "    export_fields: [\"density\", \"pressure\", \"u\", \"v\", \"w\", \"velocity_magnitude\", \"vorticity\"$(_pond_case(case) ? ", \"mach\", \"temperature\"" : "")]",
         "    planes:", plane_lines..., "    export_window: \"domain\"", "    export_level: \"finest\"",
+        (q19 ? _q19_yaml_lines(case) : String[])...,
     ]
     join(lines, "\n") * "\n"
 end

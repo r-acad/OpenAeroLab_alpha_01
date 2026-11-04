@@ -77,6 +77,7 @@ _vram_fitting(case) = get(case,"mesh_sizing",
 
 "Use the admission budget, not free VRAM after this run has allocated its arrays."
 function _budget_exceeded(state,actual=nothing)
+    _q19_case(get(state,"case",Dict())) && return false
     estimate=get(state,"estimate",Dict{String,Any}())
     actual===nothing && get(estimate,"measured",nothing)===false && return false
     gpu=get(estimate,"gpu",Dict{String,Any}())
@@ -141,21 +142,25 @@ end
 
 function capabilities()
     solvers = [Dict("id" => name, "label" => label,
-                    "available" => !Sys.isapple() && isfile(joinpath(root, "src", "main.jl")),
-                    "reason" => Sys.isapple() ? "The CUDA solver is not available on macOS. Model placement and saved result viewing remain available." : name=="pond_thermal" ? "Experimental thermal finite-volume solver on the same Cartesian AMR mesh. Inviscid slip or laminar no-slip walls; no turbulence model or validated aircraft predictions." : "",
+                    "available" => name == "q19_octree" ? _q19_available() : (!Sys.isapple() && isfile(joinpath(root, "src", "main.jl"))),
+                    "reason" => name == "q19_octree" ? "CPU-only D3Q19 lattice Boltzmann on a cell-level octree mesh; no GPU is used. Athermal flow, Mach at most 0.3. Mesh creation, CPU runs and saved result viewing are available. Development; not validated." :
+                                Sys.isapple() ? "The CUDA solver is not available on macOS. Model placement and saved result viewing remain available." : name=="pond_thermal" ? "Experimental thermal finite-volume solver on the same Cartesian AMR mesh. Inviscid slip or laminar no-slip walls; no turbulence model or validated aircraft predictions." : "",
                     "placement" => name != "lbmtau",
-                    "web_lattices" => name == "main" ? ["d3q27", "d3q39"] : ["d3q27"])
+                    "web_lattices" => name == "main" ? ["d3q27", "d3q39"] : name == "q19_octree" ? ["d3q19"] : ["d3q27"])
                for (name, label, root) in (("main", "Main LBM solver", MAIN_SOLVER),
                                             ("lbmtau", "Pinned lbmtau snapshot", PINNED_SOLVER),
-                                            ("pond_thermal", "Thermal kinetic FV (experimental)", MAIN_SOLVER))]
+                                            ("pond_thermal", "Thermal kinetic FV (experimental)", MAIN_SOLVER),
+                                            ("q19_octree", "D3Q19 CPU octree (development)", Q19_SOLVER))]
     _response(200, Dict("ok" => true, "solvers" => solvers,
                         "api_revision" => WORKBENCH_API_REVISION,
                         "repository_id" => _workbench_repository_id(PUBLIC_ROOT),
                         "features" => Dict("studies"=>true,"free_air_domain_expansion"=>true,
-                                           "volume_cuts"=>true,"max_amr_levels"=>7,"pond_thermal"=>true),
+                                           "volume_cuts"=>true,"max_amr_levels"=>7,"pond_thermal"=>true,
+                                           "q19_octree"=>_q19_available(),"max_octree_levels"=>Q19_MAX_LEVELS),
                         "web_lattices" => [Dict("lattice" => "d3q27", "collision_operator" => "cumulant", "max_levels" => 7),
                                            Dict("lattice" => "d3q39", "collision_operator" => "entropic",
-                                                "solver" => "main", "max_mach" => 1.6, "max_levels" => 7)],
+                                                "solver" => "main", "max_mach" => 1.6, "max_levels" => 7),
+                                           Dict("lattice"=>"d3q19","collision_operator"=>"rr","solver"=>"q19_octree","max_mach"=>Q19_MAX_MACH,"max_levels"=>Q19_MAX_LEVELS,"device"=>"CPU")],
                         "gpu" => _gpu_memory(),
                         "outputs" => Dict("default_folder" => "",
                             "formats" => ["surface_vtk","surface_lbmp","volume_vtk","numeric_slices","slice_png","csv_history"],
@@ -167,15 +172,17 @@ function capabilities()
 end
 
 function _solver_command(state::AbstractDict, kind::String; case_dir_override=nothing)
+    q19 = _q19_case(state["case"])
     solver_root = state["case"]["solver"] == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER
     julia = joinpath(Sys.BINDIR, Base.julia_exename())
-    project = joinpath(solver_root, "src")
-    main = joinpath(project, "main.jl")
+    # the CPU octree solver is its own CUDA-free package: project and entry under src/octree_q19
+    project = q19 ? Q19_SOLVER : joinpath(solver_root, "src")
+    main = q19 ? joinpath(Q19_SOLVER, "main.jl") : joinpath(project, "main.jl")
     case_dir = case_dir_override === nothing ? _case_dir(state["job_id"], kind) : case_dir_override
-    threads = max(1, min(Threads.nthreads(), 8))
+    threads = q19 ? _q19_threads(state["case"]) : max(1, min(Threads.nthreads(), 8))
     env = Dict{String,String}(k => v for (k, v) in ENV
         if !startswith(k, "LUDWIG_") && !(k in ("JULIA_PROJECT", "JULIA_LOAD_PATH", "JULIA_NUM_THREADS")))
-    kind == "mesh" && (env["CUDA_VISIBLE_DEVICES"] = "-1")
+    (kind == "mesh" || q19) && (env["CUDA_VISIBLE_DEVICES"] = "-1")
     Cmd(`$julia --startup-file=no --project=$project -t $threads --check-bounds=no -O3 $main --case $case_dir`;
         dir=RUNTIME_ROOT, env=env)
 end
@@ -315,8 +322,9 @@ function _run_solver(id::String, kind::String)
     dir = _case_dir(id, kind)
     logpath = joinpath(dir, "solver.log")
     lock_handle = nothing
+    q19 = _q19_case(state["case"])
     try
-        if kind == "run"
+        if kind == "run" && !q19          # the CPU octree solver never takes the shared GPU lock
             mkpath(dirname(AirfoilGPULock.LOCK_DIR))
             _patch_job(id, Dict("status" => "waiting_for_gpu", "message" => "Waiting for the shared GPU"))
             deadline = time() + 180.0
@@ -340,7 +348,7 @@ function _run_solver(id::String, kind::String)
         end
         _load_job(id)["status"] == "cancelled" && return
         _patch_job(id, Dict("status" => kind == "mesh" ? "meshing" : "running",
-                            "message" => kind == "mesh" ? "Building the AMR mesh on CPU" : "Solver running on GPU"))
+                            "message" => kind == "mesh" ? (q19 ? "Building the octree mesh on CPU" : "Building the AMR mesh on CPU") : (q19 ? "Solver running on CPU" : "Solver running on GPU")))
         if kind == "mesh" && _vram_fitting(state["case"])
             _fit_mesh_to_vram!(id, state) === nothing && return
             state = _load_job(id)
@@ -377,10 +385,18 @@ function _run_solver(id::String, kind::String)
                 _cancel_for_gpu_budget!(id,measured_state,actual) && return
                 adjustment = get(state["case"],"domain_adjustment",nothing)
                 note = adjustment isa AbstractDict && get(adjustment,"expanded",false) ? " "*adjustment["message"] : ""
-                _patch_job(id, Dict("status" => "mesh_ready", "message" => "Mesh built; inspect the domain and VRAM estimate."*note,
+                _patch_job(id, Dict("status" => "mesh_ready", "message" => (q19 ? "Mesh built; inspect the domain and RAM estimate." : "Mesh built; inspect the domain and VRAM estimate.")*note,
                                     "actual" => actual,"estimate"=>measured_state["estimate"]))
             else
-                if _pond_case(state["case"])
+                if _q19_case(state["case"])
+                    summary_path=joinpath(dir,"RESULTS","octree_run_summary.toml")
+                    isfile(summary_path) || error("The CPU octree solver exited without its run summary; inspect solver.log")
+                    summary=TOML.parsefile(summary_path)
+                    get(summary,"status","")=="completed_steps" && get(summary,"steps",-1)==state["case"]["steps"] ||
+                        error("The CPU octree solver did not finish the requested steps; inspect its run summary and solver.log")
+                    _patch_job(id,Dict("status"=>"completed","converged"=>false,"solver_summary"=>summary,
+                        "message"=>"Requested CPU octree steps completed. Development solver; convergence and validation are not established."))
+                elseif _pond_case(state["case"])
                     summary_path=joinpath(dir,"RESULTS","thermal_fv_summary.toml")
                     isfile(summary_path) || error("Thermal kinetic FV exited without its final diagnostic summary; inspect solver.log")
                     summary=TOML.parsefile(summary_path)
@@ -418,6 +434,10 @@ function _run_solver(id::String, kind::String)
 end
 
 function _resolve_vram_target!(case,estimate,gpu)
+    if _q19_case(case)
+        estimate["budget_gb"]=nothing;estimate["fits"]=nothing
+        return nothing
+    end
     target = get(case, "target_vram_gb", nothing)
     percent = get(case,"target_vram_percent",nothing)
     if !gpu["available"] && !_vram_fitting(case)
@@ -452,7 +472,7 @@ function create_mesh(req::HTTP.Request)
     gpu=_gpu_memory()
     target_info=Dict{String,Any}("memory_gb"=>Inf)
     target=_resolve_vram_target!(case,target_info,gpu)
-    budget=gpu["available"] ? (target===nothing ? gpu["budget_gb"] : target) : nothing
+    budget=gpu["available"] && !_q19_case(case) ? (target===nothing ? gpu["budget_gb"] : target) : nothing   # the CPU solver has no GPU budget
     limits=_mesh_limits(case)
     if !_vram_fitting(case) && !limits["valid"]
         proposal=_mesh_proposal(case,gpu,budget)
@@ -612,23 +632,32 @@ function start_run(id::String,req::Union{Nothing,HTTP.Request}=nothing)
         end
         _assess_mesh!(actual, state["case"])
         actual["quality"]["runnable"] || throw(ArgumentError(actual["quality"]["warning"]))
-        gpu = _gpu_memory()
-        gpu["available"] || throw(ArgumentError("No NVIDIA GPU is available for this solver"))
         memory = _run_memory_estimate(state, actual)
-        target = get(state["case"], "target_vram_gb", nothing)
-        budget = target === nothing ? gpu["budget_gb"] : min(gpu["budget_gb"], Float64(target))
-        percent = get(state["case"],"target_vram_percent",nothing)
-        if percent !== nothing
-            requested=gpu["free_gb"]*Float64(percent)/100
-            budget=min(gpu["budget_gb"],requested)
-            state["case"]["target_vram_gb"]=budget
-            state["case"]["target_vram_requested_gb"]=requested
-            state["case"]["target_vram_available_gb"]=gpu["free_gb"]
+        if _q19_case(state["case"])
+            # the CPU octree solver runs in RAM: no GPU, no lock; refuse only what the machine cannot hold
+            ram_gb = Sys.total_memory() / 1e9
+            available_ram=Sys.free_memory()/1e9;ram_budget=0.8min(ram_gb,available_ram)
+            memory <= ram_budget || throw(ArgumentError(
+                "Estimated run memory $(round(memory,digits=2)) GB exceeds the current RAM allowance ($(round(ram_budget,digits=1)) GB, 80% of available RAM); increase surface cell size, reduce levels or close other work"))
+            state["estimate"]["budget_gb"]=nothing
+        else
+            gpu = _gpu_memory()
+            gpu["available"] || throw(ArgumentError("No NVIDIA GPU is available for this solver"))
+            target = get(state["case"], "target_vram_gb", nothing)
+            budget = target === nothing ? gpu["budget_gb"] : min(gpu["budget_gb"], Float64(target))
+            percent = get(state["case"],"target_vram_percent",nothing)
+            if percent !== nothing
+                requested=gpu["free_gb"]*Float64(percent)/100
+                budget=min(gpu["budget_gb"],requested)
+                state["case"]["target_vram_gb"]=budget
+                state["case"]["target_vram_requested_gb"]=requested
+                state["case"]["target_vram_available_gb"]=gpu["free_gb"]
+            end
+            state["estimate"]["budget_gb"]=budget
+            state["estimate"]["gpu"]=gpu
+            memory <= budget || throw(ArgumentError(
+                "Estimated run memory $(round(memory,digits=2)) GB exceeds the current GPU budget $(round(budget,digits=2)) GB; increase surface cell size or reduce domain/levels"))
         end
-        state["estimate"]["budget_gb"]=budget
-        state["estimate"]["gpu"]=gpu
-        memory <= budget || throw(ArgumentError(
-            "Estimated run memory $(round(memory,digits=2)) GB exceeds the current GPU budget $(round(budget,digits=2)) GB; increase surface cell size or reduce domain/levels"))
         mesh_source=_case_dir(id,"mesh")
         destination=_prepare_export_directory(id,state["case"];study_name=state["study_name"])
         mesh_dir=joinpath(destination,"native","CASES","mesh")
@@ -644,7 +673,8 @@ function start_run(id::String,req::Union{Nothing,HTTP.Request}=nothing)
         state["study_snapshot_path"]=_write_run_study_snapshot!(state,destination;request=updates)
         _save_job(state)
         _sync_exports!(id;force=true)
-        _patch_job(id, Dict("status" => "waiting_for_gpu", "message" => "Waiting for the shared GPU",
+        _patch_job(id, Dict("status" => _q19_case(state["case"]) ? "starting" : "waiting_for_gpu",
+                            "message" => _q19_case(state["case"]) ? "Starting the CPU octree solver" : "Waiting for the shared GPU",
                             "run_memory_estimate_gb" => memory))
     end
     @async _run_solver(id, "run")

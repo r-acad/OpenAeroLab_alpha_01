@@ -3,6 +3,18 @@
   'use strict';
   const copySettings=p=>({flow_angles:[...(p?.flow_angles||[0,0])],scale:[...(p?.scale||[1,1,1])],rotation_deg:[...(p?.rotation_deg||[0,0,0])],translation:[...(p?.translation||[0,0,0])]});
   const radians=Math.PI/180;
+  const materialAppearance=new WeakMap();
+  // Display only: keep GLB alpha/textures and the canonical solver vertices intact.
+  function applyOpacity(material,opacity,B=window.BABYLON) {
+    if(!material)return;
+    if(material.subMaterials){for(const part of material.subMaterials)applyOpacity(part,opacity,B);return;}
+    let original=materialAppearance.get(material);
+    if(!original){original={alpha:material.alpha,transparencyMode:material.transparencyMode,disableDepthWrite:material.disableDepthWrite};materialAppearance.set(material,original);}
+    const factor=Math.max(0,Math.min(1,Number.isFinite(Number(opacity))?Number(opacity):1));
+    material.alpha=(original.alpha??1)*factor;
+    material.transparencyMode=factor<1?B.Material.MATERIAL_ALPHABLEND:original.transparencyMode;
+    material.disableDepthWrite=factor<1?true:original.disableDepthWrite;
+  }
   function sourceRotation(p,point) {
     const [rx,ry,rz]=p.rotation_deg.map(v=>v*radians),[cx,sx,cy,sy,cz,sz]=[Math.cos(rx),Math.sin(rx),Math.cos(ry),Math.sin(ry),Math.cos(rz),Math.sin(rz)];
     let [x,y,z]=point,n=y*cx-z*sx;z=y*sx+z*cx;y=n;
@@ -221,6 +233,8 @@
       const placed=Boolean(frame?.bodyOrigin?.length===3&&bounds?.center&&!frame?.imported);
       textured=Boolean(placed&&container&&options.appearance==='glb'&&!options.fieldMode);
       visualRoot.setEnabled(textured);if(surface)surface.setEnabled(!textured);
+      applyOpacity(surface?.material,options.opacity??1,B);
+      for(const item of container?.meshes||[])applyOpacity(item.material,options.opacity??1,B);
       applySymmetryClip();
       if(placed){
         const pose=rotationMatrix(B,p,Boolean(frame.ground));pose.setTranslation(B.Vector3.FromArray(solverToViewer(frame.bodyOrigin,Boolean(frame.ground))));
@@ -246,5 +260,5 @@
     }
     return {sync,refreshSource,clear,availability,isModelMesh,isInteracting:()=>Boolean(drag),isTexturedVisible:()=>textured,ownsPointer,dispose};
   }
-  window.LudwigAeroModelTools={create,extractTriangles};
+  window.LudwigAeroModelTools={create,extractTriangles,applyOpacity};
 })();

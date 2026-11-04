@@ -15,6 +15,7 @@
     let sectionView={zoom:1,pan:[0,0]},fieldBitmap=null,fieldBitmapData=null,fieldBitmapPalette=null;
     const options=()=>state.inspector;
     const fieldRange=data=>{const raw=scalarRange(data.values),range=referenceTools?.range(raw,'section',data.field||options().field)||raw;referenceTools?.syncRange(range,'section',data.field||options().field);return range;};
+    const displayedField=()=>mesh.visibleField(options().data,state.levelVisibility,amr());
     const amr=()=>state.importedResults?(state.importedResults.amr||null):state.amr;
     const inspectionFrame=()=>dragging&&state.frame?state.frame:currentFrame();
     const isAmr=item=>Boolean(item?.metadata?.amrMesh||item?.name?.startsWith('AMR '));
@@ -55,17 +56,21 @@
     }
     function levelControls(){
       const holder=$('amr-level-list');holder.replaceChildren();
-      const levels=mesh.levelInfo(amr());
+      const levels=mesh.levelInfo(amr()),known=new Set(levels.map(info=>info.id));
+      for(const id of new Set(options().data?.owner_levels||[]))if(id>0&&!known.has(id))levels.push({id,fieldOnly:true});
+      levels.sort((a,b)=>a.id-b.id);
       if(!levels.length){holder.textContent='Create a mesh to inspect its levels.';return;}
       for(const info of levels){
         const label=document.createElement('label');label.className='level-option';
         const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=state.levelVisibility[info.id]!==false;
-        checkbox.addEventListener('change',()=>{state.levelVisibility[info.id]=checkbox.checked;sectionKey=null;queueRender();});
+        checkbox.addEventListener('change',()=>{state.levelVisibility[info.id]=checkbox.checked;visibilityChanged();});
         const swatch=document.createElement('span');swatch.className='level-swatch';swatch.style.background=`rgb(${mesh.palette[(info.id-1)%mesh.palette.length].map(c=>Math.round(c*255)).join(',')})`;
-        const text=document.createElement('span');text.textContent=`Level ${info.id} · Δx ${info.dx.toPrecision(3)} m · ${info.count.toLocaleString()} blocks`;
+        const text=document.createElement('span');text.textContent=info.fieldOnly?`Level ${info.id} · recorded field`:`Level ${info.id} · Δx ${info.dx.toPrecision(3)} m · ${info.count.toLocaleString()} ${info.octree?(info.level?.n_fluid?`boxes · ${Number(info.level.n_fluid).toLocaleString()} cells`:'boxes'):'blocks'}`;
         label.append(checkbox,swatch,text);holder.appendChild(label);
       }
     }
+    function visibilityChanged(){sectionKey=null;fieldBitmapData=null;window.dispatchEvent(new Event('ludwig-amr-visibility-change'));queueRender();}
+    for(const [id,visible] of [['amr-show-all',true],['amr-hide-all',false]])$(id)?.addEventListener('click',()=>{for(const info of mesh.levelInfo(amr()))state.levelVisibility[info.id]=visible;for(const level of options().data?.owner_levels||[])if(level>0)state.levelVisibility[level]=visible;levelControls();visibilityChanged();});
     function clipPlane(){
       const cut=options();if(!cut.enabled||!cut.clip)return null;
       const normal=[0,0,0];normal[axes.indexOf(cut.axis)]=1;const n=v3(...normal);return new BABYLON.Plane(n.x,n.y,n.z,-cut.position);
@@ -111,16 +116,26 @@
       if(dragging||state.meshVisible===false){$('amr-render-note').textContent=dragging?'Mesh hidden while moving the section.':'Mesh hidden. Use Show mesh to display it.';return;}
       const mode=$('amr-render').value,opacity=Number($('voxel-opacity').value)/100,faces=[];
       let displayed=0,total=0;
+      let truncated=false;
       for(const info of mesh.levelInfo(amr())){
         if(state.levelVisibility[info.id]===false||!info.count||!(info.size>0))continue;
         let points,size;
+        if(mode==='blocks'&&info.octree){
+          // octree: every fluid-leaf box as an outline scaled to its extent
+          const boxes=mesh.octreeBoxes(info);total+=info.count;displayed+=boxes.length;
+          const matrices=new Float32Array(boxes.length*16),matrix=BABYLON.Matrix.Identity();
+          boxes.forEach((box,i)=>{BABYLON.Matrix.ComposeToRef(new BABYLON.Vector3(...box.extent),BABYLON.Quaternion.Identity(),v3(...box.center),matrix);matrix.copyToArray(matrices,i*16);});
+          const lines=edgeTemplate(`Octree level ${info.id}`);lines.color=new BABYLON.Color3(...mesh.palette[(info.id-1)%mesh.palette.length]);lines.thinInstanceSetBuffer('matrix',matrices,16,true);
+          continue;
+        }
         if(mode==='blocks'){size=info.size;points=Array.from({length:info.count},(_,i)=>info.blocks.slice(i*3,i*3+3).map(v=>(v-.5)*size));total+=info.count;}
-        else{const cells=mesh.volumeCells(amr(),info);points=cells.points;size=info.dx;total+=cells.total;if(mode!=='wire_voxels')for(const face of cells.faces)faces.push(face);}
+        else{const cells=mesh.volumeCells(amr(),info);points=cells.points;size=info.dx;total+=cells.total;truncated=truncated||Boolean(cells.truncated);if(mode!=='wire_voxels')for(const face of cells.faces)faces.push(face);}
         displayed+=points.length;if(!points.length||!['blocks','wire_voxels'].includes(mode))continue;
         const lines=edgeTemplate(`AMR level ${info.id}`);lines.color=new BABYLON.Color3(...mesh.palette[(info.id-1)%mesh.palette.length]);lines.thinInstanceSetBuffer('matrix',instanceMatrices(points,size),16,true);
       }
       const oit=faces.length?renderFaces(faces,mode==='translucent_voxels',opacity):false;
-      $('amr-render-note').textContent=total?(mode==='blocks'?`${displayed.toLocaleString()} block outlines · GPU instances.`:`${displayed.toLocaleString()} boundary cells from ${total.toLocaleString()} allocated cells · exposed-cell envelope, no cell decimation · GPU instances.${mode==='translucent_voxels'?` ${oit?'Order-independent depth peeling.':'Depth-sorted transparent faces.'}`:''} Interior cell edges appear in the section.`):'No visible AMR levels.';
+      const octree=mesh.isOctree(amr());
+      $('amr-render-note').textContent=total?(mode==='blocks'?`${displayed.toLocaleString()} ${octree?'leaf-box':'block'} outlines · GPU instances.`:`${displayed.toLocaleString()} boundary cells from ${total.toLocaleString()} ${octree?'fluid':'allocated'} cells · exposed-cell envelope${truncated?' (truncated at 400,000 faces per level; hide coarse levels to see more)':', no cell decimation'} · GPU instances.${mode==='translucent_voxels'?` ${oit?'Order-independent depth peeling.':'Depth-sorted transparent faces.'}`:''} Interior cell edges appear in the section.`):'No visible AMR levels.';
     }
     function planePoints(frame,axis,position){
       const n=axes.indexOf(axis),a=[0,1,2].filter(i=>i!==n),lo=frame.domain.min,hi=frame.domain.max;
@@ -155,7 +170,7 @@
       const cut=options(),section=getSection(),base=`${cut.axis.toUpperCase()} = ${cut.position.toPrecision(5)} m · ${section.cells.length.toLocaleString()} section cells${section.stride>1?' (display sampled)':''}`;
       if(cut.field==='mesh')return base+` · ${getGeometrySection().segments.length.toLocaleString()} geometry intersection segments · drag the plane border along its normal, or use the slider.`;
       if(cut.loading)return base+' · loading saved field…';
-      if(cut.data){const range=fieldRange(cut.data);if(!range)return base+' · No finite fluid values in the saved field at this position.';return base+` · ${cut.field} [${cut.data.units||'solver units'}] · step ${cut.data.step} · ${cut.data.source==='saved_volume'?'saved volume':'recorded plane'} · colour range ${range.lo.toPrecision(4)} to ${range.hi.toPrecision(4)}`;}
+      if(cut.data){const range=fieldRange(displayedField());if(!range)return base+' · No visible fluid values. Enable the owning AMR levels or choose another field position.';return base+` · ${cut.field} [${cut.data.units||'solver units'}] · step ${cut.data.step} · ${cut.data.source==='saved_volume'?'saved volume':'recorded plane'} · colour range ${range.lo.toPrecision(4)} to ${range.hi.toPrecision(4)}`;}
       return base+' · '+(cut.error||'No saved field at this position. Enable volume VTK snapshots or record this plane before running.');
     }
     function paint2d(){
@@ -167,7 +182,7 @@
       const ctx=canvas.getContext('2d');if(!ctx)return;
       ctx.fillStyle='#f6fafb';ctx.fillRect(0,0,canvas.width,canvas.height);
       const px=x=>pad+(x-lo[a[0]])*scale+sectionView.pan[0],py=y=>canvas.height-pad-(y-lo[a[1]])*scale+sectionView.pan[1];
-      const data=cut.data,range=data&&fieldRange(data);
+      const data=displayedField(),range=data&&fieldRange(data);
       if(data&&range){
         const spacing=Number(data.spacing_m),i1=axes.indexOf(data.axis1),i2=axes.indexOf(data.axis2);
         const palette=[$('results-palette')?.value||'spectrum',range.lo,range.hi].join(':');
@@ -209,7 +224,7 @@
           if(!recorded)throw volumeError;
           const url=apiUrl(recorded.json_url);if(!url)throw volumeError;data=await api(`${url}?field=${encodeURIComponent(cut.field)}`);
         }
-        if(options().key!==key)return;cut.data=data;
+        if(options().key!==key)return;cut.data=data;levelControls();
       }catch(error){if(options().key===key)cut.error=`No field available here. ${error.message}`;}
       finally{if(options().key===key){cut.loading=false;queueRender();}}
     }
@@ -221,7 +236,7 @@
       sync();const cut=options();if(!cut.enabled)return;
       const frame=currentFrame(),points=planePoints(frame,cut.axis,cut.position),section=getSection(),n=axes.indexOf(cut.axis),a=section.axes;
       const backing=addQuad('section plane',points,new BABYLON.Color3(1,.64,.17),.075),border=addLines('section border',points.map((p,i)=>[p,points[(i+1)%4]]),new BABYLON.Color3(1,.64,.17));
-      const details=[];if(cut.data)details.push(drawFieldPlane(cut.data));
+      const details=[];if(cut.data)details.push(drawFieldPlane(displayedField()));
       if(cut.mesh){
         const byLevel=new Map();for(const cell of section.cells){const rect=[[cell.min[0],cell.min[1]],[cell.max[0],cell.min[1]],[cell.max[0],cell.max[1]],[cell.min[0],cell.max[1]]].map(pair=>{const p=[0,0,0];p[n]=cut.position;p[a[0]]=pair[0];p[a[1]]=pair[1];return p;});
           const list=byLevel.get(cell.level)||[];for(let k=0;k<4;k++)list.push([rect[k],rect[(k+1)%4]]);byLevel.set(cell.level,list);}
@@ -258,7 +273,7 @@
       applyClip();
       $('section-note').textContent=statusText();paint2d();scheduleField();
     }
-    function applyClip(){const plane=clipPlane(),seen=new Set();const apply=material=>{if(!material||seen.has(material))return;seen.add(material);material.clipPlane=plane;for(const child of material.subMaterials||[])apply(child);};for(const item of state.scene?.meshes||state.sceneObjects)if(item?.material&&(item.name==='model'||item.name.startsWith('AMR ')||item.metadata?.modelSurface))apply(item.material);}
+    function applyClip(){const plane=clipPlane(),seen=new Set();const apply=material=>{if(!material||seen.has(material))return;seen.add(material);material.clipPlane=plane;for(const child of material.subMaterials||[])apply(child);};for(const item of state.scene?.meshes||state.sceneObjects)if(item?.material&&(item.name==='model'||(item.name.startsWith('AMR ')||item.name.startsWith('Octree '))||item.metadata?.modelSurface))apply(item.material);}
     function refresh(){sync();sectionKey=null;queueRender();scheduleField();}
     $('section-enabled').addEventListener('change',()=>{options().enabled=$('section-enabled').checked;refresh();});
     $('section-axis').addEventListener('change',()=>{options().axis=$('section-axis').value;options().position=null;options().data=null;options().key=null;refresh();});
@@ -281,7 +296,7 @@
     canvas.addEventListener('dblclick',event=>{event.preventDefault();resetZoom();});$('section-reset-zoom')?.addEventListener('click',resetZoom);
     return {draw,drawAmr,sync,levelControls,refresh,setMeshVisible,cancelDrag,isDragging:()=>dragging,
       getView:()=>({surface_section_curves:$('section-surface-curves')?.checked!==false,inspector:{...options(),data:undefined,key:undefined,loading:undefined,error:undefined},section_view:{zoom:sectionView.zoom,pan:sectionView.pan.slice()},mesh_visible:state.meshVisible!==false,levelVisibility:{...state.levelVisibility},amr_render:$('amr-render').value,voxel_opacity:Number($('voxel-opacity').value)}),
-      restoreView(view){if($('section-surface-curves'))$('section-surface-curves').checked=view?.surface_section_curves!==false;cancelDrag();clearTimeout(requestTimer);setMeshVisible(view?.mesh_visible!==false);state.inspector=defaultInspector();if(view?.inspector){const c=view.inspector;Object.assign(options(),{enabled:c.enabled===true,axis:axes.includes(c.axis)?c.axis:'z',position:Number.isFinite(c.position)?c.position:null,field:['mesh','velocity','pressure','density','vorticity','u','v','w','mach','temperature'].includes(c.field)?c.field:'mesh',mesh:c.mesh!==false,clip:c.clip!==false});}const saved=view?.section_view;sectionView={zoom:Math.max(.25,Math.min(4096,Number(saved?.zoom)||1)),pan:Array.isArray(saved?.pan)&&saved.pan.length===2&&saved.pan.every(Number.isFinite)?saved.pan.slice():[0,0]};state.levelVisibility=view?.levelVisibility||{};$('amr-render').value=['blocks','wire_voxels','solid_voxels','translucent_voxels'].includes(view?.amr_render)?view.amr_render:'blocks';$('voxel-opacity').value=String(Math.max(1,Math.min(65,Number(view?.voxel_opacity)||12)));sectionKey=null;geometryKey=null;levelControls();refresh();}};
+      restoreView(view){if($('section-surface-curves'))$('section-surface-curves').checked=view?.surface_section_curves!==false;cancelDrag();clearTimeout(requestTimer);setMeshVisible(view?.mesh_visible!==false);state.inspector=defaultInspector();if(view?.inspector){const c=view.inspector;Object.assign(options(),{enabled:c.enabled===true,axis:axes.includes(c.axis)?c.axis:'z',position:Number.isFinite(c.position)?c.position:null,field:['mesh','velocity','pressure','density','vorticity','u','v','w','mach','temperature'].includes(c.field)?c.field:'mesh',mesh:c.mesh!==false,clip:c.clip!==false});}const saved=view?.section_view;sectionView={zoom:Math.max(.25,Math.min(4096,Number(saved?.zoom)||1)),pan:Array.isArray(saved?.pan)&&saved.pan.length===2&&saved.pan.every(Number.isFinite)?saved.pan.slice():[0,0]};state.levelVisibility=Object.fromEntries(Object.entries(view?.levelVisibility||{}).filter(([id,value])=>/^\d+$/.test(id)&&Number(id)>0&&typeof value==='boolean'));$('amr-render').value=['blocks','wire_voxels','solid_voxels','translucent_voxels'].includes(view?.amr_render)?view.amr_render:'blocks';$('voxel-opacity').value=String(Math.max(1,Math.min(65,Number(view?.voxel_opacity)||12)));sectionKey=null;geometryKey=null;levelControls();refresh();}};
   }
   window.LudwigAeroInspector={create};
 })();
