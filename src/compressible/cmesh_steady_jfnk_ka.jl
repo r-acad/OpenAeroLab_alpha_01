@@ -10,6 +10,7 @@ export JFNKAirfoilController, build_jfnk_airfoil_controller, step_jfnk_rans_ka!
 struct JFNKAirfoilWorkspace{L,V,A}
     line::L
     adi::A
+    coupled_cut::Bool
     basis::Vector{V}
     preconditioned::Vector{V}
     rhs::V
@@ -21,20 +22,25 @@ struct JFNKAirfoilWorkspace{L,V,A}
     m::Int
 end
 
+# Kept separate so the convergence diagnostics can evolve without changing
+# the nonlinear acceptance test or the solver's physical equations.
+include("cmesh_steady_diagnostics_ka.jl")
+
 function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
                                       preconditioner::Symbol=:line)
     2<=m<=24 || throw(ArgumentError("JFNK restart length must be 2:24"))
-    preconditioner in (:line,:adi,:block_adi) ||
-        throw(ArgumentError("preconditioner must be :line, :adi, or :block_adi"))
+    preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi) ||
+        throw(ArgumentError("unknown airfoil preconditioner"))
     vec()=ntuple(_->similar(s.dtf),4)
     v=vec()
     block_length=preconditioner==:adi ? s.NI : min(s.NI,64)
-    adi=preconditioner!=:line ?
+    adi=preconditioner in (:adi,:block_adi,:cut_block_adi) ?
         (lamW=similar(s.dtf),lamE=similar(s.dtf),
          cp=similar(s.dtf,preconditioner==:adi ? Float64 : Float32),
          block_length=Int32(block_length),
          blocks_per_row=Int32(cld(s.NI,block_length))) : nothing
-    JFNKAirfoilWorkspace(build_implicit_line_workspace(s),adi,
+    coupled_cut=preconditioner in (:cut_line,:cut_block_adi)
+    JFNKAirfoilWorkspace(build_implicit_line_workspace(s),adi,coupled_cut,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
         vec(),vec(),vec(),vec(),vec(),m)
 end
@@ -79,8 +85,15 @@ function _airfoil_line_precondition!(out,input,s::KSol,w::JFNKAirfoilWorkspace)
                 ndrange=Int(w.adi.blocks_per_row)*s.NJ)
             @. w.work[k]=out[k]*line.d0
         end
-        _k_implicit_line_solve!(b)(out[k],line.bp,w.work[k],
-            line.lamS,line.lamN,line.d0,ni,nj;ndrange=s.NI)
+        if w.coupled_cut
+            _k_implicit_cut_line_solve!(b)(out[k],line.bp,w.work[k],
+                line.lamS,line.lamN,line.d0,ni,nj,
+                Int32(s.NIW),Int32(s.NIF);
+                ndrange=s.NIF+s.NIW)
+        else
+            _k_implicit_line_solve!(b)(out[k],line.bp,w.work[k],
+                line.lamS,line.lamN,line.d0,ni,nj;ndrange=s.NI)
+        end
     end
     out
 end
@@ -303,13 +316,19 @@ mutable struct JFNKAirfoilController{W,K}
     rejections::Int
     nonmonotone_window::Int
     merit_history::Vector{Float64}
+    recovery_steps::Int
+    recovery_limit::Int
+    recovery_iterations::Int
+    recovery_events::Int
+    restart_cfl::Float32
 end
 
 function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     initial_cfl::Float32=2.0f0,min_cfl::Float32=0.05f0,
     max_cfl::Float32=2.0f0,growth::Float32=1.05f0,
     max_attempts::Int=4,linear_solver::Symbol=:native,
-    nonmonotone_window::Int=0,preconditioner::Symbol=:line)
+    nonmonotone_window::Int=0,preconditioner::Symbol=:line,
+    recovery_steps::Int=0,recovery_limit::Int=200)
     isfinite(min_cfl) && isfinite(initial_cfl) && isfinite(max_cfl) &&
         0.0f0<min_cfl<=initial_cfl<=max_cfl<=10.0f0 ||
         throw(ArgumentError("invalid JFNK pseudo-CFL bounds"))
@@ -320,13 +339,57 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
         throw(ArgumentError("linear_solver must be :native or :krylov"))
     0<=nonmonotone_window<=20 ||
         throw(ArgumentError("nonmonotone_window must be 0:20"))
+    0<=recovery_steps<=100 && recovery_steps<=recovery_limit<=10_000 ||
+        throw(ArgumentError("recovery_steps must be 0:100 and recovery_limit must be between recovery_steps and 10000"))
     workspace=build_jfnk_airfoil_workspace(s;m,preconditioner)
     krylov_workspace=linear_solver==:krylov ?
         build_krylov_airfoil_workspace(s,workspace) : nothing
     JFNKAirfoilController(workspace,krylov_workspace,initial_cfl,
         min_cfl,max_cfl,growth,max_attempts,0,0,
-        nonmonotone_window,Float64[])
+        nonmonotone_window,Float64[],recovery_steps,recovery_limit,0,0,initial_cfl)
 end
+
+# A failed Newton direction is not proof that no steady solution exists. An
+# explicitly requested, bounded burst of the original stable RK march can
+# change the local linearization before retrying Newton. It preserves the
+# original equations and is reported separately from an accepted implicit step.
+# No recovery event can declare convergence. Failed recovery restores every
+# evolved flow/turbulence field, including auxiliaries updated by SST.
+function _airfoil_explicit_recovery!(s::KSol,c::JFNKAirfoilController;
+    corrected_wall_metric::Bool=false,nonorth_diffusion::Bool=false)
+    count=min(c.recovery_steps,c.recovery_limit-c.recovery_iterations)
+    count>0 || return (accepted=false,recovery_steps=0)
+    names=(:rho,:ux,:uy,:T,:tk,:tom,:nut,:tnl,:pvort,:exx,:exy,:eyy)
+    saved=map(name->copy(getproperty(s,name)),names)
+    good=false
+    try
+        for _ in 1:count
+            step_ka!(s,0.45f0)
+            sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
+            _airfoil_physical_state(s.rho,s.ux,s.uy,s.T) ||
+                return (accepted=false,recovery_steps=0)
+        end
+        refresh_raw_residual_ka!(s)
+        after=_implicit_merit(s)
+        good=isfinite(after) && all(isfinite,s.tk) && all(isfinite,s.tom) &&
+             all(isfinite,s.nut)
+        good || return (accepted=false,recovery_steps=0)
+        c.recovery_iterations+=count;c.recovery_events+=1;c.iterations+=1
+        c.cfl=c.restart_cfl
+        empty!(c.merit_history)
+        return (accepted=true,recovery_steps=count,merit_after=after)
+    finally
+        if !good
+            for (name,array) in zip(names,saved);copyto!(getproperty(s,name),array);end
+            refresh_raw_residual_ka!(s)
+        end
+    end
+end
+
+@inline _airfoil_next_cfl(used::Float32,alpha::Float32,
+    min_cfl::Float32,max_cfl::Float32,growth::Float32) =
+    alpha>=0.9f0 ? min(max_cfl,used*growth) :
+                    max(min_cfl,used*max(0.5f0,alpha))
 
 """One accepted steady RANS pseudo-time iteration or a reported rejection.
 The controller halves pseudo CFL after a rejected flow step and grows it after
@@ -334,8 +397,11 @@ acceptance. A rejected result leaves the flow and SST state unchanged."""
 function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     linear_tol::Float64=0.01,linear_cycles::Int=1,
     fd_scale::Float32=1.0f0,corrected_wall_metric::Bool=false,
-    nonorth_diffusion::Bool=false,max_backtracks::Int=8)
+    nonorth_diffusion::Bool=false,max_backtracks::Int=8,
+    sst_substeps::Int=1)
     s.sst || throw(ArgumentError("JFNK RANS controller requires SST"))
+    1<=sst_substeps<=100 ||
+        throw(ArgumentError("sst_substeps must be 1:100"))
     result=nothing
     attempts=0
     used=c.cfl
@@ -349,20 +415,50 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
             krylov_workspace=c.krylov_workspace)
         if result.accepted
             sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
+            # The flow pseudo-time and wall-resolved SST transport have very
+            # different clocks. This opt-in multirate path advances SST at
+            # its established explicit CFL while holding the flow fixed.
+            # It changes the iteration path, not the discrete steady root.
+            for _ in 2:sst_substeps
+                prepare_dt_ka!(s,0.45f0)
+                sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
+            end
+            # SST changes the viscosity used by the flow equations. Report
+            # the residual of the state actually returned to the caller,
+            # retaining the pre-SST trial merit as acceptance evidence.
+            refresh_raw_residual_ka!(s)
+            coupled_merit=_implicit_merit(s)
             if c.nonmonotone_window>0
                 push!(c.merit_history,result.merit_before)
                 length(c.merit_history)>c.nonmonotone_window &&
                     popfirst!(c.merit_history)
             end
             c.iterations+=1
-            c.cfl=min(c.max_cfl,used*c.growth)
+            # A tiny accepted line-search fraction is a failed pseudo-time
+            # prediction, not evidence that a larger step will work. Shrink
+            # the proposed CFL until the Newton direction accepts useful
+            # fractions again; grow only after a near-full step.
+            c.cfl=_airfoil_next_cfl(used,result.alpha,c.min_cfl,c.max_cfl,c.growth)
             return merge(result,(attempts=attempt,pseudo_cfl_used=used,
-                                 pseudo_cfl_next=c.cfl))
+                                 pseudo_cfl_next=c.cfl,sst_substeps,
+                                 merit_after=coupled_merit,
+                                 flow_trial_merit_after=result.merit_after,
+                                 step_kind=:implicit,recovery_steps=0,
+                                 recovery_total=c.recovery_iterations))
         end
         c.rejections+=1
         c.cfl=used*0.5f0
         c.cfl<c.min_cfl && break
     end
+    recovered=_airfoil_explicit_recovery!(s,c;corrected_wall_metric,nonorth_diffusion)
+    if recovered.accepted
+        return merge(result,recovered,(attempts,pseudo_cfl_used=used,
+            pseudo_cfl_next=c.cfl,sst_substeps=1,step_kind=:explicit_recovery,
+            flow_trial_merit_after=result.merit_after,
+            recovery_total=c.recovery_iterations))
+    end
     merge(result,(attempts,pseudo_cfl_used=used,
-                  pseudo_cfl_next=c.cfl))
+                  pseudo_cfl_next=c.cfl,sst_substeps,step_kind=:rejected,
+                  flow_trial_merit_after=result.merit_after,
+                  recovery_steps=0,recovery_total=c.recovery_iterations))
 end

@@ -55,6 +55,31 @@ end
     end
 end
 
+@testset "wake-cut coupled line operator" begin
+    ni,nj,niw,nif=6,4,2,2
+    ls=fill(2.0f0,ni,nj);ln=fill(3.0f0,ni,nj)
+    d0=fill(4.0f0,ni,nj);rhs=reshape(Float32.(1:ni*nj),ni,nj)
+    x=similar(rhs);bp=similar(rhs)
+    M._k_implicit_cut_line_solve!(CPU())(x,bp,rhs,ls,ln,d0,
+        Int32(ni),Int32(nj),Int32(niw),Int32(nif);
+        ndrange=niw+nif)
+    KernelAbstractions.synchronize(CPU())
+    for j in 1:nj,i in 1:ni
+        south=j>1 ? x[i,j-1] : (i<=niw || i>niw+nif ? x[ni+1-i,1] : 0.0f0)
+        north=j<nj ? x[i,j+1] : 0.0f0
+        lhs=(d0[i,j]+ls[i,j]+ln[i,j])*x[i,j]-ls[i,j]*south-ln[i,j]*north
+        @test isapprox(lhs,rhs[i,j];rtol=2e-6)
+    end
+end
+
+@testset "damped Newton steps reduce pseudo CFL" begin
+    next=M._airfoil_next_cfl
+    @test next(1f0,1f0,0.005f0,10f0,1.05f0)==1.05f0
+    @test next(1f0,0.5f0,0.005f0,10f0,1.05f0)==0.5f0
+    @test next(1f0,0.0000610352f0,0.005f0,10f0,1.05f0)==0.5f0
+    @test next(0.005f0,0.0000610352f0,0.005f0,10f0,1.05f0)==0.005f0
+end
+
 @testset "streamwise implicit factor" begin
     ni,nj=9,3
     lw=fill(2.0f0,ni,nj);le=fill(3.0f0,ni,nj)
@@ -127,14 +152,51 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native,
     if jfnk
         ctrl=M.build_jfnk_airfoil_controller(s;m=4,linear_solver,preconditioner,
             nonmonotone_window=3)
-        r=M.step_jfnk_rans_ka!(s,ctrl;max_backtracks=16)
+        r=M.step_jfnk_rans_ka!(s,ctrl;max_backtracks=16,
+            sst_substeps=2)
         @test r.accepted && ctrl.iterations==1
         @test r.pseudo_cfl_next>=r.pseudo_cfl_used
-        @test r.physical_trials>=1 && r.best_trial_merit<=r.merit_after
+        @test r.sst_substeps==2
+        @test r.step_kind==:implicit && r.recovery_steps==0
+        @test r.physical_trials>=1 && r.best_trial_merit<=r.flow_trial_merit_after
+        @test r.merit_after==M._implicit_merit(s)
         @test length(ctrl.merit_history)==1 &&
               ctrl.merit_history[1]==r.merit_before
         @test all(isfinite,s.tk) && all(isfinite,s.tom)
     end
+    s
+end
+
+function airfoil_recovery_and_diagnostics(backend)
+    s=airfoil_implicit_smoke(backend;jfnk=true)
+    reference=deepcopy(s)
+    c=M.build_jfnk_airfoil_controller(s;m=4,recovery_steps=3,recovery_limit=5)
+    for _ in 1:3
+        M.step_ka!(reference,.45f0);M.sst_step_ka!(reference)
+    end
+    M.refresh_raw_residual_ka!(reference)
+    r=M._airfoil_explicit_recovery!(s,c)
+    @test r.accepted && r.recovery_steps==3 && c.recovery_iterations==3
+    @test c.recovery_events==1 && c.cfl==c.restart_cfl
+    for name in (:rho,:ux,:uy,:T,:tk,:tom,:nut,:tnl)
+        @test Array(getproperty(s,name))==Array(getproperty(reference,name))
+    end
+    r=M._airfoil_explicit_recovery!(s,c)
+    @test r.accepted && r.recovery_steps==2 && c.recovery_iterations==5
+    before=Array(s.rho)
+    @test !M._airfoil_explicit_recovery!(s,c).accepted
+    @test before==Array(s.rho)
+    names=(:tk,:tom,:nut,:tnl,:pvort,:exx,:exy,:eyy,:dtf)
+    saved=map(name->Array(getproperty(s,name)),names)
+    report=M.steady_airfoil_diagnostics_ka(s)
+    @test all(isfinite,report.flow_l2) && all(>=(0),report.flow_l2)
+    @test isfinite(report.normalized_mass_imbalance)
+    @test isfinite(report.turb_k_update_defect) && isfinite(report.turb_omega_update_defect)
+    @test !report.all_six_equation_residuals_available
+    for (name,copy) in zip(names,saved)
+        @test Array(getproperty(s,name))==copy
+    end
+    @test_throws ArgumentError M.build_jfnk_airfoil_controller(s;recovery_steps=10,recovery_limit=5)
 end
 
 @testset "single-phase airfoil implicit flow CPU" begin
@@ -154,6 +216,16 @@ end
 end
 @testset "single-phase airfoil block ADI JFNK flow CPU" begin
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:block_adi)
+end
+@testset "single-phase airfoil cut-line JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:cut_line)
+end
+@testset "single-phase airfoil cut-block ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:cut_block_adi)
+end
+
+@testset "bounded recovery preserves explicit equations and diagnostic probe state CPU" begin
+    airfoil_recovery_and_diagnostics(CPU())
 end
 
 if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
@@ -180,5 +252,14 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "single-phase airfoil block ADI JFNK flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:block_adi)
+    end
+    @testset "single-phase airfoil cut-line JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:cut_line)
+    end
+    @testset "single-phase airfoil cut-block ADI JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:cut_block_adi)
+    end
+    @testset "bounded recovery preserves explicit equations and diagnostic probe state CUDA" begin
+        airfoil_recovery_and_diagnostics(CUDA.CUDABackend())
     end
 end

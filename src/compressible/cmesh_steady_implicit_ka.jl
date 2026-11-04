@@ -83,6 +83,54 @@ end
     end
 end
 
+# A C-mesh wake pair is one continuous wall-normal line through the cut.
+# Foil columns remain open at the wall; wake columns join i and NI+1-i at j=1.
+@inline function _implicit_cut_cell(l,m,lamS,lamN,NI,NJ,NIW,NIF)
+    if l<=NIF
+        i=NIW+l;j=m
+        (i,j,j>1 ? lamS[i,j] : 0.0f0,
+             j<NJ ? lamN[i,j] : 0.0f0)
+    else
+        w=l-NIF;ip=NI+Int32(1)-w
+        if m<=NJ
+            j=NJ+Int32(1)-m
+            (ip,j,j<NJ ? lamN[ip,j] : 0.0f0,lamS[ip,j])
+        else
+            j=m-NJ
+            (w,j,lamS[w,j],j<NJ ? lamN[w,j] : 0.0f0)
+        end
+    end
+end
+
+@kernel function _k_implicit_cut_line_solve!(d,bp,@Const(rhs),
+    @Const(lamS),@Const(lamN),@Const(d0),
+    NI::Int32,NJ::Int32,NIW::Int32,NIF::Int32)
+    l=@index(Global,Linear)
+    @inbounds if l<=NIF+NIW
+        count=l<=NIF ? NJ : Int32(2)*NJ
+        cprev=0.0f0
+        for m in Int32(1):count
+            i,j,a,c=_implicit_cut_cell(l,m,lamS,lamN,NI,NJ,NIW,NIF)
+            den=d0[i,j]+lamS[i,j]+lamN[i,j]-a*cprev
+            bp[i,j]=c/den
+            if m==Int32(1)
+                d[i,j]=rhs[i,j]/den
+            else
+                ip,jp,_,_=_implicit_cut_cell(l,m-Int32(1),lamS,lamN,
+                                             NI,NJ,NIW,NIF)
+                d[i,j]=(rhs[i,j]+a*d[ip,jp])/den
+            end
+            cprev=bp[i,j]
+        end
+        for m in count-Int32(1):Int32(-1):Int32(1)
+            i,j,_,_=_implicit_cut_cell(l,m,lamS,lamN,NI,NJ,NIW,NIF)
+            ip,jp,_,_=_implicit_cut_cell(l,m+Int32(1),lamS,lamN,
+                                         NI,NJ,NIW,NIF)
+            d[i,j]+=bp[i,j]*d[ip,jp]
+        end
+    end
+end
+
 # Streamwise factor for an opt-in approximate-factorization preconditioner.
 # The C-mesh i rows are open at both far-field outlet ends. Face rates at
 # those ends remain on the diagonal; the nonlinear residual supplies their BC.
