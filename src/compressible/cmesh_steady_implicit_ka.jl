@@ -113,11 +113,22 @@ function _implicit_merit(s::KSol)
     u=max(hypot(Float64(s.uxi),Float64(s.uyi)),1e-3)
     e=max(Float64(s.eint*s.T_inf),u*u)
     n=length(vr)
-    a=sqrt(sum(abs2,s.dc_r ./vr)/n)/r
-    b=sqrt(sum(abs2,s.dc_mx./vr)/n)/(r*u)
-    c=sqrt(sum(abs2,s.dc_my./vr)/n)/(r*u)
-    d=sqrt(sum(abs2,s.dc_e ./vr)/n)/(r*e)
-    sqrt(a*a+b*b+c*c+d*d)
+    inv_r=Float32(1/r)
+    inv_m=Float32(1/(r*u))
+    inv_e=Float32(1/(r*e))
+    # One fused GPU reduction replaces four volume-division temporaries and
+    # four synchronizing reductions in every nonlinear line-search trial.
+    total=sum(@. ((s.dc_r/vr)*inv_r)^2 +
+                 ((s.dc_mx/vr)*inv_m)^2 +
+                 ((s.dc_my/vr)*inv_m)^2 +
+                 ((s.dc_e/vr)*inv_e)^2)
+    sqrt(Float64(total)/n)
+end
+
+function _airfoil_physical_state(rho,ux,uy,T)
+    mapreduce((r,u,v,t)->isfinite(r) && isfinite(u) && isfinite(v) &&
+                          isfinite(t) && r>1.0f-4 && t>1.0f-3,
+              &,rho,ux,uy,T)
 end
 
 function _implicit_admit(s::KSol,cfl::Float32)
@@ -168,9 +179,7 @@ function step_implicit_line_ka!(s::KSol,w::ImplicitLineWorkspace,cfl::Float32;
             w.dr,w.dmx,w.dmy,w.dE,s.eint,alpha,ni,nj,g;
             ndrange=(s.NI,s.NJ))
         # Check physical state before running the flux kernels.
-        good=minimum(s.rho)>1.0f-4 && minimum(s.T)>1.0f-3 &&
-             all(isfinite,s.rho) && all(isfinite,s.ux) &&
-             all(isfinite,s.uy) && all(isfinite,s.T)
+        good=_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
         if good
             _raw_residual_ka!(s,Int32(2),Int32(1))
             after=_implicit_merit(s)

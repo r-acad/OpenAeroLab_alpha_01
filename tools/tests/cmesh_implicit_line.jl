@@ -7,6 +7,31 @@ include(joinpath(@__DIR__,"..","..","src","cmesh","cmesh_metrics.jl"))
 include(joinpath(@__DIR__,"..","..","src","compressible","cmesh_solver_ka.jl"))
 const M=CMeshSolverKA
 
+@testset "implicit physical-state reduction" begin
+    rho=ones(Float32,2,2);ux=zeros(Float32,2,2)
+    uy=zeros(Float32,2,2);T=ones(Float32,2,2)
+    @test M._airfoil_physical_state(rho,ux,uy,T)
+    rho[1]=1.0f-5
+    @test !M._airfoil_physical_state(rho,ux,uy,T)
+    rho[1]=1.0f0;ux[2]=NaN32
+    @test !M._airfoil_physical_state(rho,ux,uy,T)
+    ux[2]=0.0f0;T[3]=Inf32
+    @test !M._airfoil_physical_state(rho,ux,uy,T)
+end
+
+function reference_flow_merit(s)
+    vr=s.vol
+    r=max(Float64(s.rho_inf),1e-12)
+    u=max(hypot(Float64(s.uxi),Float64(s.uyi)),1e-3)
+    e=max(Float64(s.eint*s.T_inf),u*u)
+    n=length(vr)
+    a=sqrt(sum(abs2,s.dc_r ./vr)/n)/r
+    b=sqrt(sum(abs2,s.dc_mx./vr)/n)/(r*u)
+    c=sqrt(sum(abs2,s.dc_my./vr)/n)/(r*u)
+    d=sqrt(sum(abs2,s.dc_e ./vr)/n)/(r*e)
+    sqrt(a*a+b*b+c*c+d*d)
+end
+
 @testset "line-implicit tridiagonal operator" begin
     ni,nj=3,8
     ls=fill(2.0f0,ni,nj); ln=fill(3.0f0,ni,nj)
@@ -47,6 +72,7 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native)
     @test isfinite(result.merit_before)
     @test result.accepted
     @test result.merit_after < result.merit_before
+    @test isapprox(M._implicit_merit(s),reference_flow_merit(s);rtol=2e-5)
     if kw!==nothing
         @test result.linear_iterations>0 &&
               isfinite(result.linear_relative) &&
@@ -85,6 +111,13 @@ end
 if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     using CUDA
     @test CUDA.functional()
+    @testset "implicit physical-state reduction CUDA" begin
+        good=CUDA.fill(1.0f0,4,4)
+        zero_velocity=CUDA.zeros(Float32,4,4)
+        bad=CUDA.fill(NaN32,4,4)
+        @test M._airfoil_physical_state(good,zero_velocity,zero_velocity,good)
+        @test !M._airfoil_physical_state(good,bad,zero_velocity,good)
+    end
     @testset "single-phase airfoil implicit flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend())
     end

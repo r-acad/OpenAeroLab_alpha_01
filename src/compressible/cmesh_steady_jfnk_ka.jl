@@ -84,8 +84,7 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
     _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
         line.rho0,line.ux0,line.uy0,line.T0,v...,
         s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
-    if !(minimum(s.rho)>1.0f-4 && minimum(s.T)>1.0f-3 &&
-         all(isfinite,s.rho) && all(isfinite,s.T))
+    if !_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
         for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),
                              (line.rho0,line.ux0,line.uy0,line.T0))
             copyto!(dst,src)
@@ -200,9 +199,7 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     for _ in 1:max_backtracks
         _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,backup...,
             w.delta...,s.eint,alpha,ni,nj,g;ndrange=(s.NI,s.NJ))
-        good=minimum(s.rho)>1.0f-4 && minimum(s.T)>1.0f-3 &&
-             all(isfinite,s.rho) && all(isfinite,s.ux) &&
-             all(isfinite,s.uy) && all(isfinite,s.T)
+        good=_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
         if good
             _raw_residual_ka!(s,Int32(2),Int32(1))
             after=_implicit_merit(s)
