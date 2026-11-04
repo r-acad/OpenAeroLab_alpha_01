@@ -238,6 +238,10 @@ end
 @testset "single-phase airfoil cut-block ADI JFNK flow CPU" begin
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:cut_block_adi)
 end
+@testset "single-phase airfoil swept-line JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:swept_line)
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:cut_swept_line)
+end
 @testset "symmetric matrix-free airfoil Jacobian CPU" begin
     airfoil_central_difference_smoke(CPU())
     airfoil_central_difference_smoke(CPU();linear_solver=:krylov)
@@ -277,6 +281,10 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "single-phase airfoil cut-block ADI JFNK flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:cut_block_adi)
+    end
+    @testset "single-phase airfoil swept-line JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:swept_line)
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:cut_swept_line)
     end
     @testset "symmetric matrix-free airfoil Jacobian CUDA" begin
         airfoil_central_difference_smoke(CUDA.CUDABackend())

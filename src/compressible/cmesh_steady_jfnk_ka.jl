@@ -7,10 +7,12 @@ using LinearAlgebra
 export JFNKAirfoilWorkspace, build_jfnk_airfoil_workspace, step_jfnk_airfoil_ka!
 export JFNKAirfoilController, build_jfnk_airfoil_controller, step_jfnk_rans_ka!
 
-struct JFNKAirfoilWorkspace{L,V,A}
+struct JFNKAirfoilWorkspace{L,V,A,S}
     line::L
     adi::A
     coupled_cut::Bool
+    swept_line::Bool
+    sweep_old::S
     basis::Vector{V}
     preconditioned::Vector{V}
     rhs::V
@@ -30,18 +32,23 @@ include("cmesh_steady_diagnostics_ka.jl")
 function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
                                       preconditioner::Symbol=:line)
     2<=m<=24 || throw(ArgumentError("JFNK restart length must be 2:24"))
-    preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi) ||
+    preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi,
+                       :swept_line,:cut_swept_line) ||
         throw(ArgumentError("unknown airfoil preconditioner"))
     vec()=ntuple(_->similar(s.dtf),4)
     v=vec()
+    swept_line=preconditioner in (:swept_line,:cut_swept_line)
     block_length=preconditioner==:adi ? s.NI : min(s.NI,64)
-    adi=preconditioner in (:adi,:block_adi,:cut_block_adi) ?
+    adi=preconditioner in (:adi,:block_adi,:cut_block_adi,
+                           :swept_line,:cut_swept_line) ?
         (lamW=similar(s.dtf),lamE=similar(s.dtf),
          cp=similar(s.dtf,preconditioner==:adi ? Float64 : Float32),
+         d0_eff=swept_line ? similar(s.dtf) : nothing,
          block_length=Int32(block_length),
          blocks_per_row=Int32(cld(s.NI,block_length))) : nothing
-    coupled_cut=preconditioner in (:cut_line,:cut_block_adi)
+    coupled_cut=preconditioner in (:cut_line,:cut_block_adi,:cut_swept_line)
     JFNKAirfoilWorkspace(build_implicit_line_workspace(s),adi,coupled_cut,
+        swept_line,swept_line ? vec() : nothing,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
         vec(),vec(),vec(),vec(),vec(),vec(),m)
 end
@@ -75,9 +82,37 @@ _av_norm(a)=sqrt(max(0.0,_av_dot(a,a)))
 # Frozen scalar inverse of the pseudo-transient operator. For RHS in
 # residual-per-volume units, multiply by the cell volume before the solve.
 # The ADI option applies streamwise, diagonal scale, then wall-normal factors.
+@kernel function _k_implicit_swept_rhs!(rhs,@Const(input),@Const(vol),
+    @Const(old),@Const(lamW),@Const(lamE),NI::Int32,NJ::Int32)
+    i,j=@index(Global,NTuple)
+    @inbounds if i<=NI && j<=NJ
+        rhs[i,j]=input[i,j]*vol[i,j]+
+            (i>1 ? lamW[i,j]*old[i-1,j] : 0.0f0)+
+            (i<NI ? lamE[i,j]*old[i+1,j] : 0.0f0)
+    end
+end
+
 function _airfoil_line_precondition!(out,input,s::KSol,w::JFNKAirfoilWorkspace)
     line=w.line; b=s.backend; ni=Int32(s.NI);nj=Int32(s.NJ)
     for k in 1:4
+        if w.swept_line
+            fill!(w.sweep_old[k],0.0f0)
+            for sweep in 1:3
+                _k_implicit_swept_rhs!(b)(w.work[k],input[k],s.vol,
+                    w.sweep_old[k],w.adi.lamW,w.adi.lamE,ni,nj;
+                    ndrange=(s.NI,s.NJ))
+                if w.coupled_cut
+                    _k_implicit_cut_line_solve!(b)(out[k],line.bp,w.work[k],
+                        line.lamS,line.lamN,w.adi.d0_eff,ni,nj,
+                        Int32(s.NIW),Int32(s.NIF);ndrange=s.NIF+s.NIW)
+                else
+                    _k_implicit_line_solve!(b)(out[k],line.bp,w.work[k],
+                        line.lamS,line.lamN,w.adi.d0_eff,ni,nj;ndrange=s.NI)
+                end
+                sweep<3 && copyto!(w.sweep_old[k],out[k])
+            end
+            continue
+        end
         @. w.work[k]=input[k]*s.vol
         if w.adi!==nothing
             _k_implicit_i_solve!(b)(out[k],w.adi.cp,w.work[k],
@@ -299,6 +334,7 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
             s.rho,s.ux,s.uy,s.T,s.nut,s.Six,s.Siy,s.vol,
             s.nu_lam,s.rho_inf,s.suth,s.air_sutherland,Int32(s.sst),
             ni,nj,g;ndrange=(s.NI,s.NJ))
+        w.swept_line && (@. w.adi.d0_eff=line.d0+w.adi.lamW+w.adi.lamE)
     end
     for k in 1:4; @. w.rhs[k]=w.base_residual[k]/s.vol; end
     kits,rel=krylov_workspace===nothing ?
