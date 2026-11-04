@@ -3352,4 +3352,8 @@ function residual_report_ka(s::KSol)
     (linf, l2, frac, idx[1], idx[2])
 end
 
+# Experimental steady airfoil flow iteration. Kept separate from the explicit
+# physical-time and cavitation entry points.
+include(joinpath(@__DIR__, "cmesh_steady_implicit_ka.jl"))
+
 end # module
