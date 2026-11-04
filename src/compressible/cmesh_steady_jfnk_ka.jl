@@ -68,6 +68,23 @@ end
 # A(v) = [R(U+eps v)-R(U)]/(eps V) + d0*v/V. The state is restored
 # after each residual evaluation. Float32-aware epsilon grows with the
 # overall conservative state norm and shrinks with the Krylov direction norm.
+function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
+                          E::Float64,fd_scale::Float32)
+    state_norm=sqrt(ncell*(r*r+2*(r*u)^2+E*E))
+    h=Float32(fd_scale*sqrt(eps(Float32))*(1.0+state_norm)/nv)
+    # A global 2-norm step can perturb one wall cell by O(sqrt(N) eps^1/2)
+    # when a preconditioned Krylov vector is localized there. Bound the
+    # conservative change in every cell before sampling the nonlinear flux.
+    inv_r=Float32(1/r)
+    inv_m=Float32(1/(r*u))
+    inv_e=Float32(1/E)
+    max_scaled=maximum(@. max(abs(v[1])*inv_r,abs(v[2])*inv_m,
+                            abs(v[3])*inv_m,abs(v[4])*inv_e))
+    max_scaled>0 && (h=min(h,1.0f-3/max_scaled))
+    isfinite(h) && h>0 || throw(ArgumentError("invalid matrix-free perturbation"))
+    h
+end
+
 function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
                                 fd_scale::Float32=1.0f0)
     nv=_av_norm(v)
@@ -77,19 +94,25 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
     r=Float64(s.rho_inf)
     u=max(hypot(Float64(s.uxi),Float64(s.uyi)),1e-3)
     E=r*(Float64(s.eint*s.T_inf)+0.5*u*u)
-    state_norm=sqrt(ncell*(r*r+2*(r*u)^2+E*E))
-    h=Float32(fd_scale*sqrt(eps(Float32))*(1.0+state_norm)/nv)
-    isfinite(h) && h>0 || throw(ArgumentError("invalid matrix-free perturbation"))
+    h=_airfoil_fd_step(v,nv,ncell,r,u,E,fd_scale)
     b=s.backend;ni=Int32(s.NI);nj=Int32(s.NJ);g=Int32(s.g)
-    _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
-        line.rho0,line.ux0,line.uy0,line.T0,v...,
-        s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
-    if !_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
+    physical=false
+    for _ in 1:16
+        _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
+            line.rho0,line.ux0,line.uy0,line.T0,v...,
+            s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
+        if _airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
+            physical=true
+            break
+        end
+        h*=0.5f0
+    end
+    if !physical
         for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),
                              (line.rho0,line.ux0,line.uy0,line.T0))
             copyto!(dst,src)
         end
-        throw(ArgumentError("matrix-free trial left the physical state"))
+        throw(ArgumentError("no physical matrix-free perturbation after 16 halvings"))
     end
     try
         _raw_residual_ka!(s,Int32(2),Int32(1))
@@ -185,7 +208,9 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     if before==0.0
         prepare_dt_ka!(s,min(cfl,0.45f0))
         return (accepted=true,alpha=0.0f0,linear_iterations=0,
-                linear_relative=0.0,merit_before=before,merit_after=before)
+                linear_relative=0.0,merit_before=before,merit_after=before,
+                best_trial_merit=before,best_trial_alpha=0.0f0,
+                physical_trials=0)
     end
     _k_implicit_line_coeffs!(b)(line.lamS,line.lamN,line.d0,
         s.rho,s.ux,s.uy,s.T,s.nut,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,
@@ -196,17 +221,24 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
         _airfoil_fgmres_restarted!(s,w;linear_tol,linear_cycles,fd_scale) :
         _airfoil_krylov_gmres!(s,w,krylov_workspace;linear_tol,linear_cycles,fd_scale)
     alpha=1.0f0
+    best=Inf;best_alpha=0.0f0;physical_trials=0
     for _ in 1:max_backtracks
         _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,backup...,
             w.delta...,s.eint,alpha,ni,nj,g;ndrange=(s.NI,s.NJ))
         good=_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
         if good
+            physical_trials+=1
             _raw_residual_ka!(s,Int32(2),Int32(1))
             after=_implicit_merit(s)
+            if isfinite(after) && after<best
+                best=after;best_alpha=alpha
+            end
             if isfinite(after) && after<before*(1.0-1e-4*Float64(alpha))
                 prepare_dt_ka!(s,min(cfl,0.45f0))
                 return (accepted=true,alpha,linear_iterations=kits,
-                        linear_relative=rel,merit_before=before,merit_after=after)
+                        linear_relative=rel,merit_before=before,merit_after=after,
+                        best_trial_merit=best,best_trial_alpha=best_alpha,
+                        physical_trials)
             end
         end
         alpha*=0.5f0
@@ -214,7 +246,9 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     for (dst,src) in zip(saved,backup);copyto!(dst,src);end
     _raw_residual_ka!(s,Int32(2),Int32(1))
     return (accepted=false,alpha=0.0f0,linear_iterations=kits,
-            linear_relative=rel,merit_before=before,merit_after=before)
+            linear_relative=rel,merit_before=before,merit_after=before,
+            best_trial_merit=best,best_trial_alpha=best_alpha,
+            physical_trials)
 end
 
 """Adaptive pseudo-CFL controller for the opt-in steady A+/C SST march.
@@ -257,7 +291,7 @@ acceptance. A rejected result leaves the flow and SST state unchanged."""
 function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     linear_tol::Float64=0.01,linear_cycles::Int=1,
     fd_scale::Float32=1.0f0,corrected_wall_metric::Bool=false,
-    nonorth_diffusion::Bool=false)
+    nonorth_diffusion::Bool=false,max_backtracks::Int=8)
     s.sst || throw(ArgumentError("JFNK RANS controller requires SST"))
     result=nothing
     attempts=0
@@ -266,7 +300,7 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
         attempts=attempt
         used=c.cfl
         result=step_jfnk_airfoil_ka!(s,c.workspace,used;
-            linear_tol,linear_cycles,fd_scale,
+            linear_tol,linear_cycles,fd_scale,max_backtracks,
             krylov_workspace=c.krylov_workspace)
         if result.accepted
             sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)

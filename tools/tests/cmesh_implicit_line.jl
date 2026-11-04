@@ -19,6 +19,14 @@ const M=CMeshSolverKA
     @test !M._airfoil_physical_state(rho,ux,uy,T)
 end
 
+@testset "matrix-free localized perturbation" begin
+    v=ntuple(_->zeros(Float32,100,100),4)
+    v[4][1,1]=1.0f0
+    h=M._airfoil_fd_step(v,1.0,10_000,1.0,0.2,1.0,1.0f0)
+    @test h<=1.0f-3
+    @test h>0
+end
+
 function reference_flow_merit(s)
     vr=s.vol
     r=max(Float64(s.rho_inf),1e-12)
@@ -89,9 +97,10 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native)
     @test all(isfinite,s.tk) && all(isfinite,s.tom)
     if jfnk
         ctrl=M.build_jfnk_airfoil_controller(s;m=4,linear_solver)
-        r=M.step_jfnk_rans_ka!(s,ctrl)
+        r=M.step_jfnk_rans_ka!(s,ctrl;max_backtracks=16)
         @test r.accepted && ctrl.iterations==1
         @test r.pseudo_cfl_next>=r.pseudo_cfl_used
+        @test r.physical_trials>=1 && r.best_trial_merit<=r.merit_after
         @test all(isfinite,s.tk) && all(isfinite,s.tom)
     end
 end
