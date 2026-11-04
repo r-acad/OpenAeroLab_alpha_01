@@ -199,6 +199,21 @@ function airfoil_recovery_and_diagnostics(backend)
     @test_throws ArgumentError M.build_jfnk_airfoil_controller(s;recovery_steps=10,recovery_limit=5)
 end
 
+function airfoil_central_difference_smoke(backend;linear_solver=:native)
+    s=airfoil_implicit_smoke(backend;jfnk=true)
+    w=M.build_jfnk_airfoil_workspace(s;m=6)
+    kw=linear_solver==:krylov ? M.build_krylov_airfoil_workspace(s,w) : nothing
+    r=M.step_jfnk_airfoil_ka!(s,w,.45f0;
+        fd_scheme=:central,fd_local_cap=.01f0,max_backtracks=16,
+        krylov_workspace=kw)
+    @test r.accepted && isfinite(r.linear_relative)
+    @test r.merit_after<r.merit_before
+    @test_throws ArgumentError M.step_jfnk_airfoil_ka!(s,w,.45f0;
+        fd_scheme=:invalid)
+    @test_throws ArgumentError M.step_jfnk_airfoil_ka!(s,w,.45f0;
+        fd_local_cap=.1f0)
+end
+
 @testset "single-phase airfoil implicit flow CPU" begin
     airfoil_implicit_smoke(CPU())
 end
@@ -222,6 +237,10 @@ end
 end
 @testset "single-phase airfoil cut-block ADI JFNK flow CPU" begin
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:cut_block_adi)
+end
+@testset "symmetric matrix-free airfoil Jacobian CPU" begin
+    airfoil_central_difference_smoke(CPU())
+    airfoil_central_difference_smoke(CPU();linear_solver=:krylov)
 end
 
 @testset "bounded recovery preserves explicit equations and diagnostic probe state CPU" begin
@@ -258,6 +277,10 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "single-phase airfoil cut-block ADI JFNK flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:cut_block_adi)
+    end
+    @testset "symmetric matrix-free airfoil Jacobian CUDA" begin
+        airfoil_central_difference_smoke(CUDA.CUDABackend())
+        airfoil_central_difference_smoke(CUDA.CUDABackend();linear_solver=:krylov)
     end
     @testset "bounded recovery preserves explicit equations and diagnostic probe state CUDA" begin
         airfoil_recovery_and_diagnostics(CUDA.CUDABackend())

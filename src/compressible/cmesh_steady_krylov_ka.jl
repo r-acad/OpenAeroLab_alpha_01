@@ -8,6 +8,8 @@ mutable struct AirfoilJacobianOperator{S,W}
     s::S
     w::W
     fd_scale::Float32
+    fd_scheme::Symbol
+    fd_local_cap::Float32
 end
 
 struct AirfoilLineInverse{S,W}
@@ -40,7 +42,9 @@ function LinearAlgebra.mul!(y::AbstractVector{Float32},
                             x::AbstractVector{Float32})
     s=op.s;w=op.w
     _airfoil_unpack!(w.rhs,x,s.NI,s.NJ)
-    _airfoil_jacobian_vec!(w.work,w.rhs,s,w;fd_scale=op.fd_scale)
+    _airfoil_jacobian_vec!(w.work,w.rhs,s,w;
+        fd_scale=op.fd_scale,fd_scheme=op.fd_scheme,
+        fd_local_cap=op.fd_local_cap)
     _airfoil_pack!(y,w.work,s.NI,s.NJ)
 end
 
@@ -69,7 +73,7 @@ function build_krylov_airfoil_workspace(s::KSol,w::JFNKAirfoilWorkspace)
     n=4length(s.vol)
     rhs=similar(s.dtf,Float32,(n,))
     residual=similar(rhs)
-    jacobian=AirfoilJacobianOperator(s,w,1.0f0)
+    jacobian=AirfoilJacobianOperator(s,w,1.0f0,:forward,1.0f-3)
     line_inverse=AirfoilLineInverse(s,w)
     solver=Krylov.GmresWorkspace(jacobian,rhs;memory=w.m)
     KrylovAirfoilWorkspace(s,w,rhs,residual,solver,jacobian,line_inverse)
@@ -79,12 +83,16 @@ function _airfoil_krylov_gmres!(s::KSol,w::JFNKAirfoilWorkspace,
                                 kw::KrylovAirfoilWorkspace;
                                 linear_tol::Float64=0.1,
                                 linear_cycles::Int=1,
-                                fd_scale::Float32=1.0f0)
+                                fd_scale::Float32=1.0f0,
+                                fd_scheme::Symbol=:forward,
+                                fd_local_cap::Float32=1.0f-3)
     kw.s===s && kw.w===w ||
         throw(ArgumentError("Krylov workspace does not match solver and JFNK workspace"))
     0<linear_tol<1 || throw(ArgumentError("linear_tol must be in (0,1)"))
     1<=linear_cycles<=4 || throw(ArgumentError("linear_cycles must be 1:4"))
     kw.jacobian.fd_scale=fd_scale
+    kw.jacobian.fd_scheme=fd_scheme
+    kw.jacobian.fd_local_cap=fd_local_cap
     _airfoil_pack!(kw.rhs,w.rhs,s.NI,s.NJ)
     beta=norm(kw.rhs)
     beta==0 && return (0,0.0)

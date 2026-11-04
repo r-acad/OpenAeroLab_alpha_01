@@ -17,6 +17,7 @@ struct JFNKAirfoilWorkspace{L,V,A}
     delta::V
     work::V
     base_residual::V
+    fd_minus::V
     full_rhs::V
     total_delta::V
     m::Int
@@ -42,7 +43,7 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
     coupled_cut=preconditioner in (:cut_line,:cut_block_adi)
     JFNKAirfoilWorkspace(build_implicit_line_workspace(s),adi,coupled_cut,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
-        vec(),vec(),vec(),vec(),vec(),m)
+        vec(),vec(),vec(),vec(),vec(),vec(),m)
 end
 
 _airfoil_residual(s::KSol)=(s.dc_r,s.dc_mx,s.dc_my,s.dc_e)
@@ -102,7 +103,8 @@ end
 # after each residual evaluation. Float32-aware epsilon grows with the
 # overall conservative state norm and shrinks with the Krylov direction norm.
 function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
-                          E::Float64,fd_scale::Float32)
+                          E::Float64,fd_scale::Float32;
+                          local_cap::Float32=1.0f-3)
     state_norm=sqrt(ncell*(r*r+2*(r*u)^2+E*E))
     h=Float32(fd_scale*sqrt(eps(Float32))*(1.0+state_norm)/nv)
     # A global 2-norm step can perturb one wall cell by O(sqrt(N) eps^1/2)
@@ -113,13 +115,19 @@ function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
     inv_e=Float32(1/E)
     max_scaled=maximum(@. max(abs(v[1])*inv_r,abs(v[2])*inv_m,
                             abs(v[3])*inv_m,abs(v[4])*inv_e))
-    max_scaled>0 && (h=min(h,1.0f-3/max_scaled))
+    max_scaled>0 && (h=min(h,local_cap/max_scaled))
     isfinite(h) && h>0 || throw(ArgumentError("invalid matrix-free perturbation"))
     h
 end
 
 function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
-                                fd_scale::Float32=1.0f0)
+                                fd_scale::Float32=1.0f0,
+                                fd_scheme::Symbol=:forward,
+                                fd_local_cap::Float32=1.0f-3)
+    fd_scheme in (:forward,:central) ||
+        throw(ArgumentError("fd_scheme must be :forward or :central"))
+    isfinite(fd_local_cap) && 1.0f-4<=fd_local_cap<=0.05f0 ||
+        throw(ArgumentError("fd_local_cap must be in [1e-4,0.05]"))
     nv=_av_norm(v)
     nv==0.0 && return _av_fill!(out,0.0f0)
     line=w.line
@@ -127,7 +135,7 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
     r=Float64(s.rho_inf)
     u=max(hypot(Float64(s.uxi),Float64(s.uyi)),1e-3)
     E=r*(Float64(s.eint*s.T_inf)+0.5*u*u)
-    h=_airfoil_fd_step(v,nv,ncell,r,u,E,fd_scale)
+    h=_airfoil_fd_step(v,nv,ncell,r,u,E,fd_scale;local_cap=fd_local_cap)
     b=s.backend;ni=Int32(s.NI);nj=Int32(s.NJ);g=Int32(s.g)
     physical=false
     for _ in 1:16
@@ -135,8 +143,15 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
             line.rho0,line.ux0,line.uy0,line.T0,v...,
             s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
         if _airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
-            physical=true
-            break
+            if fd_scheme==:central
+                _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
+                    line.rho0,line.ux0,line.uy0,line.T0,v...,
+                    s.eint,h,ni,nj,g;ndrange=(s.NI,s.NJ))
+                physical=_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
+            else
+                physical=true
+            end
+            physical && break
         end
         h*=0.5f0
     end
@@ -148,11 +163,26 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
         throw(ArgumentError("no physical matrix-free perturbation after 16 halvings"))
     end
     try
+        if fd_scheme==:central
+            # The accepted state is U-hv. Retain its residual, then sample
+            # U+hv; symmetric differencing reduces truncation at the larger
+            # perturbations needed for a useful Float32 Jacobian signal.
+            _raw_residual_ka!(s,Int32(2),Int32(1))
+            _av_copy!(w.fd_minus,_airfoil_residual(s))
+            _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
+                line.rho0,line.ux0,line.uy0,line.T0,v...,
+                s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
+        end
         _raw_residual_ka!(s,Int32(2),Int32(1))
         current=_airfoil_residual(s)
         for k in 1:4
-            @. out[k]=((current[k]-w.base_residual[k])/h+
-                       line.d0*v[k])/s.vol
+            if fd_scheme==:central
+                @. out[k]=((current[k]-w.fd_minus[k])/(2h)+
+                           line.d0*v[k])/s.vol
+            else
+                @. out[k]=((current[k]-w.base_residual[k])/h+
+                           line.d0*v[k])/s.vol
+            end
         end
     finally
         for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),
@@ -164,7 +194,9 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
 end
 
 function _airfoil_fgmres!(s::KSol,w::JFNKAirfoilWorkspace;
-                          linear_tol::Float64=0.1,fd_scale::Float32=1.0f0)
+                          linear_tol::Float64=0.1,fd_scale::Float32=1.0f0,
+                          fd_scheme::Symbol=:forward,
+                          fd_local_cap::Float32=1.0f-3)
     0<linear_tol<1 || throw(ArgumentError("linear_tol must be in (0,1)"))
     m=w.m;V=w.basis;Z=w.preconditioned
     H=zeros(Float64,m+1,m);g=zeros(Float64,m+1)
@@ -175,7 +207,7 @@ function _airfoil_fgmres!(s::KSol,w::JFNKAirfoilWorkspace;
     rel=Inf
     for j in 1:m
         _airfoil_line_precondition!(Z[j],V[j],s,w)
-        _airfoil_jacobian_vec!(V[j+1],Z[j],s,w;fd_scale)
+        _airfoil_jacobian_vec!(V[j+1],Z[j],s,w;fd_scale,fd_scheme,fd_local_cap)
         for i in 1:j
             H[i,j]=_av_dot(V[j+1],V[i])
             _av_axpy!(V[j+1],-H[i,j],V[i])
@@ -196,7 +228,9 @@ end
 function _airfoil_fgmres_restarted!(s::KSol,w::JFNKAirfoilWorkspace;
                                     linear_tol::Float64=0.1,
                                     linear_cycles::Int=1,
-                                    fd_scale::Float32=1.0f0)
+                                    fd_scale::Float32=1.0f0,
+                                    fd_scheme::Symbol=:forward,
+                                    fd_local_cap::Float32=1.0f-3)
     1<=linear_cycles<=4 || throw(ArgumentError("linear_cycles must be 1:4"))
     _av_copy!(w.full_rhs,w.rhs)
     _av_fill!(w.total_delta,0.0f0)
@@ -204,10 +238,11 @@ function _airfoil_fgmres_restarted!(s::KSol,w::JFNKAirfoilWorkspace;
     beta==0 && return (0,0.0)
     total=0;rel=1.0
     for _ in 1:linear_cycles
-        kits,_=_airfoil_fgmres!(s,w;linear_tol,fd_scale)
+        kits,_=_airfoil_fgmres!(s,w;linear_tol,fd_scale,fd_scheme,fd_local_cap)
         total+=kits
         _av_axpy!(w.total_delta,1.0,w.delta)
-        _airfoil_jacobian_vec!(w.work,w.total_delta,s,w;fd_scale)
+        _airfoil_jacobian_vec!(w.work,w.total_delta,s,w;
+            fd_scale,fd_scheme,fd_local_cap)
         for k in 1:4; @. w.rhs[k]=w.full_rhs[k]-w.work[k]; end
         rel=_av_norm(w.rhs)/beta
         isfinite(rel) || throw(ArgumentError("nonfinite restarted linear residual"))
@@ -223,11 +258,17 @@ linear relative residual, and nonlinear merit. This does not advance SST."""
 function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
                                linear_tol::Float64=0.1,linear_cycles::Int=1,
                                max_backtracks::Int=8,fd_scale::Float32=1.0f0,
+                               fd_scheme::Symbol=:forward,
+                               fd_local_cap::Float32=1.0f-3,
                                merit_reference::Float64=NaN,
                                krylov_workspace=nothing)
     _implicit_admit(s,cfl)
     isfinite(fd_scale) && 0.1f0<=fd_scale<=16.0f0 ||
         throw(ArgumentError("fd_scale must be in [0.1,16]"))
+    fd_scheme in (:forward,:central) ||
+        throw(ArgumentError("fd_scheme must be :forward or :central"))
+    isfinite(fd_local_cap) && 1.0f-4<=fd_local_cap<=0.05f0 ||
+        throw(ArgumentError("fd_local_cap must be in [1e-4,0.05]"))
     1<=max_backtracks<=16 || throw(ArgumentError("max_backtracks must be 1:16"))
     size(w.rhs[1])==size(s.dtf) && size(w.line.rho0)==size(s.rho) ||
         throw(ArgumentError("JFNK workspace does not match solver"))
@@ -261,8 +302,10 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     end
     for k in 1:4; @. w.rhs[k]=w.base_residual[k]/s.vol; end
     kits,rel=krylov_workspace===nothing ?
-        _airfoil_fgmres_restarted!(s,w;linear_tol,linear_cycles,fd_scale) :
-        _airfoil_krylov_gmres!(s,w,krylov_workspace;linear_tol,linear_cycles,fd_scale)
+        _airfoil_fgmres_restarted!(s,w;
+            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap) :
+        _airfoil_krylov_gmres!(s,w,krylov_workspace;
+            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap)
     alpha=1.0f0
     best=Inf;best_alpha=0.0f0;physical_trials=0
     for _ in 1:max_backtracks
@@ -396,7 +439,8 @@ The controller halves pseudo CFL after a rejected flow step and grows it after
 acceptance. A rejected result leaves the flow and SST state unchanged."""
 function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     linear_tol::Float64=0.01,linear_cycles::Int=1,
-    fd_scale::Float32=1.0f0,corrected_wall_metric::Bool=false,
+    fd_scale::Float32=1.0f0,fd_scheme::Symbol=:forward,
+    fd_local_cap::Float32=1.0f-3,corrected_wall_metric::Bool=false,
     nonorth_diffusion::Bool=false,max_backtracks::Int=8,
     sst_substeps::Int=1)
     s.sst || throw(ArgumentError("JFNK RANS controller requires SST"))
@@ -410,7 +454,7 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
         attempts=attempt
         used=c.cfl
         result=step_jfnk_airfoil_ka!(s,c.workspace,used;
-            linear_tol,linear_cycles,fd_scale,max_backtracks,
+            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap,max_backtracks,
             merit_reference=reference,
             krylov_workspace=c.krylov_workspace)
         if result.accepted
