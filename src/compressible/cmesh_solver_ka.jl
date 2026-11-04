@@ -3356,5 +3356,6 @@ end
 # physical-time and cavitation entry points.
 include(joinpath(@__DIR__, "cmesh_steady_implicit_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_jfnk_ka.jl"))
+include(joinpath(@__DIR__, "cmesh_steady_krylov_ka.jl"))
 
 end # module

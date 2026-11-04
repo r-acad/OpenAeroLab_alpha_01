@@ -167,7 +167,8 @@ free-air airfoil. Returns acceptance, line-search factor, linear iterations,
 linear relative residual, and nonlinear merit. This does not advance SST."""
 function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
                                linear_tol::Float64=0.1,linear_cycles::Int=1,
-                               max_backtracks::Int=8,fd_scale::Float32=1.0f0)
+                               max_backtracks::Int=8,fd_scale::Float32=1.0f0,
+                               krylov_workspace=nothing)
     _implicit_admit(s,cfl)
     isfinite(fd_scale) && 0.1f0<=fd_scale<=16.0f0 ||
         throw(ArgumentError("fd_scale must be in [0.1,16]"))
@@ -192,7 +193,9 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
         s.nu_lam,s.rho_inf,s.suth,s.air_sutherland,Int32(s.sst),
         cfl,ni,nj,g;ndrange=(s.NI,s.NJ))
     for k in 1:4; @. w.rhs[k]=w.base_residual[k]/s.vol; end
-    kits,rel=_airfoil_fgmres_restarted!(s,w;linear_tol,linear_cycles,fd_scale)
+    kits,rel=krylov_workspace===nothing ?
+        _airfoil_fgmres_restarted!(s,w;linear_tol,linear_cycles,fd_scale) :
+        _airfoil_krylov_gmres!(s,w,krylov_workspace;linear_tol,linear_cycles,fd_scale)
     alpha=1.0f0
     for _ in 1:max_backtracks
         _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,backup...,
@@ -220,8 +223,9 @@ end
 """Adaptive pseudo-CFL controller for the opt-in steady A+/C SST march.
 This is a convergence experiment. It does not advance physical time, and SST
 still uses the solver's segregated, stability-capped transport step."""
-mutable struct JFNKAirfoilController{W}
+mutable struct JFNKAirfoilController{W,K}
     workspace::W
+    krylov_workspace::K
     cfl::Float32
     min_cfl::Float32
     max_cfl::Float32
@@ -234,14 +238,19 @@ end
 function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     initial_cfl::Float32=2.0f0,min_cfl::Float32=0.05f0,
     max_cfl::Float32=2.0f0,growth::Float32=1.05f0,
-    max_attempts::Int=4)
+    max_attempts::Int=4,linear_solver::Symbol=:native)
     isfinite(min_cfl) && isfinite(initial_cfl) && isfinite(max_cfl) &&
         0.0f0<min_cfl<=initial_cfl<=max_cfl<=10.0f0 ||
         throw(ArgumentError("invalid JFNK pseudo-CFL bounds"))
     isfinite(growth) && 1.0f0<growth<=2.0f0 ||
         throw(ArgumentError("JFNK CFL growth must be in (1,2]"))
     1<=max_attempts<=8 || throw(ArgumentError("max_attempts must be 1:8"))
-    JFNKAirfoilController(build_jfnk_airfoil_workspace(s;m),initial_cfl,
+    linear_solver in (:native,:krylov) ||
+        throw(ArgumentError("linear_solver must be :native or :krylov"))
+    workspace=build_jfnk_airfoil_workspace(s;m)
+    krylov_workspace=linear_solver==:krylov ?
+        build_krylov_airfoil_workspace(s,workspace) : nothing
+    JFNKAirfoilController(workspace,krylov_workspace,initial_cfl,
         min_cfl,max_cfl,growth,max_attempts,0,0)
 end
 
@@ -260,7 +269,8 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
         attempts=attempt
         used=c.cfl
         result=step_jfnk_airfoil_ka!(s,c.workspace,used;
-            linear_tol,linear_cycles,fd_scale)
+            linear_tol,linear_cycles,fd_scale,
+            krylov_workspace=c.krylov_workspace)
         if result.accepted
             sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
             c.iterations+=1

@@ -2,7 +2,7 @@
 
 julia_version = "1.13.2"
 manifest_format = "2.1"
-project_hash = "7d79a6accac730cdee818dfb1469dccc8b3b5d41"
+project_hash = "75545c1e40feab29ae4c117cd042156b0dd7fa1b"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -557,6 +557,13 @@ version = "0.9.40"
     EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
     LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
     SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[[deps.Krylov]]
+deps = ["LinearAlgebra", "Printf", "SparseArrays"]
+git-tree-sha1 = "b13076e4fff6ea0d0a5ddd9b939a11ca2027755a"
+registries = "General"
+uuid = "ba0b0d4f-ebba-5204-a429-3ac8c609bfb7"
+version = "0.10.12"
 
 [[deps.LAME_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

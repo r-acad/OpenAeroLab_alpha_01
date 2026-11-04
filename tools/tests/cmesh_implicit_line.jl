@@ -22,7 +22,7 @@ const M=CMeshSolverKA
     end
 end
 
-function airfoil_implicit_smoke(backend; jfnk=false)
+function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native)
     xs=[.5*(1-cospi(k/24)) for k in 0:24]
     yt(x)=x==1.0 ? 0.0 : 5*.12*(.2969*sqrt(x)-.126x-.3516x^2+.2843x^3-.1036x^4)
     foil=CMeshGen.AirfoilPts(vcat(reverse(xs),xs[2:end]),
@@ -40,17 +40,29 @@ function airfoil_implicit_smoke(backend; jfnk=false)
     work=jfnk ? M.build_jfnk_airfoil_workspace(s;m=6) :
                 M.build_implicit_line_workspace(s)
     step=jfnk ? M.step_jfnk_airfoil_ka! : M.step_implicit_line_ka!
-    result=step(s,work,.45f0)
+    kw=jfnk && linear_solver==:krylov ?
+        M.build_krylov_airfoil_workspace(s,work) : nothing
+    result=kw===nothing ? step(s,work,.45f0) :
+        step(s,work,.45f0;krylov_workspace=kw)
     @test isfinite(result.merit_before)
     @test result.accepted
     @test result.merit_after < result.merit_before
+    if kw!==nothing
+        @test result.linear_iterations>0 &&
+              isfinite(result.linear_relative) &&
+              0.0<=result.linear_relative<1.0
+    end
     @test all(isfinite,s.rho) && minimum(s.rho)>0
     @test all(isfinite,s.T) && minimum(s.T)>0
-    @test_throws ArgumentError step(s,work,0.0f0)
+    if kw===nothing
+        @test_throws ArgumentError step(s,work,0.0f0)
+    else
+        @test_throws ArgumentError step(s,work,0.0f0;krylov_workspace=kw)
+    end
     M.sst_step_ka!(s)
     @test all(isfinite,s.tk) && all(isfinite,s.tom)
     if jfnk
-        ctrl=M.build_jfnk_airfoil_controller(s;m=4)
+        ctrl=M.build_jfnk_airfoil_controller(s;m=4,linear_solver)
         r=M.step_jfnk_rans_ka!(s,ctrl)
         @test r.accepted && ctrl.iterations==1
         @test r.pseudo_cfl_next>=r.pseudo_cfl_used
@@ -66,6 +78,10 @@ end
     airfoil_implicit_smoke(CPU();jfnk=true)
 end
 
+@testset "single-phase airfoil Krylov GMRES flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,linear_solver=:krylov)
+end
+
 if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     using CUDA
     @test CUDA.functional()
@@ -74,5 +90,8 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "single-phase airfoil JFNK flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true)
+    end
+    @testset "single-phase airfoil Krylov GMRES flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,linear_solver=:krylov)
     end
 end
