@@ -55,7 +55,36 @@ end
     end
 end
 
-function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native)
+@testset "streamwise implicit factor" begin
+    ni,nj=9,3
+    lw=fill(2.0f0,ni,nj);le=fill(3.0f0,ni,nj)
+    d0=fill(4.0f0,ni,nj);rhs=reshape(Float32.(1:ni*nj),ni,nj)
+    x=similar(rhs);cp=zeros(Float64,ni,nj)
+    M._k_implicit_i_solve!(CPU())(x,cp,rhs,lw,le,d0,Int32(ni),Int32(nj),
+        Int32(ni),Int32(1);ndrange=nj)
+    KernelAbstractions.synchronize(CPU())
+    for j in 1:nj,i in 1:ni
+        lhs=(d0[i,j]+lw[i,j]+le[i,j])*x[i,j]-
+            (i==1 ? 0.0f0 : lw[i,j]*x[i-1,j])-
+            (i==ni ? 0.0f0 : le[i,j]*x[i+1,j])
+        @test isapprox(lhs,rhs[i,j];rtol=2e-6)
+    end
+    block=Int32(3)
+    xb=similar(rhs);cpb=zeros(Float32,ni,nj)
+    M._k_implicit_i_solve!(CPU())(xb,cpb,rhs,lw,le,d0,Int32(ni),Int32(nj),
+        block,Int32(3);ndrange=3nj)
+    KernelAbstractions.synchronize(CPU())
+    for j in 1:nj,i in 1:ni
+        first_i=3div(i-1,3)+1;last_i=first_i+2
+        lhs=(d0[i,j]+lw[i,j]+le[i,j])*xb[i,j]-
+            (i==first_i ? 0.0f0 : lw[i,j]*xb[i-1,j])-
+            (i==last_i ? 0.0f0 : le[i,j]*xb[i+1,j])
+        @test isapprox(lhs,rhs[i,j];rtol=2e-6)
+    end
+end
+
+function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native,
+                                preconditioner=:line)
     xs=[.5*(1-cospi(k/24)) for k in 0:24]
     yt(x)=x==1.0 ? 0.0 : 5*.12*(.2969*sqrt(x)-.126x-.3516x^2+.2843x^3-.1036x^4)
     foil=CMeshGen.AirfoilPts(vcat(reverse(xs),xs[2:end]),
@@ -70,7 +99,7 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native)
     M.set_freestream_ka!(s,.2,2.0)
     s.nu_lam=1.0f-4
     M.set_sst_ka!(s)
-    work=jfnk ? M.build_jfnk_airfoil_workspace(s;m=6) :
+    work=jfnk ? M.build_jfnk_airfoil_workspace(s;m=6,preconditioner) :
                 M.build_implicit_line_workspace(s)
     step=jfnk ? M.step_jfnk_airfoil_ka! : M.step_implicit_line_ka!
     kw=jfnk && linear_solver==:krylov ?
@@ -96,11 +125,14 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native)
     M.sst_step_ka!(s)
     @test all(isfinite,s.tk) && all(isfinite,s.tom)
     if jfnk
-        ctrl=M.build_jfnk_airfoil_controller(s;m=4,linear_solver)
+        ctrl=M.build_jfnk_airfoil_controller(s;m=4,linear_solver,preconditioner,
+            nonmonotone_window=3)
         r=M.step_jfnk_rans_ka!(s,ctrl;max_backtracks=16)
         @test r.accepted && ctrl.iterations==1
         @test r.pseudo_cfl_next>=r.pseudo_cfl_used
         @test r.physical_trials>=1 && r.best_trial_merit<=r.merit_after
+        @test length(ctrl.merit_history)==1 &&
+              ctrl.merit_history[1]==r.merit_before
         @test all(isfinite,s.tk) && all(isfinite,s.tom)
     end
 end
@@ -115,6 +147,13 @@ end
 
 @testset "single-phase airfoil Krylov GMRES flow CPU" begin
     airfoil_implicit_smoke(CPU();jfnk=true,linear_solver=:krylov)
+end
+
+@testset "single-phase airfoil ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:adi)
+end
+@testset "single-phase airfoil block ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:block_adi)
 end
 
 if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
@@ -135,5 +174,11 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "single-phase airfoil Krylov GMRES flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,linear_solver=:krylov)
+    end
+    @testset "single-phase airfoil ADI JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:adi)
+    end
+    @testset "single-phase airfoil block ADI JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:block_adi)
     end
 end

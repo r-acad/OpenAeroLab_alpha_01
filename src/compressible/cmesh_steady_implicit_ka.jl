@@ -83,6 +83,54 @@ end
     end
 end
 
+# Streamwise factor for an opt-in approximate-factorization preconditioner.
+# The C-mesh i rows are open at both far-field outlet ends. Face rates at
+# those ends remain on the diagonal; the nonlinear residual supplies their BC.
+@kernel function _k_implicit_i_coeffs!(lamW,lamE,
+    @Const(rho),@Const(ux),@Const(uy),@Const(T),@Const(nut),
+    @Const(Six),@Const(Siy),@Const(vol),nu::Float32,
+    rho_inf::Float32,suth::Float32,air_sutherland::Int32,
+    sst_on::Int32,NI::Int32,NJ::Int32,g::Int32)
+    i,j=@index(Global,NTuple)
+    @inbounds if i<=NI && j<=NJ
+        ia=i+g;ja=j+g
+        u=ux[ia,ja];v=uy[ia,ja]
+        c=3.0f0*sqrt(max(T[ia,ja],1.0f-3))
+        nv=_air_nu_local(rho[ia,ja],T[ia,ja],nu,rho_inf,suth,
+                         air_sutherland)+(sst_on==Int32(1) ? nut[ia,ja] : 0.0f0)
+        sw=hypot(Six[i,j],Siy[i,j])
+        se=hypot(Six[i+1,j],Siy[i+1,j])
+        iv=1.0f0/max(vol[i,j],1.0f-30)
+        lamW[i,j]=abs(u*Six[i,j]+v*Siy[i,j])+c*sw+2.0f0*nv*sw*sw*iv
+        lamE[i,j]=abs(u*Six[i+1,j]+v*Siy[i+1,j])+c*se+2.0f0*nv*se*se*iv
+    end
+end
+
+@kernel function _k_implicit_i_solve!(x,cp,@Const(rhs),@Const(lamW),
+                                     @Const(lamE),@Const(d0),NI::Int32,NJ::Int32,
+                                     block_length::Int32,blocks_per_row::Int32)
+    index=@index(Global,Linear)
+    j=Int32(div(index-1,blocks_per_row)+1)
+    @inbounds if j<=NJ
+        block=Int32(mod(index-1,blocks_per_row)+1)
+        first_i=(block-1)*block_length+1
+        last_i=min(NI,block*block_length)
+        F=eltype(cp)
+        cprev=zero(F)
+        for i in first_i:last_i
+            lo=i>first_i ? F(lamW[i,j]) : zero(F)
+            hi=i<last_i ? F(lamE[i,j]) : zero(F)
+            den=F(d0[i,j])+F(lamW[i,j])+F(lamE[i,j])-lo*cprev
+            cp[i,j]=hi/den
+            x[i,j]=Float32((F(rhs[i,j])+(i==first_i ? zero(F) : lo*F(x[i-1,j])))/den)
+            cprev=cp[i,j]
+        end
+        for i in last_i-Int32(1):Int32(-1):first_i
+            x[i,j]=Float32(F(x[i,j])+cp[i,j]*F(x[i+1,j]))
+        end
+    end
+end
+
 @kernel function _k_implicit_line_trial!(rho,ux,uy,T,@Const(rho0),
     @Const(ux0),@Const(uy0),@Const(T0),@Const(dr),@Const(dmx),
     @Const(dmy),@Const(dE),eint::Float32,alpha::Float32,
