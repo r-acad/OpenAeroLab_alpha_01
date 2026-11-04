@@ -327,6 +327,9 @@ end
 const CLp = L.CLp; const CLf = L.CLf
 result = Dict{String,Any}(
     "solver"=>"PBCav $(PBCav.PBCAV_VERSION)", "commit"=>CFG["commit"], "snapshot"=>SNAP, "threads"=>Threads.nthreads(),
+    "rans_acceleration"=>Bool(get(CFG,"rans_acceleration",false)),
+    "rans_acceleration_method"=>String(get(CFG,"rans_acceleration_method","standard")),
+    "requested_pseudo_dt"=>Float64(CFG["dt"]),
     "outcome"=>string(R.outcome), "exit_code"=>PBCav.freeair_exit_code(R.outcome), "steps"=>R.nstep, "max_steps"=>MAXS,
     "t_ctu"=>R.t, "march_wall_seconds"=>R.wall, "worker_wall_seconds"=>time() - T_START,
     "cl"=>L.CL, "cd"=>L.CD, "cm"=>L.CM, "cd_pressure"=>L.CDp, "cd_friction"=>L.CDf, "cl_pressure"=>CLp, "cl_friction"=>CLf,

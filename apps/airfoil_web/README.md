@@ -42,6 +42,31 @@ In **Results → Flow field**, use **Saved snapshot** to reopen any recorded fra
 The fields are visualization snapshots, not restart files. Writes report their
 duration and reject insufficient disk space without announcing an empty file.
 
+## Steady RANS acceleration
+
+The Solver panel offers **Steady solution method** for compressible CFD and
+**Try steady RANS acceleration (experimental)** for pressure/Species cases.
+Acceleration is off by default and does not appear for physical-time,
+phase-change water, panel, or LBM runs. The legacy case flow key is
+`rans_acceleration=true`; the selected method and its enabled state are saved
+in the solver's `input.toml` and result diagnostics.
+
+| RANS route | Accelerated setting |
+| --- | --- |
+| Compressible C/A-plus, CPU or GPU | Existing j-line implicit residual smoothing (IRS-J); steady local pseudo-time only. |
+| Compressible C+H, CPU or GPU | IRS-J on both blocks. |
+| Low-speed sharp C and C+H | The pressure solver already uses implicit backward Euler. The option raises its requested pseudo-time ceiling from 0.25 to 0.5 c/U; nonlinear rejected steps are reduced and later regrown by the solver. |
+| Steady Species air | Existing wall-normal line-implicit relaxation. |
+
+The setting changes convergence behavior, not the physical-time integrator or
+the convergence criteria. One-step and three-step smoke cases verify method
+selection and worker execution; they do not establish faster time to a
+converged solution. Compare residuals, force stability, rejected steps, wall
+time and final loads against the standard setting on the same mesh before
+using a result. On a low-speed C+H startup smoke case the 0.5 c/U request was
+reduced to 0.015625 c/U after five rejected trials, one more rejection than
+the 0.25 c/U control; the setting is particularly case dependent there.
+
 ## Published comparison cases
 
 Selecting RAE 2822 applies **AGARD Case 9 corrected free-air conditions**:
@@ -143,9 +168,38 @@ Steady GPU runs use Float64 damping filters by default. After the loads settle,
 damping is tapered off and convergence windows restart on the undamped
 equations. Force stationarity is reported separately from continuity success.
 An already small initial residual need not decrease by an arbitrary additional
-ratio; absolute, plateau, spike, mass-balance and force checks remain active.
+ratio. Absolute median and maximum residual limits, signed mass balance and
+force checks remain active; relative reduction and plateau ratios are diagnostics.
 Snapshot output is controlled by wall time (default ten minutes), independently
 of iteration-history updates. Final fields are retained even without convergence.
+
+## Experimental steady methods
+
+For **Compressible CFD**, choose **Steady pseudo-time**, the single-block
+**A+** trailing-edge topology, then **Steady solution method**. The choices are
+standard explicit iteration, j-line residual smoothing, line-implicit, native
+Newton–Krylov, and Newton–Krylov using Krylov.jl GMRES. The coupled C+H mesh
+supports standard iteration and residual smoothing. These methods run on CPU
+or GPU; the advanced settings are stored in the study.
+
+The three new implicit methods are research tools. CPU and GPU integration
+checks pass, but dependable full-airfoil convergence and a speed advantage
+have not been demonstrated. An optional bounded explicit recovery burst can
+help Newton–Krylov escape rejected updates; it is disabled by default and does
+not weaken convergence checks. Krylov settings do not apply to line-implicit.
+
+Diagnostics separates stable loads from settled equations. Implicit runs write
+`implicit_history.csv` and `steady_assessment_history.csv`, including four
+flow-equation errors, turbulence update defects, signed global mass balance,
+CL, CD and CM. Turbulence update defects are not raw SST residuals; passing
+these monitored checks does not certify complete equation convergence.
+Full fields and surface Cp remain available after an incomplete or rejected run.
+Checked restart files require matching mesh, physical settings and solver source.
+
+The pressure-based low-speed solver is already implicit. Its acceleration
+checkbox raises the requested pseudo-time ceiling while retaining automatic
+rejection and retry. A native steady stop is accepted only after final equation
+and mass-balance checks; stable coefficients alone do not make a run converged.
 
 ## Source layout
 

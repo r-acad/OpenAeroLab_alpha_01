@@ -195,7 +195,8 @@ const $ = id => document.getElementById(id);
 const minimumServiceRevision = 20;
 const el = Object.fromEntries([
   "cav-fs-controls", "cav-conventional-controls", "cav-speed", "cav-water-depth", "cav-air-height", "cav-fs-duration", "cav-fs-max-steps", "cav-fs-resolution", "cav-fs-vapor", "geometry-axis-label", "cav-fs-formulation", "cav-fs-formulation-note", "history-residual-title", "cfd-te-topology-field", "underwater-mesh-note",
-  "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord",
+  "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord", "rans-acceleration-line", "rans-acceleration", "rans-acceleration-note",
+  "rans-method-line", "rans-method", "rans-method-note", "implicit-method-options", "implicit-warmup", "implicit-cfl", "implicit-basis", "implicit-sst-substeps", "implicit-nonmonotone", "implicit-preconditioner", "implicit-recovery",
   "server-state", "transport", "theme-mode", "source-kind", "naca-picker", "naca-code", "uiuc-picker", "airfoil-search", "airfoil-select", "catalog-status", "airfoil-meta", "airfoil-name", "airfoil-description", "airfoil-link", "show-reference", "curvature-mapping-field", "curvature-mapping-help", "cfd-te-topology",
   "mach", "reynolds", "alpha", "ncrit", "transition-mode", "trip-controls", "trip-upper", "trip-lower", "sigma", "sigma-field", "flow-hint", "backend", "backend-note", "advanced-cfd", "advanced-air", "advanced-cav", "cfd-steps", "cfd-gpu", "cfd-rk", "cfd-rk-field", "gas-physics-fields", "cfd-auto-stop", "cfd-mass-ceiling", "gas-mesh-field", "cfd-mesh", "cfd-resolution", "base-faces-field", "cfd-n-base", "cfd-sfd-storage", "cfd-viscosity-model", "cfd-temperature-field", "cfd-temperature", "cav-warm-steps", "cav-duration", "cav-frames", "cav-channel", "cav-channel-field", "cav-fluid", "cav-domain", "cav-domain-note", "cav-depth", "cav-depth-field", "cav-air-mode", "cav-air-mode-field", "operation-feedback", "operation-label", "curvature-scale", "curvature-scale-field",
   "cav-reference-picker", "cav-reference-select", "cav-reference-meta", "cav-reference-status", "cav-reference-note", "cav-reference-link", "run-status", "job-progress", "gas-mesh-label", "sweep-enabled", "sweep-controls", "alpha-start", "alpha-stop", "alpha-step", "sweep-count", "run-button", "form-error", "job-title", "job-message", "job-percent", "progress-bar", "job-id", "log-state", "log-count", "log-follow", "log-download", "log-view", "log-empty", "log-warning",
@@ -594,12 +595,32 @@ function updateSetup() {
   const sharedMesh=cav&&cavDomain==="free_fluid";
   const speciesCav=cav&&(cavAir||sharedMesh);
   const physical=(gas&&el["cfd-time-mode"].value==="physical") || (speciesCav&&(!cavAir||el["cav-air-mode"].value==="physical"));
+  const steadyRans=(gas||cav||backends.includes("lowspeed")) &&
+    (!gas||el["cfd-time-mode"].value==="steady") &&
+    (!cav||(cavAir&&el["cav-air-mode"].value==="steady"));
+  el["rans-acceleration-line"].classList.toggle("hidden",!steadyRans||gas&&!cav);
+  el["rans-method-line"].classList.toggle("hidden",!steadyRans||!gas);
+  const implicitSelected=["line_implicit","jfnk_native","jfnk_krylov"].includes(el["rans-method"].value);
+  for(const option of el["rans-method"].options)option.disabled=coupledCh&&["line_implicit","jfnk_native","jfnk_krylov"].includes(option.value);
+  el["implicit-method-options"].classList.toggle("hidden",!implicitSelected);
+  const newtonSelected=["jfnk_native","jfnk_krylov"].includes(el["rans-method"].value);
+  for(const id of ["implicit-basis","implicit-nonmonotone","implicit-preconditioner","implicit-recovery"])el[id].disabled=!newtonSelected;
+  el["rans-method-note"].textContent=implicitSelected ?
+    "Research maturity: runs on CPU or GPU, but reliable full airfoil convergence and faster time to a finished solution are not established. Errors, retries and forces are recorded; fields remain available if progress stops." :
+    el["rans-method"].value==="irsj" ? "Experimental residual smoothing. This changes the steady iteration; compare convergence and wall time on the same mesh." : "Standard explicit steady iteration. The pressure-based low-speed solver has its own implicit method.";
+  if(coupledCh&&implicitSelected)el["rans-method-note"].textContent+=" This method requires C / A+: select A+ under trailing-edge topology or choose Standard / residual smoothing for C+H.";
+  el["rans-acceleration-note"].textContent=backends.includes("lowspeed") ?
+    "Low-speed CFD already solves implicit backward-Euler steps. This raises the requested pseudo-time ceiling from 0.25 to 0.5 c/U; its nonlinear rejection may lower it." :
+    cav&&!gas ? "Steady Species air uses wall-normal line-implicit relaxation." :
+    cav ? "Compressible CFD uses j-line implicit residual smoothing; steady Species air uses wall-normal line-implicit relaxation." :
+    "Compressible CFD uses j-line implicit residual smoothing. Physical-time runs keep their time-accurate integrator.";
   el["cfd-time-mode-field"].classList.toggle("hidden",!gas);
   el["physical-time-controls"].classList.toggle("hidden",!physical);
   el["cfd-auto-stop-field"].classList.toggle("hidden",physical);
-  el["cfd-sfd-field"].classList.toggle("hidden",physical||coupledCh);
+  el["cfd-sfd-field"].classList.toggle("hidden",physical||coupledCh||implicitSelected);
   el["cav-duration-field"].classList.toggle("hidden",physical||underwater);
   el["cfd-time-note"].textContent=physical ? "CTU = time × speed / chord. Physical time uses one global timestep without SFD. The iteration limit can end a run before the requested duration; adequate sampling also requires ten blocks after burn-in. Timestep and stall validation remain separate." : "Smart stop checks residuals and load history over two windows, then waits 20,000 more iterations.";
+  if(implicitSelected)el["cfd-time-note"].textContent="Implicit steady mode records all four flow equation errors, turbulence update defects, mass balance and CL/CD/CM. Smart stop requires two settled windows; raw turbulence equation convergence remains unverified. Final fields remain viewable.";
   if(coupledCh)el["cfd-time-note"].textContent="C+H compressible CFD: steady pseudo-time, conservative SSPRK, constant kinematic viscosity and fully turbulent SST. SFD is disabled. Smart stopping checks native residuals, mass balance and load stability; a stopped diagnostic run is not proof of convergence.";
   const cfd = cav || gas;
   el["sigma-field"].classList.toggle("hidden", !cav||cavAir||underwater);
@@ -746,6 +767,24 @@ function collectCase() {
     alpha_deg: inputNumber("alpha", "angle of attack", -90, 90),
     ncrit: underwater ? undefined : inputNumber("ncrit", "Ncrit", 0.01, 100)
   };
+  if(!el["rans-acceleration-line"].classList.contains("hidden")&&el["rans-acceleration"].checked){
+    if(state.serviceRevision!=null&&state.serviceRevision<21)throw new Error("Restart run.cmd and use the browser tab it opens: this Julia service predates the steady RANS acceleration option.");
+    flow.rans_acceleration=true;
+  }else delete flow.rans_acceleration;
+  const implicitKeys={cfd_implicit_warmup_steps:["implicit-warmup",0,100000],cfd_implicit_cfl:["implicit-cfl",.01,10],cfd_implicit_basis:["implicit-basis",2,24],cfd_implicit_sst_substeps:["implicit-sst-substeps",1,100],cfd_implicit_nonmonotone_window:["implicit-nonmonotone",0,20],cfd_implicit_recovery_steps:["implicit-recovery",0,100]};
+  if(backends.includes("transonic")&&el["cfd-time-mode"].value==="steady"){
+    flow.rans_method=el["rans-method"].value;
+    if(flow.rans_method!=="standard"&&state.serviceRevision!=null&&state.serviceRevision<22)throw new Error("Restart run.cmd to load the service with implicit method support.");
+    if(["line_implicit","jfnk_native","jfnk_krylov"].includes(flow.rans_method)){
+      for(const [key,[id,min,max]] of Object.entries(implicitKeys)){
+        const value=inputNumber(id,key,min,max);
+        if(key!=="cfd_implicit_cfl"&&!Number.isInteger(value))throw new Error(`${key} must be an integer.`);
+        flow[key]=value;
+      }
+      flow.cfd_implicit_preconditioner=el["implicit-preconditioner"].value;
+      if(flow.cfd_implicit_warmup_steps>=Number(el["cfd-steps"].value))throw new Error("Explicit startup iterations must be smaller than the total iteration limit.");
+    }else{for(const key of Object.keys(implicitKeys))delete flow[key];delete flow.cfd_implicit_preconditioner;}
+  }else{delete flow.rans_method;for(const key of Object.keys(implicitKeys))delete flow[key];delete flow.cfd_implicit_preconditioner;}
   if(underwater)flow.cfd_te_thickness=0;
   else if (el["trailing-edge-thickness"].value.trim() !== "") flow.cfd_te_thickness = inputNumber("trailing-edge-thickness", "trailing-edge thickness", 0, 0.05);
   if(hasCfd&&!underwater)flow.cfd_te_topology=el["cfd-te-topology"].value||"auto";
@@ -1488,7 +1527,11 @@ function renderIterationHistory(point = currentResult()) {
   const requested=!running ? diag.requested_duration_ctu : progress.requested_duration_ctu ?? (backend==="transonic" ? state.analysisCase?.flow?.cfd_duration_ctu : state.analysisCase?.flow?.cav_duration_ctu);
   const timeText=physical ? underwater?` · physical time ${finite(seconds)?Number(seconds).toPrecision(5):"pending"}${finite(requestedSeconds)?" / "+requestedSeconds:""} s${finite(elapsed)?` · ${Number(elapsed).toPrecision(4)} CTU`:""}`:` · physical time ${finite(elapsed)?Number(elapsed).toPrecision(5):"pending"}${finite(requested)?" / "+requested:""} CTU` : "";
   el["convergence-state"].textContent = rows.length ? `${label} · ${labelBackend(backend)}${timeText} · ${rows.length} recorded iteration${rows.length === 1 ? "" : "s"} · latest n=${rows[rows.length-1].iteration}${netText}${guardText}` : `Waiting for CFD ${physical?"physical-time":"iteration"} output.${timeText}`;
-  el["convergence-state"].title = guard?.reason || "";
+  const assessment=diag.steady_assessment;
+  const methodText=diag.rans_acceleration_method&&diag.rans_acceleration_method!=="standard"?` · ${diag.rans_acceleration_method}`:"";
+  el["convergence-state"].textContent+=methodText;
+  if(assessment?.reason&&!running)el["convergence-state"].textContent+=` · ${assessment.reason}`;
+  el["convergence-state"].title = [guard?.reason,diag.implicit_maturity,assessment?.scope].filter(Boolean).join("\n");
   el["sampling-state"].classList.toggle("hidden",!physical);
   if(physical){
     const status=running ? "sampling in progress; means unqualified" : String(stats?.status||"insufficient_sampling").replaceAll("_"," ");
@@ -2755,6 +2798,9 @@ function applySavedRequestToForm(saved) {
   if(finite(Number(flow.lowspeed_tu)))el["lowspeed-tu"].value=String(Number((100*flow.lowspeed_tu).toPrecision(6)));
   if(finite(Number(flow.lowspeed_mut_ratio)))el["lowspeed-mut-ratio"].value=String(flow.lowspeed_mut_ratio);
   el["lowspeed-gpu"].checked=flow.lowspeed_gpu===true;
+  el["rans-acceleration"].checked=flow.rans_acceleration===true;
+  el["rans-method"].value=flow.rans_method||(flow.rans_acceleration===true||flow.cfd_irsj===true?"irsj":"standard");
+  for(const [key,id,fallback] of [["cfd_implicit_warmup_steps","implicit-warmup",1000],["cfd_implicit_cfl","implicit-cfl",1],["cfd_implicit_basis","implicit-basis",16],["cfd_implicit_sst_substeps","implicit-sst-substeps",10],["cfd_implicit_nonmonotone_window","implicit-nonmonotone",8],["cfd_implicit_preconditioner","implicit-preconditioner","line"],["cfd_implicit_recovery_steps","implicit-recovery",0]])el[id].value=String(flow[key]??fallback);
   const sweep=saved?.sweep||{};el["sweep-enabled"].checked=sweep.enabled===true;
   if(sweep.enabled===true)for(const key of ["start","stop","step"])if(finite(Number(sweep[key])))el[`alpha-${key}`].value=String(sweep[key]);
   if(Number(flow.trip_upper)>=0&&Number(flow.trip_lower)>=0){
@@ -2862,6 +2908,11 @@ el["gurney-mode"].addEventListener("change", () => {updateSetup();scheduleGeomet
 el["gurney-refine"].addEventListener("change", () => {updateSetup();});
 ["streamline-align","streamline-mode","streamline-admission","streamline-fallback"].forEach(id=>el[id].addEventListener("change", () => {updateSetup();invalidatePreviewMesh();}));
 el["lowspeed-gpu"].addEventListener("change",()=>updateSetup());
+el["rans-acceleration"].addEventListener("change",()=>updateSetup());
+el["rans-method"].addEventListener("change",()=>{
+  if(["line_implicit","jfnk_native","jfnk_krylov"].includes(el["rans-method"].value)&&Number(el["cfd-steps"].value)>20000)el["cfd-steps"].value="5000";
+  updateSetup();
+});
 ["geometry-streamlines","field-streamlines"].forEach(id=>el[id].addEventListener("change", () => {state.showStreamlines=el[id].checked;el["geometry-streamlines"].checked=el["field-streamlines"].checked=state.showStreamlines;renderSelectedGeometry();if(state.activeTab==="field")renderField();}));
 el["geometry-display"].addEventListener("change", renderSelectedGeometry);
 el["curvature-scale"].addEventListener("input", renderSelectedGeometry);
@@ -2939,7 +2990,8 @@ setTheme(el["theme-mode"].value); updateSetup(); loadHealth(); scheduleGeometryP
 // Saved results (a separate line: the Node viewer tests remove the line above exactly).
 loadRecentResults();
 
-window.AirfoilManagedFlowKeys=["alpha_deg", "cav_air_mode", "cav_channel_height", "cav_depth_chords", "cav_domain", "cav_duration_ctu", "cav_fluid", "cav_frames", "cav_trip_x", "cav_warm_steps", "cfd_auto_stop", "cfd_block_ctu", "cfd_burnin_ctu", "cfd_duration_ctu", "cfd_freestream_temperature_k", "cfd_gpu", "cfd_mass_ceiling", "cfd_mesh", "cfd_n_base", "cfd_resolution", "cfd_rk_weight_closure", "cfd_sfd_enabled", "cfd_sfd_storage", "cfd_steps", "cfd_streamline_admission", "cfd_streamline_align", "cfd_streamline_fallback", "cfd_streamline_mode", "cfd_te_thickness", "cfd_te_topology", "cfd_time_mode", "cfd_transition_model", "cfd_viscosity_model", "display_every", "gurney_height", "lowspeed_gpu", "lowspeed_mut_ratio", "lowspeed_resolution", "lowspeed_topology", "lowspeed_tu", "mach", "ncrit", "reynolds", "sigma", "trip_lower", "trip_upper"];
+window.AirfoilManagedFlowKeys=["alpha_deg", "cav_air_mode", "cav_channel_height", "cav_depth_chords", "cav_domain", "cav_duration_ctu", "cav_fluid", "cav_frames", "cav_trip_x", "cav_warm_steps", "cfd_auto_stop", "cfd_block_ctu", "cfd_burnin_ctu", "cfd_duration_ctu", "cfd_freestream_temperature_k", "cfd_gpu", "cfd_mass_ceiling", "cfd_mesh", "cfd_n_base", "cfd_resolution", "cfd_rk_weight_closure", "cfd_sfd_enabled", "cfd_sfd_storage", "cfd_steps", "cfd_streamline_admission", "cfd_streamline_align", "cfd_streamline_fallback", "cfd_streamline_mode", "cfd_te_thickness", "cfd_te_topology", "cfd_time_mode", "cfd_transition_model", "cfd_viscosity_model", "display_every", "gurney_height", "lowspeed_gpu", "lowspeed_mut_ratio", "lowspeed_resolution", "lowspeed_topology", "lowspeed_tu", "mach", "ncrit", "rans_acceleration", "rans_method", "cfd_implicit_warmup_steps", "cfd_implicit_cfl", "cfd_implicit_basis", "cfd_implicit_sst_substeps", "cfd_implicit_nonmonotone_window", "cfd_implicit_preconditioner", "reynolds", "sigma", "trip_lower", "trip_upper"];
+window.AirfoilManagedFlowKeys.push("cfd_implicit_recovery_steps");
 
 window.WingLegends?.configure({getPalette:()=>window.LudwigPalettes.get(),
   setPalette:name=>window.LudwigPalettes.set(name),

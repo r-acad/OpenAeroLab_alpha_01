@@ -52,6 +52,7 @@ function lowspeed_ch_configuration(flow::AbstractDict)
     start in ("projection", "ramp") || throw(ArgumentError("lowspeed_start must be projection or ramp"))
     mutb = String(_get(flow, "lowspeed_turb_mut_base", g === nothing ? "extrapolated" : "committed"))
     mutb in ("extrapolated", "committed") || throw(ArgumentError("lowspeed_turb_mut_base must be extrapolated or committed"))
+    accel = RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),:lowspeed_ch)
     cfgd = Dict{String,Any}("topology"=>"ch", "ch_source"=>g !== nothing ? "gurney" : "native", "resolution"=>res,
         "mesh"=>LOWSPEED_CH_MESHES[res].mesh, "dn1"=>LOWSPEED_CH_MESHES[res].dn1, "mesh_label"=>LOWSPEED_CH_MESHES[res].label,
         "reynolds"=>_number(flow, "reynolds", 3e6; lo=1e4, hi=1e8),
@@ -59,7 +60,8 @@ function lowspeed_ch_configuration(flow::AbstractDict)
         "mut_ratio"=>_number(flow, "lowspeed_mut_ratio", LOWSPEED_DEFAULTS["lowspeed_mut_ratio"]; lo=1e-4, hi=1e4),
         "wall_cap"=>_number(flow, "lowspeed_wall_cap_s", 7200.0; lo=30.0, hi=14400.0),
         "max_steps"=>_integer(flow, "lowspeed_max_steps", LOWSPEED_DEFAULTS["lowspeed_max_steps"]; lo=1, hi=20000),
-        "live_every"=>0, "gpu"=>lowspeed_gpu(flow), "start"=>start, "mut_base"=>mutb)
+        "live_every"=>0, "gpu"=>lowspeed_gpu(flow), "start"=>start, "mut_base"=>mutb,
+        "rans_acceleration"=>accel.enabled, "rans_acceleration_method"=>accel.method, "pseudo_dt"=>accel.pseudo_dt)
     g === nothing || (cfgd["baffle"] = Dict{String,Any}("side"=>g.mode, "h"=>g.height))
     # 30 Oct 2026: the refinement of the plate's free edge and its shear layer (PBCav's PB_BAFFLE_REFINE); named in the
     # configuration only when asked for, so that every request without it is configured exactly as before
@@ -125,7 +127,7 @@ function _lowspeed_ch_knobs(ls::AbstractDict, gap::Real)
         "PB_MESH_TE_DS"=>@sprintf("%.6e", 1.5gap/(2nb)), "PB_MESH_TE_TOPOLOGY"=>"strip",
         "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_STRIP"=>"graded",
         "PB_TURBULENCE"=>"sst", "PB_SST_TU_INF"=>string(ls["tu"]), "PB_SST_MUT_RATIO"=>string(ls["mut_ratio"]),
-        "PB_DT"=>"0.25", "PB_STEADY_TOL"=>"1e-6", "PB_TURB_STEADY_TOL"=>"1e-7", "PB_MAX_STEPS"=>string(ls["max_steps"]),
+        "PB_DT"=>string(ls["pseudo_dt"]), "PB_STEADY_TOL"=>"1e-6", "PB_TURB_STEADY_TOL"=>"1e-7", "PB_MAX_STEPS"=>string(ls["max_steps"]),
         "PB_WALL_CAP"=>string(ls["wall_cap"]), "PB_N_OUTER_MAX"=>"40", "PB_VORTEX"=>"point", "PB_VORTEX_EVERY"=>"10",
         "PB_VORTEX_RELAX"=>"0.5",
         # W6b's settings, named explicitly (their values are the defaults of d62a577f and of b7a7b29b alike; the sharp path
@@ -148,7 +150,8 @@ end
 function _lowspeed_ch_input(snap, head, foil, ls, knobs, alpha, dir; mesh_only::Bool=false, streamline=nothing)
     cfg = Dict{String,Any}("snapshot"=>snap, "commit"=>head, "foil"=>replace(String(foil), '\\'=>'/'), "knobs"=>knobs,
         "resolution"=>ls["resolution"], "reynolds"=>ls["reynolds"], "alpha"=>Float64(alpha),
-        "outdir"=>replace(String(dir), '\\'=>'/'))
+        "outdir"=>replace(String(dir), '\\'=>'/'), "rans_acceleration"=>ls["rans_acceleration"],
+        "rans_acceleration_method"=>ls["rans_acceleration_method"])
     mesh_only && (cfg["mesh_only"] = true)
     # streamline alignment (opt-in, development): the hashed JXfoil path file and the morph (streamline_backend.jl)
     streamline === nothing || (cfg["streamline"] = streamline)
@@ -240,7 +243,7 @@ function preview_lowspeed_ch_mesh(path::AbstractString, flow::AbstractDict, outd
     (mesh=mesh, metadata=metadata)
 end
 
-function _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log)
+function _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing)
     ls = lowspeed_ch_configuration(flow)
     snap, head = _lowspeed_ch_snapshot_check(baffle=haskey(ls, "baffle"), refine=haskey(get(ls, "baffle", Dict()), "refine"))
     foil, geometry, gap = _lowspeed_ch_geometry(case, path, dir, flow)
@@ -249,9 +252,12 @@ function _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log)
     streamline = streamline_worker_cfg(_get(case, "airfoil", Dict()), flow, alpha, dir; gurney=get(geometry, "gurney", nothing))
     streamline === nothing || _deliver_log(log, "$(STREAMLINE_DEV_LABEL): $(streamline["path_label"]), admission $(streamline["admission"]); the worker morphs its own mesh with the hashed path file.")
     cfg = _lowspeed_ch_input(snap, head, foil, ls, knobs, alpha, dir; streamline)
+    warm = warmdir === nothing ? nothing : joinpath(warmdir, "state_checkpoint.jls")
+    warm !== nothing && isfile(warm) && (cfg["warm_start"] = warm)
     cfg_path = joinpath(dir, "input.toml")
     open(io -> TOML.print(io, cfg), cfg_path, "w")
-    startword = ls["start"] == "ramp" ? "ramp start (far field accelerated over t = $(LOWSPEED_CH_RAMP_T) c/U)" : "projection start"
+    startword = haskey(cfg,"warm_start") ? "checked previous-angle state offered (worker verifies compatibility)" :
+        ls["start"] == "ramp" ? "ramp start (far field accelerated over t = $(LOWSPEED_CH_RAMP_T) c/U)" : "projection start"
     _deliver_log(log, @sprintf("Starting low-speed CFD on C+H (PBCav %s from %s, pressure-based incompressible, fully turbulent SST, Tu %.3g%%, mu_t/mu %.3g, %s%s) %s; %s; %s base cells per half; wall cap %.0f s.",
                                head[1:min(8, end)], snap, 100ls["tu"], ls["mut_ratio"], startword,
                                haskey(ls, "baffle") ? @sprintf(", Gurney baffle %s h/c %.4g%s, PB_TURB_MUT_BASE=%s", ls["baffle"]["side"], ls["baffle"]["h"],
@@ -327,23 +333,23 @@ function _collect_lowspeed_ch_output(dir, alpha, geometry, ls, knobs, head, elap
         "residual_linf"=>_float(raw[k]["steady"]), "cl"=>_float(raw[k]["CL"]), "cd"=>_float(raw[k]["CD"]),
         "cm"=>_float(raw[k]["CM"]), "steady_k"=>_float(raw[k]["steady_k"]), "steady_w"=>_float(raw[k]["steady_w"]),
         "t_pseudo"=>_float(raw[k]["t"]), "in_ramp"=>(rampT > 0 && something(_float(raw[k]["t"]), Inf) < rampT)) for k in idx]
-    outcome = String(meta["outcome"]); steady = outcome == "STEADY"
-    convergence = steady ?
-        @sprintf("solver steady stop reached at step %d: momentum steady residual %.2e <= %.0e, k and omega residuals <= %.0e, point-vortex circulation settled. Mesh independence and validation are not established.",
-                 meta["steps"], fnum(meta["steady_residual"]), fnum(meta["steady_tol"]), fnum(meta["turb_steady_tol"])) :
-        outcome == "INCOMPLETE" ? @sprintf("wall cap of %.0f s reached at step %d before the steady stop (momentum steady residual %.2e, stop at %.0e); diagnostic only.",
-                                           fnum(meta["wall_cap"]), meta["steps"], fnum(meta["steady_residual"]), fnum(meta["steady_tol"])) :
-        @sprintf("solver outcome %s at step %d without the steady stop (momentum steady residual %.2e); diagnostic only.", outcome,
-                 meta["steps"], fnum(meta["steady_residual"]))
+    outcome = String(meta["outcome"])
+    assessment = _lowspeed_convergence_assessment(meta,raw;ramp_time=rampT)
+    steady = assessment["converged"]
+    status = steady ? "completed" : assessment["status"]=="failed" ? "failed" : "not_converged"
+    convergence = _lowspeed_convergence_message(meta,assessment)
     gates = app_audit["air_reference_gates"]
     gstart = haskey(geometry, "gurney") ? _gurney_start_record(raw, meta, knobs) : nothing
     notes = String[
         "Low-speed CFD: version 2's incompressible pressure-based solver (PBCav, commit $(meta["commit"]), snapshot $(meta["snapshot"])), IN DEVELOPMENT and NOT YET VALIDATED.",
         "Finite trailing edge on PBCav's conforming C+H free-air mesh (C block around the foil, H block behind the straight base; the base is a no-slip wall and its pressure and friction are in the loads). The sharp-trailing-edge and the C+H cases run the same PBCav commit ($(head[1:min(8, end)]), the baffle snapshot on Julia 1.13.2).",
         "Fully turbulent k-omega SST (SST-2003m; no transition model): freestream Tu $(round(100*ls["tu"]; sigdigits=3))%, mu_t/mu $(ls["mut_ratio"]). " *
-            (ls["start"] == "ramp" ? @sprintf("Ramp start (PB_START=ramp): the far field is accelerated from %.3g U to U over t = %.3g c/U (the projected start is singular at the plate's tip and the base corners); the loads before t = %.3g include the accelerating domain's uniform pressure gradient and are not meaningful. ", fnum(get(meta, "ramp_r0", 1.0)), rampT, rampT) :
-             "Plain projection start (PBCav's Kutta start refuses a mesh with a base); ") * "The point vortex relaxes the circulation from zero.",
-        "Free air: far-field velocity with a point-vortex correction, pressure outlet; Mach is ignored (incompressible). Steady pseudo-time (backward Euler, dt 0.25 c/U) to the solver's own steady stop.",
+            (meta["start_mode"] == "warm" ? "Checked previous-angle state; the ramp is skipped for this point. " :
+             meta["start_mode"] == "ramp" ? @sprintf("Ramp start (PB_START=ramp): the far field is accelerated from %.3g U to U over t = %.3g c/U (the projected start is singular at the plate's tip and the base corners); the loads before t = %.3g include the accelerating domain's uniform pressure gradient and are not meaningful. ", fnum(get(meta, "ramp_r0", 1.0)), rampT, rampT) :
+             "Plain projection start (PBCav's Kutta start refuses a mesh with a base); ") *
+            (meta["start_mode"] == "warm" ? "The point vortex begins at the previous angle's circulation." : "The point vortex relaxes the circulation from zero."),
+        "Free air: far-field velocity with a point-vortex correction, pressure outlet; Mach is ignored (incompressible). Adaptive backward-Euler pseudo-time (requested maximum dt $(ls["pseudo_dt"]) c/U) to the solver's own steady stop." *
+            (ls["rans_acceleration"] ? " Larger pseudo-time ceiling is experimental; compare convergence and wall time before relying on a speedup." : ""),
         "Mesh: $(ls["mesh_label"]); $(knobs["PB_MESH_TE_BASE"]) base cells per half. PBCav audit gates failed: $(isempty(meta["mesh_gate_failures"]) ? "none" : join(meta["mesh_gate_failures"], "; ")); the app's C+H air gates: $(gates["passed"] ? "all pass" : "failed " * join(gates["failed"], "; ")). Grid independence is not established.",
         isempty(geometry["change"]) ? "The CFD geometry is the source section with its native finite trailing edge." : geometry["change"] * ".",
         "Fields: the 'mach' column holds the speed |U|/U_inf (incompressible); density and temperature are 1; nut is mu_t/mu; no live field snapshots on the C+H path (the final field is shown)."]
@@ -353,7 +359,8 @@ function _collect_lowspeed_ch_output(dir, alpha, geometry, ls, knobs, head, elap
     end
     append!(notes, streamline_point_notes(get(mesh["geometry_metadata"], "streamline_alignment", nothing)))
     Dict{String,Any}(
-        "backend"=>"lowspeed", "alpha_deg"=>alpha, "status"=>steady ? "completed" : "not_converged", "convergence"=>convergence,
+        "backend"=>"lowspeed", "alpha_deg"=>alpha, "status"=>status, "convergence"=>convergence,
+        "convergence_status"=>assessment["status"],
         "validation"=>baffle === nothing ? "version 2 pressure-based solver in development; not yet validated; app C+H path" :
                       "version 2 pressure-based solver in development; not yet validated; app C+H path with the Gurney flap as a baffle (development, one mesh, steady RANS)",
         "geometry"=>geometry, "mesh"=>mesh, "cl"=>fnum(meta["cl"]), "cd"=>fnum(meta["cd"]), "cm"=>fnum(meta["cm"]),
@@ -366,9 +373,14 @@ function _collect_lowspeed_ch_output(dir, alpha, geometry, ls, knobs, head, elap
             "section"=>geometry["path"]), baffle === nothing ? Dict{String,Any}() : Dict("baffle_csv"=>joinpath(dir, "baffle.csv"))),
         "diagnostics"=>merge(Dict{String,Any}("solver"=>meta["solver"], "commit"=>meta["commit"], "snapshot"=>meta["snapshot"],
             "solver_outcome"=>outcome, "steps"=>meta["steps"], "max_steps"=>meta["max_steps"], "wall_cap_s"=>fnum(meta["wall_cap"]),
+            "warm_start_source"=>get(meta,"warm_start_source",""),
             "march_wall_seconds"=>fnum(meta["march_wall_seconds"]), "point_wall_seconds"=>elapsed, "threads"=>meta["threads"],
-            "time_mode"=>"steady", "clock"=>"steady pseudo-time (backward Euler, dt 0.25 c/U)",
-            "convergence_guard"=>Dict("status"=>steady ? "solver_steady_stop" : "not_converged", "reason"=>convergence),
+            "time_mode"=>"steady", "clock"=>"steady adaptive pseudo-time (backward Euler, maximum dt $(ls["pseudo_dt"]) c/U)",
+            "rans_acceleration"=>ls["rans_acceleration"], "rans_acceleration_method"=>ls["rans_acceleration_method"],
+            "requested_pseudo_dt"=>ls["pseudo_dt"],
+            "convergence_guard"=>Dict("status"=>steady ? "solver_steady_stop" : assessment["status"], "reason"=>convergence),
+            "convergence_assessment"=>assessment,
+            "steady_assessment"=>assessment,
             "residual_scaled"=>fnum(meta["steady_residual"]), "residual_kind"=>"PBCav steady residual (momentum)",
             "steady_residual"=>fnum(meta["steady_residual"]), "steady_tol"=>fnum(meta["steady_tol"]),
             "steady_k"=>fnum(meta["steady_k"]), "steady_w"=>fnum(meta["steady_w"]), "turb_steady_tol"=>fnum(meta["turb_steady_tol"]),

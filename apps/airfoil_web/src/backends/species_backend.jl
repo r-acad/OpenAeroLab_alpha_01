@@ -497,7 +497,10 @@ function _species_worker(cfg_path)
         eos_precision=Symbol(settings["cav_eos_precision"]),nut_density=Symbol(settings["cav_nut_density"]),
         reboud_n=settings["cav_reboud_n"],sst_correction_limit=settings["cav_sst_correction_limit"],trip_x,trip_width=settings["cav_trip_width"])
     steady=material=="air" && cfg["cav_air_mode"]=="steady"
-    workspace=steady ? CMeshCavSpecies.build_species_steady(c) : nothing
+    line=Bool(get(cfg,"species_steady_line",false))
+    line && !steady && throw(ArgumentError("Species line-implicit acceleration requires steady air"))
+    workspace=steady ? CMeshCavSpecies.build_species_steady(c;line) : nothing
+    line && println("Species wall-normal line-implicit steady relaxation: on")
     @printf("Conservative Species initialized on %s: %s, %s; %d cells; %s\n",
         cfg["gpu"] ? "GPU" : "CPU",material,domain,met.NI*met.NJ,steady ? "steady pseudo-time (no physical clock)" : "physical time")
     println("BOUNDARY: ",metadata["outer_boundary_condition"])
@@ -583,6 +586,9 @@ function _species_worker(cfg_path)
             "rho_v_sat"=>Float64(tem.rho_v_sat),"a2l"=>Float64(tem.a2l),"lq"=>Float64(tem.lq),
             "kprod"=>Float64(tem.kprod),"kdest"=>Float64(tem.kdest)),
         "clock"=>steady ? "steady pseudo-time" : "physical time", "elapsed_ctu"=>dt_elapsed,
+        "rans_acceleration"=>Bool(get(cfg,"rans_acceleration",false)),
+        "rans_acceleration_method"=>String(get(cfg,"rans_acceleration_method","standard")),
+        "species_steady_line"=>line,
         "wall_seconds"=>time()-start_time,"mesh_node_x_sha256"=>xhash,"mesh_node_y_sha256"=>yhash,
         "mesh_cells"=>met.NI*met.NJ,"full_field_mesh_sha256"=>exported.field["mesh_sha256"],
         "energy_model"=>material=="air" ? "isothermal air, no total-energy transport" : "barotropic liquid/vapour",

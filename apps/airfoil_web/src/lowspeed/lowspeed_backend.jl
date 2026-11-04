@@ -5,6 +5,9 @@
 # flap-height wake rows and thins the finite-TE H block only when requested with a Gurney baffle. S1028_APPBAF at af9beda1
 # and S1024_A2_JL113 at b7a7b29b remain available for historical tests.
 
+isdefined(@__MODULE__, :RANSConvergence) ||
+    include(joinpath(@__DIR__, "..", "backends", "rans_convergence.jl"))
+
 "The pinned PBCav snapshots (a detached worktree each; never edited) and their commits, with the manifest of each. The pin
 in force is AIRFOIL_LOWSPEED_PIN (default s1030). AIRFOIL_LOWSPEED_SNAPSHOT overrides the path of the snapshot for a test (no
 manifest check); the commit is then read from that worktree and recorded."
@@ -79,10 +82,12 @@ function lowspeed_configuration(flow::AbstractDict)
     _number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05) > 0 && throw(ArgumentError(
         "the low-speed CFD uses a sharp-trailing-edge free-air C-mesh: clear the CFD trailing-edge thickness override (cfd_te_thickness) to run it"))
     live = _integer(flow, "lowspeed_live_every", LOWSPEED_DEFAULTS["lowspeed_live_every"]; lo=0, hi=1000000)
+    accel = RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),:lowspeed)
     Dict{String,Any}("resolution"=>res, "mesh"=>LOWSPEED_MESHES[res].mesh, "le_ds"=>LOWSPEED_MESHES[res].le_ds,
         "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "mesh_label"=>LOWSPEED_MESHES[res].label,
-        "reynolds"=>re, "tu"=>tu, "mut_ratio"=>mr, "wall_cap"=>cap, "max_steps"=>ms, "live_every"=>live, "gpu"=>lowspeed_gpu(flow))
+        "reynolds"=>re, "tu"=>tu, "mut_ratio"=>mr, "wall_cap"=>cap, "max_steps"=>ms, "live_every"=>live, "gpu"=>lowspeed_gpu(flow),
+        "rans_acceleration"=>accel.enabled, "rans_acceleration_method"=>accel.method, "pseudo_dt"=>accel.pseudo_dt)
 end
 
 lowspeed_capabilities() = Dict{String,Any}("label"=>"Low-speed CFD (pressure-based, new)",
@@ -215,7 +220,8 @@ end
 function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false, warm_start=nothing)
     cfg = Dict{String,Any}("snapshot"=>snap, "commit"=>head, "foil"=>replace(String(foil), '\\'=>'/'),
         "mesh"=>ls["mesh"], "le_ds"=>ls["le_ds"], "resolution"=>ls["resolution"], "tu"=>ls["tu"], "mut_ratio"=>ls["mut_ratio"],
-        "dt"=>0.25, "steady_tol"=>1e-6, "turb_steady_tol"=>1e-7, "max_steps"=>ls["max_steps"], "wall_cap"=>ls["wall_cap"],
+        "dt"=>ls["pseudo_dt"], "steady_tol"=>1e-6, "turb_steady_tol"=>1e-7, "max_steps"=>ls["max_steps"], "wall_cap"=>ls["wall_cap"],
+        "rans_acceleration"=>ls["rans_acceleration"], "rans_acceleration_method"=>ls["rans_acceleration_method"],
         "n_outer_max"=>40, "vortex_every"=>10, "vortex_relax"=>0.5, "reynolds"=>ls["reynolds"], "alpha"=>Float64(alpha),
         "outdir"=>replace(String(dir), '\\'=>'/'), "live_every"=>ls["live_every"],
         "snapshot_interval_seconds"=>get(ls,"snapshot_interval_seconds",600.),
@@ -259,7 +265,7 @@ function preview_lowspeed_mesh(path::AbstractString, flow::AbstractDict, outdir:
 end
 
 function _lowspeed_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing)
-    _lowspeed_ch_selected(flow) && return _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log)   # C+H path
+    _lowspeed_ch_selected(flow) && return _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir)   # C+H path
     snap, head = _lowspeed_snapshot_check()
     ls = lowspeed_configuration(flow)
     foil, geometry = _lowspeed_geometry(case, path, dir, snap)
@@ -278,6 +284,66 @@ function _lowspeed_point(case, path, flow, alpha, dir, progress, log, warmdir=no
     ok && isfile(joinpath(dir, "result.toml")) ||
         throw(ErrorException("low-speed CFD worker failed: $(_solver_failure_summary(joinpath(dir,"solver.log"))); see solver.log"))
     _collect_lowspeed_output(dir, Float64(alpha), geometry, ls, time() - started)
+end
+
+"Assess PBCav's measured steady equations and load history without replacing its native stopping rule."
+function _lowspeed_convergence_assessment(meta, raw; ramp_time=0.)
+    number(x) = x isa Real ? Float64(x) : something(tryparse(Float64, string(x)), NaN)
+    mapping = ("iteration"=>"step", "cl"=>"CL", "cd"=>"CD", "cm"=>"CM",
+        "momentum"=>"steady", "k"=>"steady_k", "omega"=>"steady_w",
+        "circulation"=>"Gamma_defect", "mass_net_frac"=>"flux_net")
+    history = [Dict{String,Any}(key=>get(row,column,nothing) for (key,column) in mapping)
+        for row in raw if ramp_time<=0 || number(get(row,"t",NaN))>=ramp_time]
+    # Final metadata is the actual saved field, which need not coincide with a
+    # periodically logged row. Recheck it instead of trusting a stale history.
+    if !isempty(history)
+        for (key, column) in ("cl"=>"cl", "cd"=>"cd", "cm"=>"cm", "momentum"=>"steady_residual",
+                "k"=>"steady_k", "omega"=>"steady_w", "circulation"=>"gamma_defect", "mass_net_frac"=>"flux_net")
+            history[end][key] = get(meta,column,nothing)
+        end
+    end
+    laminar = occursin(r"\bturbulence=laminar\b", String(get(meta,"config_line","")))
+    limits = Dict{String,Float64}("circulation"=>1e-6)
+    missing_limits = String[]
+    for (key, column) in ("momentum"=>"steady_tol", "k"=>"turb_steady_tol", "omega"=>"turb_steady_tol")
+        laminar && key in ("k","omega") && continue
+        limit=number(get(meta,column,NaN))
+        isfinite(limit) && limit>0 ? (limits[key]=limit) : push!(missing_limits,column)
+    end
+    outcome=String(get(meta,"outcome","UNKNOWN"))
+    report=RANSConvergence.assess(history; residual_limits=limits,
+        config=RANSConvergence.Config(drag_min=-1e-5,drag_max=20.,lift_max=20.),
+        solver_steady_passed=outcome=="STEADY" && isempty(missing_limits),
+        physical_state_valid=all(key->isfinite(number(get(meta,key,NaN))),("cl","cd","cm")),
+        failed=!(outcome in ("STEADY","REACHED","INCOMPLETE")),
+        scope=(laminar ? "PBCav momentum steady residual" : "PBCav momentum and SST steady residuals") *
+            ", circulation defect and signed mass balance; mesh independence and experimental validation are separate")
+    report["solver_outcome"]=outcome
+    report["mass_normalization"]="PBCav free-air rho_inf=U_inf=chord=1; flux_net/(rho_inf*U_inf*chord)"
+    report["native_stop_required"]=true
+    report["ramp_samples_excluded"]=length(raw)-length(history)
+    report["missing_limits"]=unique(missing_limits)
+    if !isempty(missing_limits)
+        report["criteria_passed"]=false
+        append!(report["missing"],["limit:"*key for key in unique(missing_limits)])
+    end
+    report["reason"]=replace(report["reason"], "complete equation convergence evidence is unavailable"=>
+        "the native PBCav steady stop has not been reached or its stop limits are unavailable")
+    report["criteria_passed"] && !report["converged"] && (report["reason"]=
+        "Monitored residual, mass-balance and load checks passed; the native PBCav steady stop has not been reached")
+    report
+end
+
+function _lowspeed_convergence_message(meta, assessment)
+    titles=Dict("converged"=>"Converged", "loads_stable_flow_unsettled"=>"Loads stable; flow not yet converged",
+        "incomplete"=>"Analysis incomplete", "failed"=>"Analysis failed")
+    outcome=String(get(meta,"outcome","UNKNOWN")); steps=get(meta,"steps",0)
+    ending=outcome=="INCOMPLETE" ? "Wall-time limit reached at step $steps." :
+        outcome=="REACHED" ? "Requested iteration/time limit reached at step $steps." : "Solver outcome $outcome at step $steps."
+    refusal=String(get(meta,"refusal",""));isempty(refusal) || (ending*=" "*refusal)
+    "$(titles[assessment["status"]]). $(assessment["reason"]). $ending " *
+        (assessment["converged"] ? "Mesh independence and experimental validation are separate." :
+         "Saved fields and coefficients remain available for inspection.")
 end
 
 function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
@@ -303,19 +369,15 @@ function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
         "cm"=>_float(raw[k]["CM"]), "steady_k"=>_float(raw[k]["steady_k"]), "steady_w"=>_float(raw[k]["steady_w"]),
         "t_pseudo"=>_float(raw[k]["t"])) for k in idx]
     outcome = String(meta["outcome"])
-    steady = outcome == "STEADY"
-    status = steady ? "completed" : "not_converged"
-    convergence = steady ?
-        @sprintf("solver steady stop reached at step %d: momentum steady residual %.2e <= %.0e, k and omega residuals <= %.0e, point-vortex circulation settled. Mesh independence and validation are not established.",
-                 meta["steps"], fnum(meta["steady_residual"]), fnum(meta["steady_tol"]), fnum(meta["turb_steady_tol"])) :
-        outcome == "INCOMPLETE" ? @sprintf("wall cap of %.0f s reached at step %d before the steady stop (momentum steady residual %.2e, stop at %.0e); diagnostic only.",
-                                           fnum(meta["wall_cap"]), meta["steps"], fnum(meta["steady_residual"]), fnum(meta["steady_tol"])) :
-        @sprintf("solver outcome %s at step %d without the steady stop (momentum steady residual %.2e); diagnostic only.", outcome,
-                 meta["steps"], fnum(meta["steady_residual"]))
+    assessment = _lowspeed_convergence_assessment(meta,raw)
+    steady = assessment["converged"]
+    status = steady ? "completed" : assessment["status"]=="failed" ? "failed" : "not_converged"
+    convergence = _lowspeed_convergence_message(meta,assessment)
     notes = String[
         "Low-speed CFD: version 2's incompressible pressure-based solver (PBCav, commit $(meta["commit"])), IN DEVELOPMENT and NOT YET VALIDATED.",
         "Fully turbulent k-omega SST (SST-2003m; no transition model): freestream Tu $(round(100*ls["tu"]; sigdigits=3))%, mu_t/mu $(ls["mut_ratio"]). XFOIL comparisons should use fixed transition near the leading edge.",
-        "Free air: far-field velocity with a point-vortex correction, pressure outlet; Mach is ignored (incompressible). Adaptive backward-Euler pseudo-time (requested maximum dt 0.25 c/U) to the solver's own steady stop.",
+        "Free air: far-field velocity with a point-vortex correction, pressure outlet; Mach is ignored (incompressible). Adaptive backward-Euler pseudo-time (requested maximum dt $(ls["pseudo_dt"]) c/U) to the solver's own steady stop." *
+            (ls["rans_acceleration"] ? " Larger pseudo-time ceiling is experimental; compare convergence and wall time before relying on a speedup." : ""),
         isempty(String(get(meta,"warm_start_source",""))) ? "Kutta potential-flow start." :
             "Started from the previous polar angle's checked full solver state; source $(meta["warm_start_source"]).",
         "Mesh: $(ls["mesh_label"]). PBCav mesh audit reference gates: $(isempty(meta["mesh_gate_failures"]) ? "all pass" : join(meta["mesh_gate_failures"], "; ")). Grid independence is not established.",
@@ -332,6 +394,7 @@ function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
                                "vorticity"=>"U∞/c", "nut"=>"μt/μ", "density"=>"ρ∞", "temperature"=>"T∞"))
     Dict{String,Any}(
         "backend"=>"lowspeed", "alpha_deg"=>alpha, "status"=>status, "convergence"=>convergence,
+        "convergence_status"=>assessment["status"],
         "validation"=>"version 2 pressure-based solver in development; not yet validated",
         "geometry"=>geometry, "mesh"=>mesh, "cl"=>fnum(meta["cl"]), "cd"=>fnum(meta["cd"]), "cm"=>fnum(meta["cm"]),
         "iteration_history"=>history, "cp"=>cp, "fields"=>fields, "notes"=>notes,
@@ -345,8 +408,12 @@ function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
             "solver_outcome"=>outcome, "steps"=>meta["steps"], "max_steps"=>meta["max_steps"], "wall_cap_s"=>fnum(meta["wall_cap"]),
             "warm_start_source"=>get(meta,"warm_start_source",""),
             "march_wall_seconds"=>fnum(meta["march_wall_seconds"]), "point_wall_seconds"=>elapsed, "threads"=>meta["threads"],
-            "time_mode"=>"steady", "clock"=>"steady adaptive pseudo-time (backward Euler, maximum dt 0.25 c/U)",
-            "convergence_guard"=>Dict("status"=>steady ? "solver_steady_stop" : "not_converged", "reason"=>convergence),
+            "time_mode"=>"steady", "clock"=>"steady adaptive pseudo-time (backward Euler, maximum dt $(ls["pseudo_dt"]) c/U)",
+            "rans_acceleration"=>ls["rans_acceleration"], "rans_acceleration_method"=>ls["rans_acceleration_method"],
+            "requested_pseudo_dt"=>ls["pseudo_dt"],
+            "convergence_guard"=>Dict("status"=>steady ? "solver_steady_stop" : assessment["status"], "reason"=>convergence),
+            "convergence_assessment"=>assessment,
+            "steady_assessment"=>assessment,
             "residual_scaled"=>fnum(meta["steady_residual"]), "residual_kind"=>"PBCav steady residual (momentum)",
             "steady_residual"=>fnum(meta["steady_residual"]), "steady_tol"=>fnum(meta["steady_tol"]),
             "steady_k"=>fnum(meta["steady_k"]), "steady_w"=>fnum(meta["steady_w"]), "turb_steady_tol"=>fnum(meta["turb_steady_tol"]),

@@ -182,6 +182,7 @@ function _residual_ok(m::Monitor, prior::Vector{Sample}, recent::Vector{Sample},
     plateau = r/max(p, eps(Float64))
     spike = maximum(getproperty(row, property) for row in recent) /
             max(r, eps(Float64))
+    recent_max = maximum(getproperty(row, property) for row in recent)
     prefix = string(property)
     merge!(m.last_metrics, Dict(
         "$(prefix)_median"=>r,
@@ -189,11 +190,14 @@ function _residual_ok(m::Monitor, prior::Vector{Sample}, recent::Vector{Sample},
         "$(prefix)_ratio"=>ratio,
         "$(prefix)_window_ratio"=>plateau,
         "$(prefix)_spike_factor"=>spike,
+        "$(prefix)_recent_max"=>recent_max,
         "$(prefix)_limit"=>cfg.margin*ceiling))
-    r <= cfg.margin*ceiling &&
-        (ref <= cfg.margin*ceiling || ratio <= cfg.margin*cfg.residual_ratio_limit) &&
-        plateau <= 1+cfg.margin*cfg.plateau_fraction &&
-        spike <= cfg.residual_spike_factor
+    # A small absolute residual is already satisfactory. Relative reduction,
+    # plateau and spike ratios become ill-conditioned near zero and must not
+    # veto a warm start or roundoff-level residual. Keep them as diagnostics;
+    # bound both the median (with margin) and every recent sample (hard ceiling).
+    # Loads, signed global mass balance and confirmation windows remain required.
+    r <= cfg.margin*ceiling && recent_max <= ceiling
 end
 
 # A plateau above the equation tolerances is a failed solve. Stop wasting
@@ -377,7 +381,7 @@ function observe!(m::Monitor, row)
     end
     if cl_ok && cd_ok && (!mass_ok || !mass_l2_ok)
         return _set!(m, "forces_stationary",
-                     "CL/CD are stationary but continuity residual has not met reduction, level, and plateau gates")
+                     "CL/CD are stationary but continuity residual remains above its absolute median or maximum limit")
     end
     _set!(m, "unsettled",
           "continuity residual or signed mass balance, force variation, or physical sanity gate has not passed")
@@ -403,6 +407,7 @@ function convergence_report(m::Monitor)
         "mass_net_limit"=>cfg.mass_net_limit,
         "mass_net_scope"=>"signed sum of final-state raw continuity divergence divided by freestream rho*U*chord; both history windows use max(abs(.))",
         "residual_ratio_limit"=>cfg.residual_ratio_limit,
+        "residual_acceptance"=>"median below margin times absolute limit and every recent sample below hard absolute limit; relative reduction and plateau ratios are diagnostic only",
         "plateau_fraction"=>cfg.plateau_fraction,
         "early_stop_eligible"=>m.last_status == "early_stop_eligible",
         "stop_on_stall"=>cfg.stop_on_stall,

@@ -88,19 +88,30 @@ function _ch_wall_loads(flow,m;faces_path=nothing)
         fx=force_x,fy=force_y,base_fx=-sum(hx),base_fy=-sum(hy))
 end
 
-function _ch_equation_norms(coupled)
+function _ch_equation_norm_work(coupled)
+    blocks=map((coupled.c,coupled.h)) do q
+        vol=Float64.(q.solver.vol)
+        (vol=vol,raw=similar(vol),weighted=similar(vol))
+    end
+    (blocks=blocks,volume=sum(Float64(sum(b.vol)) for b in blocks))
+end
+
+function _ch_equation_norms(coupled,normwork=_ch_equation_norm_work(coupled))
     P=GasStripPrototype
-    linf=zeros(6);l2=zeros(6);integrated=zeros(6);volume=0.
+    linf=zeros(6);l2=zeros(6);integrated=zeros(6)
     # Device reductions retain all cells, rather than subsampling the residual.
-    for q in (coupled.c,coupled.h)
-        s=q.solver;vol=Float64.(s.vol);volume+=Float64(sum(vol))
+    for (q,b) in zip((coupled.c,coupled.h),normwork.blocks)
+        s=q.solver
         for (k,rr) in enumerate((P.residuals(s)...,q.turbulence.dck,q.turbulence.dcw))
-            raw=Float64.(rr)./vol
-            linf[k]=max(linf[k],Float64(maximum(abs,raw)))
-            l2[k]+=Float64(sum(raw.*raw.*vol));integrated[k]+=Float64(sum(Float64.(rr)))
+            @. b.raw=Float64(rr)/b.vol
+            linf[k]=max(linf[k],Float64(maximum(abs,b.raw)))
+            @. b.weighted=b.raw*b.raw*b.vol
+            l2[k]+=Float64(sum(b.weighted))
+            @. b.weighted=Float64(rr)
+            integrated[k]+=Float64(sum(b.weighted))
         end
     end
-    (linf=linf,l2=sqrt.(l2./volume),integrated=integrated)
+    (linf=linf,l2=sqrt.(l2./normwork.volume),integrated=integrated)
 end
 
 function _ch_equation_reference(c)
@@ -216,6 +227,10 @@ function _ch_transonic_worker(cfg_path::AbstractString)
         println("C+H j-line implicit residual smoothing (IRS-J): on (steady local pseudo-time; both blocks)");flush(stdout)
     end
     flow=P.build_pair(c,h);coupled=S.build_coupled(flow;tu_inf=Float64(get(cfg,"tu_inf",.001)),mu_t_ratio=Float64(get(cfg,"mu_t_ratio",.1)))
+    warm_source=_rans_load_restart!(cfg,joinpath(outdir,"mesh_full.msgpack"),"conformal_C_H_v1",
+        [(name="C",solver=c,extras=(rk=coupled.c.turbulence.rk,rw=coupled.c.turbulence.rw)),
+         (name="H",solver=h,extras=(rk=coupled.h.turbulence.rk,rw=coupled.h.turbulence.rw))])
+    isempty(warm_source) || S.residual!(coupled)
     pilot=L.build_steady(coupled);scales=_ch_equation_reference(c)
     speed=hypot(Float64(c.uxi),Float64(c.uyi));massscale=Float64(c.rho_inf)*speed
     wsize=settings.window;confirm=max(100,wsize÷4)
@@ -230,12 +245,16 @@ function _ch_transonic_worker(cfg_path::AbstractString)
     history=Any[];six_since=0;six_checks=0;firstnorms=nothing;lastnorms=nothing
     final_load=nothing;final_decision=nothing;status="step_limit";failure="";rejections=0
     clock_min=Inf;clock_max=0.;last_record_time=time();march_started=time()
+    profile_stages=settings.gpu && Bool(get(cfg,"profile_stages",false))
+    profile_step_seconds=Ref(0.0);profile_record_seconds=Ref(0.0)
+    profile_step_samples=Ref(0);profile_record_samples=Ref(0)
     history_io=open(joinpath(outdir,"iteration_history.csv"),"w")
     equation_io=open(joinpath(outdir,"equation_residual_history.csv"),"w")
+    normwork=_ch_equation_norm_work(coupled)
     println(history_io,"iteration,residual_linf,residual_scaled,residual_l2,cl,cd,mass_net_frac,cm");flush(history_io)
     println(equation_io,join(vcat(["iteration"],["raw_"*n*"_Linf" for n in names],["raw_"*n*"_volume_L2" for n in names]),','));flush(equation_io)
     function record!(n)
-        norms=_ch_equation_norms(coupled);load=_ch_wall_loads(flow,m)
+        norms=_ch_equation_norms(coupled,normwork);load=_ch_wall_loads(flow,m)
         all(isfinite,vcat(norms.linf,norms.l2,[load.cl,load.cd,load.cm])) || error("Nonfinite C+H accepted state diagnostics")
         massnet=norms.integrated[1]/massscale
         raw=max(Float64(maximum(abs,c.dc_r)),Float64(maximum(abs,h.dc_r)))
@@ -248,22 +267,38 @@ function _ch_transonic_worker(cfg_path::AbstractString)
         decision=_ch_observe_iteration!(monitor,sample)
         norms,load,decision
     end
+    function timed_record!(n)
+        t=profile_stages ? time() : 0.0
+        result=record!(n)
+        if profile_stages
+            CUDA.synchronize()
+            profile_record_seconds[]+=time()-t
+            profile_record_samples[]+=1
+        end
+        result
+    end
     try
-        firstnorms,final_load,final_decision=record!(0);lastnorms=firstnorms
+        firstnorms,final_load,final_decision=timed_record!(0);lastnorms=firstnorms
         println("C+H marching on ",settings.gpu ? "GPU" : "CPU",": shared six-equation flux, native conservative SSPRK3, CFL=",settings.cfl,"; each record is flushed live");flush(stdout)
         snapshots=FullFieldArtifact.FieldSnapshots.Schedule(get(cfg,"snapshot_interval_seconds",600.))
         println("Field snapshots: every ",snapshots.interval/60," wall-clock minutes (0 = disabled); final fields are saved separately.")
         for n in 1:settings.steps
             isfile(joinpath(outdir,"STOP")) && (status="cooperatively_stopped";break)
             time()-march_started>=settings.wall_seconds && (status="wall_limit";break)
+            step_start=profile_stages ? time() : 0.0
             accepted=L.step!(pilot,settings.cfl;max_pseudo_dt=settings.max_pseudo_dt,clock_margin=.9)
+            if profile_stages
+                CUDA.synchronize()
+                profile_step_seconds[]+=time()-step_start
+                profile_step_samples[]+=1
+            end
             rejections+=accepted.rejections;clock_min=min(clock_min,accepted.local_dt_min);clock_max=max(clock_max,accepted.local_dt_max)
             FullFieldArtifact.FieldSnapshots.save_if_due!(snapshots) do
                 _ch_write_fields(coupled,m,outdir,n;prefix=@sprintf("live_%06d_",n))
                 println("FIELD_SNAPSHOT,",@sprintf("live_field_%06d.msgpack",n),",",n);flush(stdout)
             end
             if n==1 || n%settings.stride==0 || n==settings.steps || time()-last_record_time>=2
-                lastnorms,final_load,final_decision=record!(n);last_record_time=time()
+                lastnorms,final_load,final_decision=timed_record!(n);last_record_time=time()
                 scaled_linf=lastnorms.linf./scales;scaled_l2=lastnorms.l2./scales
                 ratio=lastnorms.linf./max.(firstnorms.linf,eps(Float64))
                 six_ok=all(scaled_linf.<=.075) && all(scaled_l2.<=.015) && all(ratio.<=.1)
@@ -285,7 +320,7 @@ function _ch_transonic_worker(cfg_path::AbstractString)
         # that state as explicitly unqualified diagnostic evidence if possible.
         S.residual!(coupled)
         if isempty(history) || last(history).iteration!=pilot.iterations
-            lastnorms,final_load,final_decision=record!(pilot.iterations)
+            lastnorms,final_load,final_decision=timed_record!(pilot.iterations)
         end
         close(history_io);close(equation_io)
     end
@@ -323,6 +358,10 @@ function _ch_transonic_worker(cfg_path::AbstractString)
     scaled_linf=lastnorms.linf./scales;scaled_l2=lastnorms.l2./scales
     tail=history[max(1,end-39):end]
     meta=Dict{String,Any}("mesh_mode"=>"conformal_C_H_v1","status"=>status,"failure"=>failure,
+        "stage_profile"=>Dict("enabled"=>profile_stages,"step_seconds"=>profile_step_seconds[],
+            "record_seconds"=>profile_record_seconds[],"step_samples"=>profile_step_samples[],
+            "record_samples"=>profile_record_samples[],
+            "scope"=>"CUDA synchronized accepted-step and live diagnostic timings; opt-in diagnostic mode"),
         "cl"=>final_load.cl,"cd"=>final_load.cd,"cm"=>final_load.cm,"steps"=>pilot.iterations,"max_steps"=>settings.steps,
         "gpu"=>settings.gpu,"device"=>settings.gpu ? CUDA.name(CUDA.device()) : "KernelAbstractions CPU",
         "time_mode"=>"steady","clock"=>"steady local pseudo-time","elapsed_ctu"=>0.,"physical_elapsed"=>0.,
@@ -333,8 +372,11 @@ function _ch_transonic_worker(cfg_path::AbstractString)
         "rk_weight_closure"=>true,"rk_weight_closure_implementation"=>"native conservative SSPRK3 gas/SST stage construction; not the old single-block correction switch",
         "sst_wall_metric_correction"=>true,"sst_wall_metric_implementation"=>"native conservative SST face-wall distance; no legacy single-block switch",
         "viscosity_model"=>"constant_kinematic","reconstruction"=>1,"full_viscous_stress"=>true,"irsj"=>settings.irsj,
+        "rans_acceleration"=>Bool(get(cfg,"rans_acceleration",false)),
+        "rans_acceleration_method"=>String(get(cfg,"rans_acceleration_method","standard")),
         "mach"=>settings.mach,"reynolds"=>settings.reynolds,"alpha_deg"=>settings.alpha,"cfl"=>settings.cfl,
         "geometry"=>metadata,"mesh_cells"=>field.total,"mesh_sha256"=>field.meshsha,
+        "warm_start_source"=>warm_source,
         "cp_csv"=>basename(cpfile),"iteration_csv"=>"iteration_history.csv","equation_residual_csv"=>"equation_residual_history.csv",
         "wall_force_csv"=>"wall_force_faces.csv","force_q_inf"=>qinf,"force_ca"=>Float64(c.ca),"force_sa"=>Float64(c.sa),
         "fields_blocks_msgpack"=>"fields_blocks.msgpack","field_full_msgpack"=>"fields_blocks_full.msgpack",
@@ -358,6 +400,11 @@ function _ch_transonic_worker(cfg_path::AbstractString)
         "elapsed_wall_seconds"=>time()-started,"elapsed_march_wall_seconds"=>time()-march_started,
         "full_campaign_released"=>false,"stall_validated"=>false,"parity_qualified"=>false)
     open(joinpath(outdir,"result.toml"),"w") do io;TOML.print(io,meta);end
+    if status in ("step_limit", "wall_limit", "equation_and_force_guard_passed", "stalled_stop")
+        _rans_save_restart(cfg,joinpath(outdir,"mesh_full.msgpack"),"conformal_C_H_v1",
+            [(name="C",solver=c,extras=(rk=coupled.c.turbulence.rk,rw=coupled.c.turbulence.rw)),
+             (name="H",solver=h,extras=(rk=coupled.h.turbulence.rk,rw=coupled.h.turbulence.rw))])
+    end
     println("C+H worker complete: n=",pilot.iterations," status=",status,"; actual two-block fields and diagnostics saved");flush(stdout)
     nothing
 end

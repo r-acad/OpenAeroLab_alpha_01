@@ -198,6 +198,23 @@ function _validated_case(data; geometry_only::Bool=false)
     material in ("water","air") || throw(ArgumentError("cav_fluid must be water or air"))
     domain in ("tunnel","free_fluid","underwater") || throw(ArgumentError("invalid cav_domain"))
     flow_out["cav_fluid"]=material;flow_out["cav_domain"]=domain
+    method=String(get(flow_out,"rans_method","standard"))
+    method in CFDBackend.RANSAcceleration.METHODS || throw(ArgumentError("Unknown steady RANS method"))
+    if method!="standard"
+        "transonic" in backend_names || throw(ArgumentError("This method selects the compressible CFD backend"))
+        String(get(flow_out,"cfd_time_mode","steady"))=="steady" || throw(ArgumentError("Implicit research methods require steady mode"))
+    end
+    if haskey(flow_out,"rans_acceleration")
+        flow_out["rans_acceleration"] isa Bool || throw(ArgumentError("rans_acceleration must be boolean"))
+        if flow_out["rans_acceleration"]
+            any(b->b in ("transonic","cavitation","lowspeed"),backend_names) ||
+                throw(ArgumentError("RANS acceleration requires a steady RANS backend"))
+            "transonic" in backend_names && String(get(flow_out,"cfd_time_mode","steady"))!="steady" &&
+                throw(ArgumentError("RANS acceleration requires steady compressible pseudo-time"))
+            "cavitation" in backend_names && !(material=="air" && String(get(flow_out,"cav_air_mode","steady"))=="steady") &&
+                throw(ArgumentError("RANS acceleration requires steady Species air; it is unavailable for phase-change and physical-time runs"))
+        end
+    end
     topology=String(get(flow_out,"cfd_te_topology","auto"))
     topology in ("auto","aplus") || throw(ArgumentError("cfd_te_topology must be auto or aplus"))
     flow_out["cfd_te_topology"]=topology
@@ -1064,7 +1081,7 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>20,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>22,"protocols"=>["msgpack","bson"],
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),

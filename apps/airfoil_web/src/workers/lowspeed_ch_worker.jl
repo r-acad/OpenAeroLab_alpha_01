@@ -38,6 +38,7 @@ include(joinpath(SNAP, "src", "pbcav", "PBCav.jl")); using .PBCav
 using KernelAbstractions
 using Printf
 using SHA
+using Serialization
 include(joinpath(@__DIR__, "..", "protocol.jl")); using .AirfoilWire
 include(joinpath(@__DIR__, "..", "full_field_artifact.jl")); using .FullFieldArtifact
 
@@ -326,18 +327,55 @@ const cfg = PBCav.freeair_config(k; backend=BACKEND)
 const SST = cfg.turbulence === :sst
 println(PBCav.freeair_config_line(cfg, fs, k))
 const RAMP = get(k, "PB_START", :projection) === :ramp ? k["PB_START_RAMP"] : nothing
-const RUNKW = RAMP === nothing ? (;) : (; ramp=RAMP)      # freeair_run!'s ramp keyword exists from the baffle snapshot on
 const st = PBCav.allocate_state(MESH; backend=BACKEND)
 const Ux, Uy = PBCav.uinf(fs)
-RAMP === nothing && PBCav.init_state!(st, MESH, (x, y) -> (Ux, Uy, fs.p_inf); backend=BACKEND)
 const w = PBCav.pbwork(MESH, bc, cfg)
-RAMP === nothing && SST && PBCav.init_turbulence!(st, MESH, bc, cfg; work=w)
-const ps = RAMP === nothing ? PBCav.project_start!(st, MESH, bc, cfg; work=w) : PBCav.ramp_start!(st, MESH, bc, cfg, fs, RAMP; work=w)
+const FOIL_SHA = bytes2hex(sha256(read(CFG["foil"])))
+function checked_warm_state!()
+    path = get(CFG, "warm_start", nothing)
+    path === nothing && return nothing
+    try
+        saved = open(deserialize, path)
+        saved["topology"] == "conformal_C_H_v1" || error("topology differs")
+        saved["commit"] == CFG["commit"] || error("solver commit differs")
+        saved["mesh_hashes"] == collect(MESH_HASHES) || error("C-block mesh differs")
+        saved["strip_hashes"] == [MESH_RESULT["strip_x_sha256"], MESH_RESULT["strip_y_sha256"]] || error("H-block mesh differs")
+        saved["foil_sha256"] == FOIL_SHA || error("foil differs")
+        saved["baffle"] == get(ENVK, "PB_BAFFLE", "") || error("baffle differs")
+        saved["reynolds"] == k["PB_RE"] || error("Reynolds number differs")
+        saved["tu"] == k["PB_SST_TU_INF"] || error("turbulence intensity differs")
+        saved["mut_ratio"] == k["PB_SST_MUT_RATIO"] || error("eddy viscosity differs")
+        abs(saved["alpha_deg"] - k["PB_ALPHA"]) <= 2.5 || error("incidence jump exceeds 2.5 degrees")
+        all(isfinite, (saved["gamma"], saved["dt"], saved["dt_prev"])) && saved["dt_prev"] > 0 || error("invalid restart scalars")
+        for f in PBCav.STATE_FIELDS
+            data = saved[string(f)]
+            size(data) == size(getfield(st, f)) && all(isfinite, data) || error("invalid state in $f")
+        end
+        for f in PBCav.STATE_FIELDS; copyto!(getfield(st, f), saved[string(f)]); end
+        st.t = 0.0; st.nstep = 0
+        jump = abs(saved["alpha_deg"] - k["PB_ALPHA"])
+        st.dt = min(cfg.dt, max(1e-4, saved["dt"]), jump >= 1.5 ? 2.5e-4 : cfg.dt)
+        st.dt_prev = saved["dt_prev"]
+        PBCav.set_farfield!(bc, MESH, fs, saved["gamma"]; backend=BACKEND)
+        @printf("PB FREEAIR START: checked C+H warm state from alpha %.3f deg, dt %.5g, Gamma %.6g\n", saved["alpha_deg"], st.dt, saved["gamma"])
+        return (source=String(path), gamma=saved["gamma"])
+    catch err
+        println("PB FREEAIR START: C+H warm state refused (", sprint(showerror, err), "); using configured fresh start")
+        return nothing
+    end
+end
+const WARM = checked_warm_state!()
+const RUNKW = WARM !== nothing || RAMP === nothing ? (;) : (; ramp=RAMP)
+if WARM === nothing && RAMP === nothing
+    PBCav.init_state!(st, MESH, (x, y) -> (Ux, Uy, fs.p_inf); backend=BACKEND)
+    SST && PBCav.init_turbulence!(st, MESH, bc, cfg; work=w)
+end
+const ps = WARM !== nothing ? nothing : RAMP === nothing ? PBCav.project_start!(st, MESH, bc, cfg; work=w) : PBCav.ramp_start!(st, MESH, bc, cfg, fs, RAMP; work=w)
 const START_TAIL = RAMP === nothing ? "" :
     @sprintf(", start ramp: the far field from %.4g U to U over t = %.4g c/U (r = r0 + (1 - r0)(1 - cos(pi t/T))/2)", RAMP.r0, RAMP.T)
-@printf("PB FREEAIR START: projection FCG %d, rel %.2e, max |div F|/V %.3e -> %.3e%s\n", ps.fcg, ps.rel, ps.div_before, ps.div_after, START_TAIL)
+WARM === nothing && @printf("PB FREEAIR START: projection FCG %d, rel %.2e, max |div F|/V %.3e -> %.3e%s\n", ps.fcg, ps.rel, ps.div_before, ps.div_after, START_TAIL)
 flush(stdout)
-const pv = k["PB_VORTEX"] === :point ? PBCav.PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=0.0) : nothing
+const pv = k["PB_VORTEX"] === :point ? PBCav.PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=WARM === nothing ? 0.0 : WARM.gamma) : nothing
 const MAXS = k["PB_MAX_STEPS"]
 const T_MARCH = time()
 const BON = PBCav.omega_bound_on(cfg)
@@ -371,6 +409,20 @@ const R = try
 finally
     close(hio)
     bio === nothing || close(bio)
+end
+if R.outcome != :NOT_REACHED
+    checkpoint = Dict{String,Any}(
+        "topology"=>"conformal_C_H_v1", "commit"=>CFG["commit"],
+        "mesh_hashes"=>collect(MESH_HASHES),
+        "strip_hashes"=>[MESH_RESULT["strip_x_sha256"], MESH_RESULT["strip_y_sha256"]],
+        "foil_sha256"=>FOIL_SHA, "baffle"=>get(ENVK, "PB_BAFFLE", ""),
+        "reynolds"=>k["PB_RE"], "tu"=>k["PB_SST_TU_INF"],
+        "mut_ratio"=>k["PB_SST_MUT_RATIO"], "alpha_deg"=>k["PB_ALPHA"],
+        "gamma"=>pv === nothing ? 0.0 : pv.G, "dt"=>st.dt, "dt_prev"=>st.dt_prev)
+    for f in PBCav.STATE_FIELDS; checkpoint[string(f)] = Array(getfield(st, f)); end
+    tmp = joinpath(OUT, "state_checkpoint.jls.tmp")
+    open(io -> serialize(io, checkpoint), tmp, "w")
+    mv(tmp, joinpath(OUT, "state_checkpoint.jls"); force=true)
 end
 const SD = PBCav.surface_distribution(R.lw, MESH, fs)
 PBCav.write_surface_csv(joinpath(OUT, "surface.csv"), SD)
@@ -454,12 +506,18 @@ const START_TEXT = RAMP === nothing ? "projection (plain; Kutta refuses a base)"
     @sprintf("ramp (the far field accelerated from %.4g U to U over t = %.4g c/U; Kutta refuses a base and a baffle)", RAMP.r0, RAMP.T)
 result = merge(MESH_RESULT, Dict{String,Any}(
     "solver"=>"PBCav $(PBCav.PBCAV_VERSION)", "snapshot"=>SNAP, "threads"=>Threads.nthreads(), "topology"=>"conformal_C_H_v1",
+    "rans_acceleration"=>Bool(get(CFG,"rans_acceleration",false)),
+    "rans_acceleration_method"=>String(get(CFG,"rans_acceleration_method","standard")),
+    "requested_pseudo_dt"=>parse(Float64,String(CFG["knobs"]["PB_DT"])),
     "outcome"=>string(R.outcome), "exit_code"=>PBCav.freeair_exit_code(R.outcome), "steps"=>R.nstep, "max_steps"=>MAXS,
     "t_ctu"=>R.t, "march_wall_seconds"=>R.wall, "worker_wall_seconds"=>time() - T_START,
     "cl"=>L.CL, "cd"=>L.CD, "cm"=>L.CM, "cd_pressure"=>L.CDp, "cd_friction"=>L.CDf, "cl_pressure"=>L.CLp, "cl_friction"=>L.CLf,
     "base_cp_mean"=>CPB, "base_faces"=>length(BASEQ),
-    "gamma"=>pv === nothing ? 0.0 : pv.G, "gamma_kutta_start"=>0.0, "start"=>START_TEXT,
-    "start_mode"=>RAMP === nothing ? "projection" : "ramp", "ramp_T"=>RAMP === nothing ? 0.0 : RAMP.T, "ramp_r0"=>RAMP === nothing ? 1.0 : RAMP.r0,
+    "gamma"=>pv === nothing ? 0.0 : pv.G, "gamma_kutta_start"=>0.0, "start"=>WARM === nothing ? START_TEXT : "checked warm state",
+    "warm_start_source"=>WARM === nothing ? "" : WARM.source,
+    "start_mode"=>WARM !== nothing ? "warm" : RAMP === nothing ? "projection" : "ramp",
+    "ramp_T"=>WARM !== nothing || RAMP === nothing ? 0.0 : RAMP.T,
+    "ramp_r0"=>WARM !== nothing || RAMP === nothing ? 1.0 : RAMP.r0,
     "turb_mut_base"=>hasproperty(cfg, :turb_mut_base) ? string(cfg.turb_mut_base) : "extrapolated",
     "gamma_defect"=>isempty(H) ? NaN : H[end].Gamma_defect,
     "steady_residual"=>isempty(H) ? NaN : H[end].steady, "steady_k"=>isempty(H) ? NaN : H[end].steady_k,

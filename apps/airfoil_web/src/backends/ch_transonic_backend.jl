@@ -55,8 +55,14 @@ function _ch_transonic_config(case,path,flow,alpha,dir)
         cfg["naca4_code"]=parse(Int,String(_get(source,"id","")))
     end
     _get(flow,"cfd_ch_h_cross",nothing)===nothing || (cfg["cfd_ch_h_cross"]=String(_get(flow,"cfd_ch_h_cross","default")))
+    accel=RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),:compressible_ch)
+    legacy_irsj=_boolean(flow,"cfd_irsj",false)
+    cfg["rans_acceleration"]=accel.enabled || legacy_irsj
+    cfg["rans_acceleration_method"]=legacy_irsj ? "j-line implicit residual smoothing" : accel.method
+    # The older hidden switch remains supported.
+    (legacy_irsj || accel.irsj) && (cfg["irsj"]=true)
+    RANSAcceleration.configure_compressible!(cfg,flow;coupled=true)
     # Opt-in stall-study keys (21 Oct 2026): written only when requested, so a default job's input is unchanged.
-    _boolean(flow,"cfd_irsj",false) && (cfg["irsj"]=true)
     _boolean(flow,"cfd_stall_layer",false) && (cfg["cfd_stall_layer"]=true)
     _get(flow,"cfd_le_ds_scale",nothing)===nothing ||
         (cfg["cfd_le_ds_scale"]=_number(flow,"cfd_le_ds_scale",1.;lo=.1,hi=1.))
@@ -271,8 +277,12 @@ function _collect_ch_transonic_output(dir,alpha)
     _compact_ch_transport(point)
 end
 
-function _ch_transonic_point(case,path,flow,alpha,dir,progress,log)
+function _ch_transonic_point(case,path,flow,alpha,dir,progress,log,warmdir=nothing)
     cfg=_ch_transonic_config(case,path,flow,alpha,dir)
+    if warmdir !== nothing
+        warm=joinpath(warmdir,"state_checkpoint.jls")
+        isfile(warm) && (cfg["warm_start"]=warm)
+    end
     _deliver_log(log,"Starting coupled C+H compressible gas/energy and fully turbulent SST; steady, constant kinematic viscosity, $(cfg["gpu"] ? "GPU" : "CPU").")
     if cfg["requested_trip_upper"]>0 || cfg["requested_trip_lower"]>0
         _deliver_log(log,"C+H uses fully turbulent SST; requested trip locations remain reference/XFOIL settings and are recorded separately.")

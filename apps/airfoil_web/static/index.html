@@ -133,6 +133,23 @@
             </label>
             <label class="check-line"><input id="show-reference" type="checkbox" checked><span>Show matching validation reference</span></label>
             <p id="backend-note" class="hint">JXfoil provides coefficients and surface pressure. Flow fields require CFD.</p>
+            <div id="rans-acceleration-line" class="hidden">
+              <label class="check-line" title="Experimental steady RANS convergence acceleration. The selected solver method is recorded in the result."><input id="rans-acceleration" type="checkbox"><span>Try steady RANS acceleration (experimental)</span></label>
+              <p id="rans-acceleration-note" class="hint"></p>
+            </div>
+            <div id="rans-method-line" class="hidden">
+              <label class="field"><span>Steady solution method</span><select id="rans-method" title="Choose how steady compressible CFD approaches a solution. Research methods save diagnostic results even when they stop before convergence."><option value="standard">Standard explicit</option><option value="irsj">Implicit residual smoothing · experimental</option><option value="line_implicit">Line implicit · research</option><option value="jfnk_native">Newton–Krylov · native · research</option><option value="jfnk_krylov">Newton–Krylov · Krylov.jl · research</option></select></label>
+              <p id="rans-method-note" class="experimental-note" role="status"></p>
+              <details id="implicit-method-options" class="hidden"><summary>Implicit method settings</summary><div class="form-grid">
+                <label class="field"><span>Explicit startup iterations</span><input id="implicit-warmup" type="number" min="0" max="100000" step="1" value="1000" title="Initialize the flow using the standard method, then switch to the selected implicit method. Included in the total iteration limit."></label>
+                <label class="field"><span>Initial pseudo CFL</span><input id="implicit-cfl" type="number" min="0.01" max="10" step="0.1" value="1" title="Controls the attempted steady update size; rejected steps are reduced automatically. This is not physical time."></label>
+                <label class="field"><span>Krylov basis size</span><input id="implicit-basis" type="number" min="2" max="24" step="1" value="16" title="Larger bases use more memory and work per iteration. They do not guarantee better convergence."></label>
+                <label class="field"><span>Turbulence updates per flow step</span><input id="implicit-sst-substeps" type="number" min="1" max="100" step="1" value="10" title="Advance turbulence using its stable step while the flow is held fixed."></label>
+                <label class="field"><span>Acceptance history window</span><input id="implicit-nonmonotone" type="number" min="0" max="20" step="1" value="8" title="Allow temporary increases relative to recent equation errors. Zero requires each flow update to reduce the error. This does not relax final convergence checks."></label>
+                <label class="field"><span>Recovery iterations after a rejected Newton step</span><input id="implicit-recovery" type="number" min="0" max="100" step="1" value="0" title="Experimental Newton–Krylov option: try a bounded burst of ordinary explicit steps after rejection. Zero disables recovery; at most 200 explicit recovery steps are allowed per run. Final convergence checks remain unchanged."></label>
+                <label class="field"><span>Preconditioner</span><select id="implicit-preconditioner" title="Experimental ways to approximate the coupled equations; extra directions can cost more without improving convergence."><option value="line">Wall-normal lines</option><option value="adi">Both directions · experimental</option><option value="cut_line">Paired wake-cut lines · experimental</option></select></label>
+              </div><p class="hint">These methods currently support single C / A+ meshes. For C+H use Standard or residual smoothing. Implicit methods turn off the extra damping filter and record equation errors, retries and actual accepted updates.</p></details>
+            </div>
             <p class="hint">See the <a href="/solvers">complete solver guide</a> for each method, application, maturity, and research paths that are not selectable here.</p>
             <div id="lowspeed-controls" class="hidden">
               <p class="experimental-note">Low-speed CFD is the new incompressible pressure-based solver (version 2, in development, not yet validated): fully turbulent k-omega SST in free air, on the CPU (8 threads) by default or, opt-in, on the GPU. Mach is ignored.</p>
