@@ -42,8 +42,9 @@ LBM preparation and results, or Airfoil Lab for section analyses. Airfoil Lab
 also has its standalone `apps\airfoil_web\run.cmd` launcher. The workbenches
 keep runs, uploaded geometry and result imports in the sibling
 `02_PRIVATE_PROJECT_DEVELOPMENT/results` directory; studies stay in `studies`.
-Disposable previews, downloads, staging files and logs use
-`02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE`. Set
+Disposable previews, downloads and staging files use
+`02_PRIVATE_PROJECT_DEVELOPMENT/TEMP_DELETEABLE`. Installation logs are retained
+in `02_PRIVATE_PROJECT_DEVELOPMENT/runtime/install_logs`. Set
 `LUDWIG_PRIVATE_ROOT` to use another private location. The pressure based and
 LBM modes use the bundled, SHA checked solver sources under `solvers/`.
 
@@ -84,6 +85,22 @@ surface fields, recorded planes and images/files, including results from a saved
 study. **Display** changes guides, mesh visibility and contour palette without
 discarding loaded results. The colour choices follow JFEM-Boxer: spectrum,
 Viridis, Inferno, cool–warm and grayscale. PNGs retain their saved colours.
+
+For a symmetry boundary, **Domain → Model placement at symmetry plane** offers
+three choices: retain the current position, centre a full model at Y = 0, or place
+a prepared half model against the wall. The retained-position choice permits a
+manual Y offset and is restored without moving the model when opening a study.
+Only the positive-Y domain is solved. The pinned lbmtau backend requires automatic
+alignment; the main, thermal and D3Q19 backends support retained placement.
+
+D3Q19 uses CPU RAM and two-cell octree groups rather than the GPU mesher's
+eight-cell blocks. Its symmetry memory estimate uses the actual positive-side
+surface area. Mesh creation still checks available RAM, and Run checks the
+generated mesh's measured allocation. Under **Mesh → CPU octree mesh → Time step
+and saved-data limits**, studies retain lattice speed, startup ramp, checkpoint
+retention and the maximum samples per recorded plane. Sampling affects saved
+visualization data, not fluid resolution; checkpoint writing temporarily needs
+space for one additional file beyond the chosen retention count.
 
 ## Run the command line solver
 
