@@ -196,12 +196,13 @@
     }
     function updateDrag() {
       if(!drag)return;
-      // Solver Y is viewer Z in symmetry mode; placement must stay on Y = 0.
-      if(frame.boundary==='symmetry')proxy.position.z=drag.origin.z;
+      // Only automatic symmetry placement locks the lateral move handle.
+      const aligned=frame.boundary==='symmetry'&&frame.config?.domain?.symmetry_placement!=='none';
+      if(aligned)proxy.position.z=drag.origin.z;
       const p=copySettings(drag.params),delta=proxy.position.subtract(drag.origin);
       const translation=fromViewer([delta.x,delta.y,delta.z],drag.ground);
       p.translation=p.translation.map((v,i)=>v+translation[i]);
-      if(frame.boundary==='symmetry')p.translation[1]=0;
+      if(aligned)p.translation[1]=0;
       p.rotation_deg=rotationDegrees(B,proxy.rotationQuaternion||B.Quaternion.FromEulerVector(proxy.rotation),drag.ground,drag.params.flow_angles);
       adapter.setTransformSettings(p);
       proxy.computeWorldMatrix(true);
@@ -243,7 +244,7 @@
       }
       const widget=placed&&options.enabled!==false?options.widget:'none';
       manager.positionGizmoEnabled=widget==='move';manager.rotationGizmoEnabled=widget==='rotate';
-      manager.gizmos.positionGizmo.zGizmo.isEnabled=frame?.boundary!=='symmetry';
+      manager.gizmos.positionGizmo.zGizmo.isEnabled=frame?.boundary!=='symmetry'||frame.config?.domain?.symmetry_placement==='none';
       manager.attachToMesh(widget==='move'||widget==='rotate'?proxy:null);
       drawProjections();
       return textured;

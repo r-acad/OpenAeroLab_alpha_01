@@ -451,6 +451,8 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
     compute_domain_auto_extents(mesh_min, mesh_max)
     mesh_center = ((mesh_min[1]+mesh_max[1])/2, (mesh_min[2]+mesh_max[2])/2, (mesh_min[3]+mesh_max[3])/2)
     mesh_extent = (mesh_max[1]-mesh_min[1], mesh_max[2]-mesh_min[2], mesh_max[3]-mesh_min[3])
+    preserve_symmetry_y=SYMMETRIC_ANALYSIS && isdefined(@__MODULE__,:DOMAIN_PRESERVE_SYMMETRY_Y) && DOMAIN_PRESERVE_SYMMETRY_Y
+    preserve_symmetry_y && mesh_max[2]<=0 && error("The preserved model lies entirely outside the positive-Y symmetry domain")
     
     ref_length = REFERENCE_LENGTH_FOR_MESHING > 0 ? REFERENCE_LENGTH_FOR_MESHING :
                  (REFERENCE_DIMENSION == :x ? mesh_extent[1] : REFERENCE_DIMENSION == :y ? mesh_extent[2] :
@@ -513,7 +515,7 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
         domain_y = mesh_extent[2] + ref_length * DOMAIN_HEIGHT
         domain_z = mesh_extent[3] + 2 * ref_length * DOMAIN_LATERAL
     elseif HALF_Y_DOMAIN
-        domain_y = mesh_extent[2] + ref_length * DOMAIN_LATERAL
+        domain_y = (preserve_symmetry_y ? mesh_max[2] : mesh_extent[2]) + ref_length * DOMAIN_LATERAL
         domain_z = mesh_extent[3] + 2 * ref_length * DOMAIN_HEIGHT
     else
         domain_y = mesh_extent[2] + 2 * ref_length * DOMAIN_LATERAL
@@ -627,7 +629,7 @@ function compute_domain_from_mesh(mesh_min::Tuple{Float64,Float64,Float64}, mesh
         error("advanced.domain.object_center_y_m and periodic_y_body_shift cannot both be set")
     end
     mesh_y = DOMAIN_OBJECT_CENTER_Y_M === nothing ?
-             (HALF_Y_DOMAIN ? -mesh_min[2] : domain_y/2 - mesh_center[2]) :
+             (preserve_symmetry_y ? 0.0 : HALF_Y_DOMAIN ? -mesh_min[2] : domain_y/2 - mesh_center[2]) :
              object_center_offset_m(mesh_min[2], mesh_max[2], domain_y,
                                     DOMAIN_OBJECT_CENTER_Y_M, "object_center_y_m")
     if DOMAIN_OBJECT_CENTER_Y_M !== nothing

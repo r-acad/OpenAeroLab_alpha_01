@@ -68,6 +68,12 @@
       rotation_deg:['x','y','z'].map(a=>inputNumber('rotate-'+a,'rotation '+a,{min:-360,max:360})),
       flow_angles:[Number($('flow-alpha')?.value)||0,$('boundary').value==='symmetry'?0:Number($('flow-beta')?.value)||0],translation:['x','y','z'].map(a=>inputNumber('move-'+a,'offset '+a,{min:-10000,max:10000}))};
   }
+  function symmetryPlacement(domain=null) {
+    return domain ? (domain.symmetry_placement || (domain.symmetry_center_y ? 'center' : 'wall')) : ($('symmetry-placement')?.value || 'none');
+  }
+  function fixedSymmetryOffset(domain=null) {
+    return Number(domain ? domain.symmetry_offset_y_m || 0 : $('symmetry-placement-offset-y')?.value || 0);
+  }
   function caseSettings() {
     if(state.outdatedServer)throw new Error('This is an older workbench server. Relaunch Ludwig Workbench to use studies, automatic domain sizing and all seven AMR levels.');
     if(!state.modelId)throw new Error('Load a model first.');
@@ -89,7 +95,7 @@
     const proportions=['x','y','z'].map(axis=>sizing==='proportions'?inputNumber('domain-ratio-'+axis,'domain proportion '+axis,{min:.000001,max:1000000}):(Number($('domain-ratio-'+axis)?.value)>0?Number($('domain-ratio-'+axis).value):1));
     const {flow_angles,...transform}=transformSettings();
     if(solver==='lbmtau'&&transform.translation.some(v=>v!==0))throw new Error('The pinned lbmtau solver cannot offset the model. Select the main solver or reset offsets.');
-    if(boundary==='symmetry'&&transform.translation[1]!==0)throw new Error('Symmetry requires lateral offset Y = 0.');
+    if(boundary==='symmetry'&&symmetryPlacement()!=='none'&&transform.translation[1]!==0)throw new Error('Automatic symmetry alignment requires lateral offset Y = 0. Choose Leave model where it is for manual placement.');
     const thermal=thermalFlowSettings();
     const velocity=thermal?.velocity??inputNumber('velocity','flow speed',{min:0.01,max:1000}),soundSpeed=thermal?.speed_of_sound??inputNumber('sound-speed','sound speed',{min:1,max:100000});
     const maxMach=thermal?1.5:octree?0.3:lattice==='d3q39'?1.6:0.6;
@@ -101,13 +107,18 @@
         lateral:inputNumber('lateral','lateral clearance',{min:0.02,max:10000}),
         height:inputNumber('height','vertical clearance',{min:0.02,max:10000}),boundary,
         x_offset_m:inputNumber('domain-x-offset','domain X offset',{min:-10000,max:10000}),
-        symmetry_center_y:boundary==='symmetry'&&Boolean($('symmetry-auto-center-y')?.checked),sizing,proportions},
+        symmetry_center_y:symmetryPlacement()==='center',symmetry_placement:symmetryPlacement(),
+        ...(symmetryPlacement()==='none'?{symmetry_offset_y_m:fixedSymmetryOffset()}:{}),sizing,proportions},
       surface_dx:inputNumber('surface-dx','surface cell size',{min:0.00001,max:100}),
       surface_triangle_max_edge_m:$('surface-triangle-max-edge-mm')?inputNumber('surface-triangle-max-edge-mm','maximum surface triangle edge in millimetres',{min:.1,max:100000})/1000:.05,
       levels:inputNumber('levels','AMR levels',{min:1,max:octree?10:7,integer:true}),solver,lattice,
       octree:octree?{band_fine:inputNumber('octree-band-fine','finest band',{min:3,max:64,integer:true}),band:inputNumber('octree-band','coarser bands',{min:3,max:64,integer:true}),
         wake_length:inputNumber('octree-wake','wake length',{min:0,max:20}),wake_level_offset:inputNumber('octree-wake-offset','wake level offset',{min:0,max:4,integer:true}),
-        threads:inputNumber('octree-threads','CPU threads',{min:0,max:256,integer:true}),seal_cavities:Boolean($('octree-seal-cavities')?.checked)}:undefined,
+        threads:inputNumber('octree-threads','CPU threads',{min:0,max:256,integer:true}),seal_cavities:Boolean($('octree-seal-cavities')?.checked),
+        u_lattice:inputNumber('octree-u-lattice','lattice speed',{min:.00001,max:.12}),
+        checkpoint_keep:inputNumber('octree-checkpoint-keep','retained checkpoints',{min:1,max:10,integer:true}),
+        ramp_steps:$('octree-ramp-steps').value.trim()?inputNumber('octree-ramp-steps','startup ramp steps',{min:0,max:Number($('steps').value),integer:true}):null,
+        max_plane_samples:inputNumber('octree-plane-samples','samples per recorded plane',{min:10000,max:16000000,integer:true})}:undefined,
       mesh_sizing:$('mesh-sizing').value,
       target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),
       outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,
@@ -186,7 +197,7 @@
     state.surfaceRefinementPending=Boolean(state.jobId&&requestedEdge>0&&Math.abs(requestedEdge-builtEdge)>1e-10*Math.max(1,requestedEdge,builtEdge));
     if($('mesh-visibility')){$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible!==false));$('mesh-visibility').textContent=state.meshVisible===false?'Show mesh':'Hide mesh';}
     $('model-file').disabled=state.importing||state.uploading;
-    if($('symmetry-align-model'))$('symmetry-align-model').disabled=!state.source||state.importing||state.uploading||activeStatuses.has(state.job?.status);
+    if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').disabled=$('boundary').value!=='symmetry'||!state.source||state.importing||state.uploading||activeStatuses.has(state.job?.status);
     $('build-mesh').disabled=state.importing||state.uploading||!validSettings()||activeStatuses.has(state.job?.status);
     $('run-solver').disabled=!canRun()||state.uploading;
     $('cancel-job').disabled=!state.jobId||!activeStatuses.has(state.job?.status);
@@ -269,36 +280,38 @@
     const body=boundsOf(shape),ext=body.max.map((v,i)=>v-body.min[i]);
     const clearance=id=>Math.max(.02,Number($(id).value)||.02);
     let up=clearance('upstream'),down=clearance('downstream'),lat=clearance('lateral'),height=clearance('height');
-    const centeredSymmetry=boundary==='symmetry'&&Boolean($('symmetry-auto-center-y')?.checked);
-    const dims=[ext[0]+up+down,(centeredSymmetry?ext[1]/2:ext[1])+(boundary==='free_air'?2*lat:ground?height:lat),ext[2]+2*(ground?lat:height)];
+    const placement=symmetryPlacement(),centeredSymmetry=boundary==='symmetry'&&placement==='center',fixedSymmetry=boundary==='symmetry'&&placement==='none';
+    const occupiedY=fixedSymmetry?Math.max(0,body.max[1]+fixedSymmetryOffset()+p.translation[1]):centeredSymmetry?ext[1]/2:ext[1];
+    const dims=[ext[0]+up+down,occupiedY+(boundary==='free_air'?2*lat:ground?height:lat),ext[2]+2*(ground?lat:height)];
     const sizing=$('domain-sizing')?.value||'minimum';
     const domainX=Number($('domain-x-offset')?.value)||0,relativeX=p.translation[0]-domainX,required=dims.slice();
     if(sizing!=='fixed')required[0]+=2*Math.abs(relativeX);
     const coarse=Math.max(.00001,Number($('surface-dx').value)||.01)*2**(Math.max(1,Number($('levels').value)||1)-1);
+    const octree=$('solver').value==='q19_octree',minimumCells=octree?2:32;
     let target=required.slice();
     if(sizing==='proportions'){
       const ratio=['x','y','z'].map(axis=>Math.max(.000001,Number($('domain-ratio-'+axis)?.value)||1));
       if(boundary==='symmetry')ratio[1]=.5*Math.min(ratio[0],ratio[2]);
-      const factor=Math.max(...required.map((size,axis)=>Math.max(size,32*coarse)/ratio[axis]));target=ratio.map(value=>value*factor);
+      const factor=Math.max(...required.map((size,axis)=>Math.max(size,minimumCells*coarse)/ratio[axis]));target=ratio.map(value=>value*factor);
     }else if(sizing==='minimum'&&boundary==='symmetry'){
-      const floor=32*coarse,minimumY=Math.max(required[1],floor);
+      const floor=minimumCells*coarse,minimumY=Math.max(required[1],floor);
       target=[Math.max(required[0],floor,2*minimumY),0,Math.max(required[2],floor,2*minimumY)];target[1]=.5*Math.min(target[0],target[2]);
-    }else if(sizing==='minimum')target=required.map(size=>size<32*coarse*(1+1e-10)?40*coarse:size);
+    }else if(sizing==='minimum')target=required.map(size=>size<minimumCells*coarse*(octree?1:1+1e-10)?(octree?2:40)*coarse:size);
     if(sizing==='proportions'||sizing==='minimum'&&boundary==='symmetry'){
-      const block=8*coarse;
+      const block=(octree?2:8)*coarse;
       const blockCeil=value=>{const nearest=Math.round(value),tolerance=2**(Math.floor(Math.log2(Math.max(1,Math.abs(nearest))))-22);return Math.ceil(Math.abs(value-nearest)<=tolerance?nearest:value);};
-      if(boundary==='symmetry'){const nx=Math.max(8,2*blockCeil(target[0]/(2*block))),nz=Math.max(8,2*blockCeil(target[2]/(2*block)));target=[nx*block,.5*Math.min(nx,nz)*block,nz*block];}
-      else target=target.map(size=>Math.max(4,blockCeil(size/block))*block);
+      if(boundary==='symmetry'){const nx=Math.max(octree?2:8,2*blockCeil(target[0]/(2*block))),nz=Math.max(octree?2:8,2*blockCeil(target[2]/(2*block)));target=[nx*block,.5*Math.min(nx,nz)*block,nz*block];}
+      else target=target.map(size=>Math.max(octree?1:4,blockCeil(size/block))*block);
     }
     const extra=target.map((size,axis)=>Math.max(0,size-dims[axis]));
     up+=extra[0]/2;down+=extra[0]/2;if(ground)height+=extra[1];else lat+=extra[1]/(boundary==='free_air'?2:1);
     if(ground)lat+=extra[2]/2;else height+=extra[2]/2;
     for(let axis=0;axis<3;axis++)dims[axis]+=extra[axis];
-    const offset=[up-body.min[0]-domainX,boundary==='free_air'?dims[1]/2-body.center[1]:centeredSymmetry?-body.center[1]:-body.min[1],dims[2]/2-body.center[2]];
+    const offset=[up-body.min[0]-domainX,boundary==='free_air'?dims[1]/2-body.center[1]:fixedSymmetry?fixedSymmetryOffset():centeredSymmetry?-body.center[1]:-body.min[1],dims[2]/2-body.center[2]];
     const move=ground?[p.translation[0],p.translation[2],-p.translation[1]]:p.translation;
     for(let i=0;i<3;i++)offset[i]+=move[i];
     for(let i=0;i<shape.length;i++)shape[i]+=offset[i%3];
-    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_center_y:centeredSymmetry,x_offset_m:domainX,sizing:$('domain-sizing')?.value||'minimum'}}};
+    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_center_y:centeredSymmetry,symmetry_placement:placement,symmetry_offset_y_m:fixedSymmetryOffset(),x_offset_m:domainX,sizing:$('domain-sizing')?.value||'minimum'}}};
   }
   function previewTriangles() {return previewFrame()?.triangles||null;}
   function binaryStl(triangles) {
@@ -384,7 +397,7 @@
     }
     for(const key of ['upstream','downstream','lateral','height'])set(key,domain[key]);
     set('domain-x-offset',domain.x_offset_m??resolved.x_offset_m??0);
-    set('domain-sizing',domain.sizing||'minimum');for(let axis=0;axis<3;axis++)set('domain-ratio-'+['x','y','z'][axis],domain.proportions?.[axis]??1);set('boundary',domain.boundary);if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').checked=Boolean(domain.symmetry_center_y);set('surface-dx',caseInfo.surface_dx);set('levels',caseInfo.levels);
+    set('domain-sizing',domain.sizing||'minimum');for(let axis=0;axis<3;axis++)set('domain-ratio-'+['x','y','z'][axis],domain.proportions?.[axis]??1);set('boundary',domain.boundary);set('symmetry-placement',symmetryPlacement(domain));set('symmetry-placement-offset-y',fixedSymmetryOffset(domain));if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').checked=symmetryPlacement(domain)==='center';set('surface-dx',caseInfo.surface_dx);set('levels',caseInfo.levels);
     set('geometry-handling',caseInfo.geometry_handling||'closed_solid');
     set('surface-triangle-max-edge-mm',Number(caseInfo.surface_triangle_max_edge_m)>0?Number(caseInfo.surface_triangle_max_edge_m)*1000:50);
     const sized=caseInfo.target_vram_percent!=null||caseInfo.target_vram_gb!=null;
@@ -392,6 +405,7 @@
     const free=Number(state.capabilities?.gpu?.free_gb),legacy=free>0?Math.min(100,Math.max(1,100*Number(caseInfo.target_vram_gb)/free)):80;
     set('target-vram',caseInfo.target_vram_percent??(sized?Math.round(legacy):80));$('target-vram').disabled=false;
     const octree=caseInfo.octree||{};set('octree-band-fine',octree.band_fine??8);set('octree-band',octree.band??6);set('octree-wake',octree.wake_length??1);set('octree-wake-offset',octree.wake_level_offset??1);set('octree-threads',octree.threads??0);if($('octree-seal-cavities'))$('octree-seal-cavities').checked=octree.seal_cavities===true;
+    set('octree-u-lattice',octree.u_lattice??.08);set('octree-checkpoint-keep',octree.checkpoint_keep??2);set('octree-plane-samples',octree.max_plane_samples??4000000);set('octree-ramp-steps',octree.ramp_steps??'');
     set('lattice',caseInfo.lattice||'d3q27');set('solver',caseInfo.solver);syncSolverLattice();
     set('flow-alpha',flow.alpha||0);set('flow-beta',flow.beta||0);referenceTools?.restore(caseInfo.reference||{});syncFlowAngles();
     set('velocity',flow.velocity);set('density',flow.density);
@@ -803,11 +817,12 @@
   }
   function symmetrySourceOffset(config){
     if(config?.domain?.boundary!=='symmetry'||!state.source||!state.sourceBounds)return 0;
-    const key=JSON.stringify([config.transform?.scale,config.transform?.rotation_deg,Boolean(config.domain.symmetry_center_y)]);
+    if(symmetryPlacement(config.domain)==='none')return fixedSymmetryOffset(config.domain)+Number(config.transform?.translation?.[1]||0);
+    const key=JSON.stringify([config.transform?.scale,config.transform?.rotation_deg,config.flow?.alpha,config.flow?.beta,symmetryPlacement(config.domain)]);
     if(state.symmetrySourceCache?.source===state.source&&state.symmetrySourceCache.key===key)return state.symmetrySourceCache.offset;
     const t=rotationMath(config.transform||transformSettings(),config.flow);t.d=[0,0,0];let lo=Infinity,hi=-Infinity;
     for(let i=0;i<state.source.length;i+=3){const y=transformedPoint(state.source[i],state.source[i+1],state.source[i+2],t,state.sourceBounds.center)[1];lo=Math.min(lo,y);hi=Math.max(hi,y);}
-    const offset=config.domain.symmetry_center_y?-(lo+hi)/2:-lo;
+    const offset=symmetryPlacement(config.domain)==='center'?-(lo+hi)/2:-lo;
     state.symmetrySourceCache={source:state.source,key,offset};return offset;
   }
   function currentFrame() {
@@ -1351,22 +1366,26 @@
     });
   }
   function boundaryNote() {
-    const b=$('boundary').value,center=$('symmetry-auto-center-y');
-    $('move-y').disabled=b==='symmetry';$('move-y').title=b==='symmetry'?'Y placement is controlled by the symmetry plane':'';
+    const b=$('boundary').value,center=$('symmetry-auto-center-y'),placement=symmetryPlacement(),automatic=b==='symmetry'&&placement!=='none';
+    $('move-y').disabled=automatic;$('move-y').title=automatic?'Y placement follows the selected automatic symmetry alignment. Choose Leave model where it is to move it manually.':'Manual lateral offset from the retained model placement';
     if(center){center.disabled=b!=='symmetry';const row=center.closest?.('label');if(row)row.hidden=b!=='symmetry';}
     $('boundary-note').textContent=b==='free_air'?($('solver').value==='pond_thermal'?'Free air: X flow, Y lateral, Z up. All outer faces use characteristic freestream/outflow boundaries. Increase clearances to assess far-field sensitivity.':'Free air: X flow, Y lateral, Z up. The distant top and bottom faces use slip boundaries; increase vertical clearance if they affect the flow.'):
       b==='ground'?'Ground: Aero Lab maps source Z-up to solver Y-up. The lowest model point touches ground at zero vertical offset; positive Z offset lifts it. Cut positions use solver coordinates.':
-      center?.checked?'Symmetry: the model Y centre is placed on Y = 0. The solver uses the positive half and mirrors the symmetry boundary. Disable automatic centring for an already prepared half model.':'Symmetry: the minimum Y edge of the prepared half model is placed at Y = 0. Enable automatic centring to use half of a full model.';
+      placement==='none'?'Symmetry: the current model position is retained, with no automatic Y alignment. Only Y ≥ 0 is solved. Use the Y offset to place the model manually.':placement==='center'?'Symmetry: the model Y centre is placed on Y = 0. The solver uses the positive half and mirrors the symmetry boundary.':'Symmetry: the minimum Y edge of the prepared half model is placed at Y = 0.';
   }
   function syncFlowAngles(){const symmetry=$('boundary').value==='symmetry';for(const id of ['flow-beta','reference-y'])if($(id)){$(id).disabled=symmetry;if(symmetry)$(id).value='0';}}
-  function alignModelSymmetry() {
-    if($('boundary').value!=='symmetry'||!state.source)return;
-    $('symmetry-auto-center-y').checked=true;$('move-y').value='0';
-    const frame=previewFrame(),center=frame.body.center[1]-frame.bodyOrigin[1];
+  function retainCurrentSymmetryPosition() {
+    if(state.frame?.bodyOrigin&&$('symmetry-placement-offset-y')){
+      // A ground frame maps source (X,Y,Z) to solver (X,Z,-Y).
+      const lateral=state.frame.ground?-state.frame.bodyOrigin[2]:state.frame.bodyOrigin[1];
+      $('symmetry-placement-offset-y').value=String(lateral-Number($('move-y').value||0));
+    }
+  }
+  function applySymmetryPlacement() {
+    if($('boundary').value!=='symmetry')return;
+    if(symmetryPlacement()==='none')retainCurrentSymmetryPosition();else $('move-y').value='0';
+    if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').checked=symmetryPlacement()==='center';
     window.LudwigAeroLayout?.syncModelControls?.();boundaryNote();invalidateMesh();
-    const text=`Full model aligned: Y placement offset ${Number((-center).toPrecision(7))} m, computed from the centre of its transformed Y bounds. The symmetry plane is Y = 0. Create the mesh to apply this placement.`;
-    if($('symmetry-alignment-status'))$('symmetry-alignment-status').textContent=text;
-    progress(text,'Symmetry aligned');
   }
   function syncSolverLattice(origin='solver') {
     const sel=$('solver'),latticeSelect=$('lattice');
@@ -1465,8 +1484,8 @@
       $(id).addEventListener('input',invalidateMesh);
     $('surface-triangle-max-edge-mm')?.addEventListener('input',invalidateMesh);
     $('domain-x-offset')?.addEventListener('input',()=>{if(state.frame?.body&&state.domainCameraAnchor===undefined)state.domainCameraAnchor=state.frame.body.center[0];invalidateMesh();});
-    $('symmetry-align-model')?.addEventListener('click',alignModelSymmetry);
-    for(const id of ['octree-band-fine','octree-band','octree-wake','octree-wake-offset','octree-threads'])$(id)?.addEventListener('input',invalidateMesh);
+    $('symmetry-placement')?.addEventListener('change',applySymmetryPlacement);
+    for(const id of ['octree-band-fine','octree-band','octree-wake','octree-wake-offset','octree-threads','octree-u-lattice','octree-checkpoint-keep','octree-ramp-steps','octree-plane-samples'])$(id)?.addEventListener('input',invalidateMesh);
     $('octree-seal-cavities')?.addEventListener('change',invalidateMesh);
     $('lattice').addEventListener('change',()=>{syncSolverLattice('lattice');invalidateMesh();});
     $('solver').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
@@ -1479,8 +1498,8 @@
       else{updateBudgetGuard();invalidateMesh();}});
     $('output-controls')?.addEventListener('input',updateActions);
     $('output-controls')?.addEventListener('change',updateActions);
-    $('boundary').addEventListener('change',()=>{if($('boundary').value==='symmetry')$('move-y').value='0';boundaryNote();renderCutRows();invalidateMesh();});
-    $('symmetry-auto-center-y')?.addEventListener('change',()=>{if($('boundary').value==='symmetry'&&$('symmetry-auto-center-y').checked)$('move-y').value='0';boundaryNote();invalidateMesh();});
+    $('boundary').addEventListener('change',()=>{if($('boundary').value==='symmetry'){if(symmetryPlacement()==='none')retainCurrentSymmetryPosition();else $('move-y').value='0';}boundaryNote();renderCutRows();invalidateMesh();});
+    $('symmetry-auto-center-y')?.addEventListener('change',()=>{if($('symmetry-placement'))$('symmetry-placement').value=$('symmetry-auto-center-y').checked?'center':'wall';applySymmetryPlacement();});
     $('model-projections')?.addEventListener('change',queueRender);
     syncFlowAngles();$('boundary').addEventListener('change',syncFlowAngles);for(const id of ['flow-alpha','flow-beta'])$(id)?.addEventListener('change',invalidateMesh);
     $('mesh-visibility')?.addEventListener('click',()=>{state.meshVisible=state.meshVisible===false;inspector?.setMeshVisible?.(state.meshVisible);$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible));$('mesh-visibility').textContent=state.meshVisible?'Hide mesh':'Show mesh';queueRender();});

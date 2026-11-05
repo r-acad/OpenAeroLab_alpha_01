@@ -1969,6 +1969,10 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     global DOMAIN_OBJECT_CENTER_X_M = parse_optional_object_center_m(CFG, "x")
     global DOMAIN_OBJECT_CENTER_Y_M = parse_optional_object_center_m(CFG, "y")
     global DOMAIN_OBJECT_CENTER_Z_M = parse_optional_object_center_m(CFG, "z")
+    local preserve_symmetry_y=safe_get(CFG,"advanced","domain","preserve_symmetry_y";default=false)
+    preserve_symmetry_y isa Bool || error("advanced.domain.preserve_symmetry_y must be true or false")
+    preserve_symmetry_y && !SYMMETRIC_ANALYSIS && error("preserve_symmetry_y requires a symmetry boundary")
+    global DOMAIN_PRESERVE_SYMMETRY_Y=preserve_symmetry_y
     DOMAIN_OBJECT_CENTER_X_M !== nothing && DOMAIN_OBJECT_CENTER_X_FRACTION !== nothing &&
         error("advanced.domain.object_center_x_m and object_center_x_fraction cannot both be set")
     DOMAIN_OBJECT_CENTER_Y_M !== nothing && SYMMETRIC_ANALYSIS &&

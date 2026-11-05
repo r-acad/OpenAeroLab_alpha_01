@@ -3,6 +3,34 @@ include(joinpath(PUBLIC_ROOT,"src","geometry","triangle_subdivision.jl"))
 
 const MAX_WEB_SURFACE_TRIANGLES = 5_000_000
 
+function _triangle_surface_area(a,b,c)
+    u=ntuple(i->b[i]-a[i],3);v=ntuple(i->c[i]-a[i],3)
+    .5sqrt((u[2]*v[3]-u[3]*v[2])^2+(u[3]*v[1]-u[1]*v[3])^2+(u[1]*v[2]-u[2]*v[1])^2)
+end
+
+"Exact area of source facets on the solved side of a placed Y=0 plane; no symmetry cap is invented."
+function _positive_y_surface_area(triangles,shift_y)
+    area=0.
+    for tri in triangles
+        inside=map(p->p[2]+shift_y>=0,tri)
+        all(inside) && (area+=_triangle_surface_area(tri...);continue)
+        any(inside) || continue
+        polygon=NTuple{3,Float64}[]
+        for i in 1:3
+            a=tri[i];b=tri[mod1(i+1,3)]
+            inside[i] && push!(polygon,a)
+            if inside[i]!=inside[mod1(i+1,3)]
+                f=(-shift_y-a[2])/(b[2]-a[2])
+                push!(polygon,ntuple(k->a[k]+f*(b[k]-a[k]),3))
+            end
+        end
+        for i in 2:length(polygon)-1
+            area+=_triangle_surface_area(polygon[1],polygon[i],polygon[i+1])
+        end
+    end
+    area
+end
+
 function _surface_subdivision_preview(triangles,max_edge)
     count=SurfaceSubdivision.subdivision_count(triangles,max_edge;limit=MAX_WEB_SURFACE_TRIANGLES)
     count <= MAX_WEB_SURFACE_TRIANGLES || throw(ArgumentError(
@@ -14,18 +42,31 @@ function _surface_subdivision_preview(triangles,max_edge)
         "note"=>"Actual solver sampling triangles are subdivided after model scaling; symmetry clipping can reduce this count. Refinement preserves the original surface shape and does not add fluid resolution.")
 end
 
+function _symmetry_placement(domain)
+    value=get(domain,"symmetry_placement",get(domain,"symmetry_center_y",false) ? "center" : "wall")
+    value isa AbstractString && value in ("none","wall","center") ||
+        throw(ArgumentError("domain.symmetry_placement must be none, wall, or center"))
+    String(value)
+end
+
+_fixed_symmetry(domain)=get(domain,"boundary","")=="symmetry" && _symmetry_placement(domain)=="none"
+
 function _domain_lengths(domain::AbstractDict, extent)
     boundary = domain["boundary"]
     e = boundary == "ground" ? [extent[1],extent[3],extent[2]] : extent
     [e[1] + domain["upstream"] + domain["downstream"],
-     (boundary == "symmetry" && get(domain,"symmetry_center_y",false) ? e[2]/2 : e[2]) + (boundary == "free_air" ? 2*domain["lateral"] :
+     (_fixed_symmetry(domain) ? domain["symmetry_body_y_max"] : boundary == "symmetry" && _symmetry_placement(domain)=="center" ? e[2]/2 : e[2]) + (boundary == "free_air" ? 2*domain["lateral"] :
              boundary == "ground" ? domain["height"] : domain["lateral"]),
      e[3] + 2*(boundary == "ground" ? domain["lateral"] : domain["height"])]
 end
 
 function _resolved_body_extent(domain, extent)
     e = domain["boundary"] == "ground" ? [extent[1],extent[3],extent[2]] : collect(extent)
-    domain["boundary"] == "symmetry" && get(domain,"symmetry_center_y",false) && (e[2] /= 2)
+    if _fixed_symmetry(domain)
+        e[2]=domain["symmetry_body_y_max"]
+    elseif domain["boundary"] == "symmetry" && _symmetry_placement(domain)=="center"
+        e[2] /= 2
+    end
     e
 end
 
@@ -63,19 +104,19 @@ function _grow_domain_to_lengths!(domain,before,target)
     domain
 end
 
-function _quantize_proportioned_domain(target,coarse_dx,boundary)
-    block=8coarse_dx
+function _quantize_proportioned_domain(target,coarse_dx,boundary;octree=false)
+    block=(octree ? 2 : 8)*coarse_dx
     if boundary=="symmetry"
-        nx=max(8,2*_stable_block_ceil(target[1]/(2block)))
-        nz=max(8,2*_stable_block_ceil(target[3]/(2block)))
+        nx=max(octree ? 2 : 8,2*_stable_block_ceil(target[1]/(2block)))
+        nz=max(octree ? 2 : 8,2*_stable_block_ceil(target[3]/(2block)))
         return block.*[nx,min(nx,nz)÷2,nz]
     end
-    block.*[max(4,_stable_block_ceil(length/block)) for length in target]
+    block.*[max(octree ? 1 : 4,_stable_block_ceil(length/block)) for length in target]
 end
 
 "Treat physical clearances as minima while preserving a ground or symmetry plane at Y=0."
 function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels::Integer;
-                                 translation_x::Real=0.)
+                                 translation_x::Real=0.,octree::Bool=false)
     requested = deepcopy(domain)
     before = _domain_lengths(domain,extent)
     x_offset=_number(get(domain,"x_offset_m",0.),"domain.x_offset_m";lo=-10_000,hi=10_000)
@@ -89,9 +130,9 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
     # The native healthy-pyramid rule needs four 8-cell coarse blocks per axis.
     # When an axis needs expansion, leave one additional coarse block so YAML
     # reference-unit conversion cannot round the dimension just below that rule.
-    minimum_axis = 32*coarse_dx
-    expanded_axis = 40*coarse_dx
-    fit_floor = minimum_axis*(1+1e-10)
+    minimum_axis = (octree ? 2 : 32)*coarse_dx
+    expanded_axis = (octree ? 2 : 40)*coarse_dx
+    fit_floor = minimum_axis*(octree ? 1 : 1+1e-10)
     boundary=domain["boundary"]
     sizing=_domain_sizing(get(domain,"sizing","minimum"))
     if sizing=="fixed" && !(domain["upstream"]+relative_x>0 && domain["downstream"]-relative_x>0)
@@ -108,7 +149,7 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
         target_z=max(required[3],safe_floor,2min_y)
         continuous_target=[target_x,.5*min(target_x,target_z),target_z]
         effective_ratios=continuous_target./maximum(continuous_target)
-        proportion_target=_quantize_proportioned_domain(continuous_target,coarse_dx,boundary)
+        proportion_target=_quantize_proportioned_domain(continuous_target,coarse_dx,boundary;octree)
         _grow_domain_to_lengths!(domain,before,proportion_target)
     elseif sizing == "proportions"
         effective_ratios=_effective_domain_proportions(domain)
@@ -119,7 +160,7 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
         scale=maximum(max.(required,safe_floor)./effective_ratios)
         continuous_target=effective_ratios.*scale
         all(isfinite,continuous_target) || throw(ArgumentError("Domain proportions are too extreme; choose ratios closer together"))
-        proportion_target=_quantize_proportioned_domain(continuous_target,coarse_dx,boundary)
+        proportion_target=_quantize_proportioned_domain(continuous_target,coarse_dx,boundary;octree)
         _grow_domain_to_lengths!(domain,before,proportion_target)
     end
     after = _domain_lengths(domain,extent)
@@ -146,7 +187,7 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
         adjustment["proportion_target_size_m"]=proportion_target
         adjustment["proportion_continuous_size_m"]=continuous_target
         adjustment["resolved_proportions"]=after./maximum(after)
-        adjustment["coarse_block_size_m"]=8coarse_dx
+        adjustment["coarse_block_size_m"]=(octree ? 2 : 8)*coarse_dx
         adjustment["symmetry_y_rule"]=boundary=="symmetry" ? "half_shorter_xz" : nothing
     end
     adjustment
@@ -207,7 +248,18 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     (haskey(d,"proportions") || sizing=="proportions") && (domain["proportions"]=ratios)
     center_y = get(d,"symmetry_center_y",false)
     center_y isa Bool || throw(ArgumentError("domain.symmetry_center_y must be true or false"))
-    haskey(d,"symmetry_center_y") && (domain["symmetry_center_y"] = center_y)
+    placement=_symmetry_placement(d);center_y=placement=="center"
+    (haskey(d,"symmetry_center_y") || haskey(d,"symmetry_placement")) && (domain["symmetry_center_y"] = center_y)
+    haskey(d,"symmetry_placement") && (domain["symmetry_placement"]=placement)
+    if placement=="none"
+        domain["symmetry_offset_y_m"]=_number(get(d,"symmetry_offset_y_m",0.),"domain.symmetry_offset_y_m";lo=-10_000,hi=10_000)
+        if boundary=="symmetry"
+            # The frozen offset is relative to the transformed construction origin.
+            # It is not recomputed when a saved study is opened or a new mesh is built.
+            domain["symmetry_body_y_max"]=Float64(bounds["max"][2])+domain["symmetry_offset_y_m"]+translation[2]
+            domain["symmetry_body_y_max"]>0 || throw(ArgumentError("The model is entirely outside the positive-Y symmetry domain. Adjust its Y offset or select automatic symmetry alignment."))
+        end
+    end
     dx = _number(get(raw, "surface_dx", nothing), "surface_dx"; lo=1e-5, hi=100)
     # The CPU build creates the coarse lattice explicitly. Reject combinations
     # that cannot be built interactively before computing integer grid counts.
@@ -227,10 +279,11 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     if solver == "lbmtau" && any(x -> !iszero(x), translation)
         throw(ArgumentError("The pinned lbmtau solver cannot place a model at an offset; select the main solver"))
     end
-    if boundary == "symmetry" && !iszero(translation[2])
+    solver=="lbmtau" && _fixed_symmetry(domain) && throw(ArgumentError("The pinned lbmtau backend cannot retain manual symmetry placement. Select the main, thermal or D3Q19 backend, or choose automatic alignment."))
+    if boundary == "symmetry" && placement!="none" && !iszero(translation[2])
         throw(ArgumentError("Symmetry requires the model anchored at the Y=0 plane; set lateral translation to zero"))
     end
-    abs(translation[2]) <= domain["lateral"] ||
+    _fixed_symmetry(domain) || abs(translation[2]) <= domain["lateral"] ||
         throw(ArgumentError("Lateral translation moves the model outside the domain"))
     if boundary == "ground"
         0 <= translation[3] <= domain["height"] ||
@@ -240,7 +293,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
             throw(ArgumentError("Vertical translation moves the model outside the domain"))
     end
     levels = _integer(get(raw, "levels", 3), "levels"; lo=1, hi=solver == "q19_octree" ? Q19_MAX_LEVELS : 7)
-    domain_adjustment = _expand_minimum_domain!(domain,extent,dx,levels;translation_x=translation[1])
+    domain_adjustment = _expand_minimum_domain!(domain,extent,dx,levels;translation_x=translation[1],octree=solver=="q19_octree")
     lengths = domain_adjustment["resolved_size_m"]
     target_raw = get(raw, "target_vram_gb", nothing)
     target_vram_gb = target_raw === nothing ? nothing : _number(target_raw, "target_vram_gb"; lo=0.5, hi=24)
@@ -253,7 +306,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     fitting && !target_requested && throw(ArgumentError("VRAM sizing requires a target percentage or GB value"))
     fitting && solver == "q19_octree" && throw(ArgumentError("VRAM sizing is not available for the CPU octree solver; choose a manual surface cell size"))
     coarse_dx = dx * 2.0^(levels - 1)
-    if enforce_mesh_limits && !fitting && levels > 1 &&
+    if enforce_mesh_limits && !fitting && solver!="q19_octree" && levels > 1 &&
             any(_roundoff_snap_grid_integer(length/(32coarse_dx))<1 for length in lengths)
         throw(ArgumentError("The fixed domain is too small for $levels AMR levels at the requested surface cell size. Use minimum domain sizing or enlarge the closed section; requested levels are not reduced automatically."))
     end
@@ -289,14 +342,20 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         axis in ("x", "y", "z") || throw(ArgumentError("cuts[$i].axis must be x, y, or z"))
         position = _number(get(cut, "position", nothing), "cuts[$i].position"; lo=0, hi=1e5)
         axis_index = axis == "x" ? 1 : axis == "y" ? 2 : 3
-        limit = 8*ceil(lengths[axis_index] / (8*coarse_dx))*coarse_dx
+        limit = (solver=="q19_octree" ? _q19_coarse_axis(lengths[axis_index],coarse_dx) : 8*ceil(lengths[axis_index] / (8*coarse_dx)))*coarse_dx
         position <= limit || throw(ArgumentError("cuts[$i] lies outside the resolved domain on axis $axis"))
         push!(cuts, Dict("axis" => axis, "position" => position))
     end
     geometry_handling = _geometry_handling(get(raw,"geometry_handling","closed_solid"))
     geometry_audit = _model_geometry_audit(model_id)
+    symmetry_shift=placement=="none" ? get(domain,"symmetry_offset_y_m",0.)+translation[2] : center_y ? -(bounds["min"][2]+bounds["max"][2])/2 : -bounds["min"][2]
     if geometry_audit isa AbstractDict && boundary == "symmetry" && !get(geometry_audit,"outward_orientation_verified",false)
-        geometry_audit["symmetry_boundary_verified"] = _open_edges_match_symmetry(transformed,bounds)
+        geometry_audit["symmetry_boundary_verified"] = _open_edges_match_symmetry(transformed,bounds;shift_y=symmetry_shift)
+    end
+    solved_surface_area=surface_area
+    if solver=="q19_octree" && boundary=="symmetry"
+        solved_surface_area=_positive_y_surface_area(transformed,symmetry_shift)
+        solved_surface_area>0 || throw(ArgumentError("No model surface intersects the positive-Y domain at this placement"))
     end
     Dict{String,Any}("reference"=>reference,"model_id" => model_id,
         "transform" => Dict("scale" => collect(scale), "rotation_deg" => collect(rotation), "translation" => collect(translation)),
@@ -310,10 +369,10 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         "display_every" => display_every, "effective_display_every" => min(display_every,steps),
         "outputs" => outputs,
         "cuts" => cuts, "triangles" => length(transformed),
-        "surface_area_m2" => surface_area, "geometry_audit" => geometry_audit,
+        "surface_area_m2" => surface_area,"solved_surface_area_m2"=>solved_surface_area, "geometry_audit" => geometry_audit,
         "geometry_handling" => geometry_handling,
-        "symmetry_adjustment" => Dict("center_y"=>boundary == "symmetry" && center_y,
-            "message"=>boundary == "symmetry" && center_y ?
+        "symmetry_adjustment" => Dict("center_y"=>boundary == "symmetry" && center_y,"placement"=>placement,
+            "message"=>_fixed_symmetry(domain) ? "The saved model Y position is retained without automatic alignment. Only the positive-Y domain is solved." : boundary == "symmetry" && center_y ?
                 "The full model is centered on Y=0. The native mesher clips its positive-Y half for the symmetry domain; the original geometry remains unchanged. Symmetry assumes the geometry and flow are mirrored across this plane." : ""),
         "octree" => solver == "q19_octree" ? _q19_settings(raw) : nothing,
         "bounds" => bounds), transformed
@@ -327,7 +386,7 @@ function _estimate(case; gpu=_gpu_memory())
     d = case["domain"]; dx = case["surface_dx"]; L = case["levels"]
     lx,ly,lz = _domain_lengths(d,ext)
     h0 = dx * 2.0^(L-1)
-    dims = [8*_stable_grid_block_count(v,h0,8;minimum_blocks=4) for v in (lx,ly,lz)]
+    dims = [_q19_case(case) ? _q19_coarse_axis(v,h0) : 8*_stable_grid_block_count(v,h0,8;minimum_blocks=4) for v in (lx,ly,lz)]
     coarse = prod(dims)
     # A conservative shape-envelope preview; the solver's build-only summary replaces this.
     fine = L == 1 ? 0 : ceil(Int, prod(max.(e .+ 16*dx, 16*dx)) / dx^3)
@@ -344,7 +403,7 @@ function _estimate(case; gpu=_gpu_memory())
     q19=_q19_case(case)
     if q19
         # the octree keeps surface bands instead of block shells: a thin-band envelope in RAM, no GPU budget
-        cells=_q19_cells_estimate(case,coarse,get(case,"surface_area_m2",0.0),dx,L)
+        cells=_q19_cells_estimate(case,coarse,_mesh_surface_area(case),dx,L)
         memory=Q19_BYTES_PER_SLOT*1.25*cells/1e9+0.3
     end
     result = Dict{String,Any}("cells" => cells, "memory_gb" => memory, "budget_gb" => q19 ? nothing : gpu["budget_gb"],
@@ -370,7 +429,7 @@ function _solver_model_triangles(case, triangles)
         # can lie entirely on one side). Stage an explicit Y placement so the
         # native min-Y test reliably selects its full-model clipping path.
         bounds=case["bounds"]
-        shift=get(case["domain"],"symmetry_center_y",false) ?
+        shift=_fixed_symmetry(case["domain"]) ? Float64(get(case["domain"],"symmetry_offset_y_m",0.))+case["transform"]["translation"][2] : _symmetry_placement(case["domain"])=="center" ?
             -(Float64(bounds["min"][2])+Float64(bounds["max"][2]))/2 :
             -Float64(bounds["min"][2])
         return Triangle[ntuple(i->(tri[i][1],tri[i][2]+shift,tri[i][3]),3) for tri in triangles]
@@ -404,9 +463,9 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     so = boundary == "ground" ? [offset[1], offset[3], -offset[2]] : offset
     lx,ly,lz = _estimate(case)["domain_size_m"]
     coarse_dx = dx * 2.0^(levels - 1)
-    snapped_x = 8*_stable_grid_block_count(lx,coarse_dx,8)*coarse_dx
-    snapped_y = 8*_stable_grid_block_count(ly,coarse_dx,8)*coarse_dx
-    snapped_z = 8*_stable_grid_block_count(lz,coarse_dx,8)*coarse_dx
+    snapped_x = (q19 ? _q19_coarse_axis(lx,coarse_dx) : 8*_stable_grid_block_count(lx,coarse_dx,8))*coarse_dx
+    snapped_y = (q19 ? _q19_coarse_axis(ly,coarse_dx) : 8*_stable_grid_block_count(ly,coarse_dx,8))*coarse_dx
+    snapped_z = (q19 ? _q19_coarse_axis(lz,coarse_dx) : 8*_stable_grid_block_count(lz,coarse_dx,8))*coarse_dx
     # The app resolves physical dimensions and AMR levels. Native legacy domain
     # keys are dimensionless; its ground branch already applies height in Y and
     # lateral clearance in Z, so these physical clearances must not be swapped.
@@ -418,7 +477,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     relative_x=so[1]-get(d,"x_offset_m",0.)
     if case["solver"] in ("main","pond_thermal","q19_octree")
         !iszero(relative_x) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + relative_x))")
-        !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
+        !_fixed_symmetry(d) && !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
         !iszero(so[3]) && push!(placement, "    object_center_z_m: $(@sprintf("%.12g", snapped_z/2 + so[3]))")
     elseif case["solver"]=="lbmtau" && !iszero(relative_x)
         # The pinned solver predates metre-based placement, but its fraction
@@ -447,7 +506,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "  reference_dimension: \"x\"", "  minimum_facet_size: $triangle_edge", "  subdivision: $(triangle_edge>0)",
         "  fluid:", "    density: $(f["density"])", "    kinematic_viscosity: $(f["kinematic_viscosity"])",
         "    speed_of_sound: $(f["speed_of_sound"])", "  flow:", "    velocity: $(f["velocity"])",
-        "  simulation:", "    steps: $(case["steps"])", "    ramp_steps: $(min(100,div(case["steps"],10)))",
+        "  simulation:", "    steps: $(case["steps"])", "    ramp_steps: $(q19 ? something(get(get(case,"octree",Dict()),"ramp_steps",nothing),min(100,div(case["steps"],10))) : min(100,div(case["steps"],10)))",
         "    output_freq: $volume_every", "    slice_output_freq: $every",
         "    output_startup_slices: true", "    output_startup_volume: false",
         "    build_only: $build_only", "    output_dir: \"RESULTS\"",
@@ -462,7 +521,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         "  vram_budget_gb: 1000000000", "  safety_factor: 1.15",
         "advanced:", "  solver_preset: \"vanilla\"", "  numerics:", "    lattice: \"$lattice\"",
         "    collision_operator: \"$(d3q39 ? "entropic" : q19 ? "rr" : "cumulant")\"",
-        "    compressible_mode: $d3q39", "    u_lattice: 0.08", "    tau_min: $(d3q39 ? 0.505 : 0.501)",
+        "    compressible_mode: $d3q39", "    u_lattice: $(q19 ? get(get(case,"octree",Dict()),"u_lattice",.08) : .08)", "    tau_min: $(d3q39 ? 0.505 : 0.501)",
         (_pond_case(case) ? ["    pond_thermal:","      enabled: true",
             "      cfl: $(f["cfl"])","      gamma: $(f["gamma"])",
             "      temperature_k: $(f["temperature_k"])","      gas_constant: $(f["gas_constant"])",
@@ -478,6 +537,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
                   "    wall_bc: \"adiabatic\"", "  initial_condition:", "    type: \"uniform\"",
                   "    uniform:", "      use_freestream_velocity: true", "      rho: 1.0"] : String[])...,
         "  domain:",
+        (_fixed_symmetry(d) ? ["    preserve_symmetry_y: true"] : String[])...,
         "    upstream: $(@sprintf("%.12g", dom["upstream"]/mesh_reference))",
         "    downstream: $(@sprintf("%.12g", dom["downstream"]/mesh_reference))",
         "    lateral: $(@sprintf("%.12g", dom["lateral"]/mesh_reference))",

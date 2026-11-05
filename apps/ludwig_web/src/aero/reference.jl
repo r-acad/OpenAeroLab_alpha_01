@@ -28,7 +28,13 @@ function _reference_moment_setting(case,bounds,chord)
     if boundary=="ground"
         p=[p[1],p[3],-p[2]];lo,hi=[lo[1],lo[3],-hi[2]],[hi[1],hi[3],-lo[2]]
     elseif boundary=="symmetry"
-        span=hi[2]-lo[2];hi[2]=get(case["domain"],"symmetry_center_y",false) ? span/2 : span;lo[2]=0.;p[2]=0.
+        if _fixed_symmetry(case["domain"])
+            offset=get(case["domain"],"symmetry_offset_y_m",0.)+case["transform"]["translation"][2]
+            lo[2]+=offset;hi[2]+=offset
+        else
+            span=hi[2]-lo[2];hi[2]=_symmetry_placement(case["domain"])=="center" ? span/2 : span;lo[2]=0.
+        end
+        p[2]=0.
     end
     [(p[1]-lo[1])/chord,(p[2]-(lo[2]+hi[2])/2)/chord,(p[3]-(lo[3]+hi[3])/2)/chord]
 end

@@ -28,7 +28,6 @@
     const sizing = $('domain-sizing')?.value || 'minimum';
     const proportions = sizing === 'proportions';
     const symmetry = $('boundary')?.value === 'symmetry';
-    if ($('symmetry-alignment-actions')) $('symmetry-alignment-actions').hidden = !symmetry;
     if ($('domain-proportions-controls')) $('domain-proportions-controls').hidden = !proportions;
     for (const axis of ['x', 'y', 'z']) {
       const input = $(`domain-ratio-${axis}`);
@@ -53,9 +52,10 @@
     const symmetry = $('boundary')?.value === 'symmetry';
     const center = $('symmetry-auto-center-y');
     if ($('symmetry-placement-controls')) $('symmetry-placement-controls').hidden = !symmetry;
-    for (const mode of ['wall', 'center']) {
+    const placement = $('symmetry-placement')?.value || (center?.checked ? 'center' : 'wall');
+    for (const mode of ['none', 'wall', 'center']) {
       const radio = $(`symmetry-placement-${mode}`);
-      if (radio) { radio.checked = !!center?.checked === (mode === 'center'); radio.disabled = !symmetry || !!center?.disabled; }
+      if (radio) { radio.checked = placement === mode; radio.disabled = !symmetry || !!center?.disabled; }
     }
     syncDomainControls();
     syncLiveResults();
@@ -333,6 +333,7 @@
       'model-widget-rotate':'Drag the rotation rings to orient the model. Numeric angles update together.',
       'symmetry-placement-wall':'Place a prepared half model at the symmetry wall using its minimum Y edge.',
       'symmetry-placement-center':'Place the centre of a full model on the symmetry plane; simulate its positive-Y half.',
+      'symmetry-placement-none':'Keep the current Y position without automatic alignment. Manual Y offsets stay available. Save/open preserves this choice and position.',
       'geometry-handling':'Closed solid validates topology. Intentional open mode accepts ambiguous or open surfaces using two-sided wall intersections.',
       'boundary':'Choose free-air, ground-wall or symmetry boundary conditions independently of domain sizing.',
       'surface-dx':'Requested finest cell size near the model surface, in metres.',
@@ -392,11 +393,13 @@
     if (!event.target.checked || !$('model-widget')) return;
     $('model-widget').value = mode; $('model-widget').dispatchEvent(new Event('change', {bubbles: true})); syncModelControls();
   });
-  for (const mode of ['wall', 'center']) $(`symmetry-placement-${mode}`)?.addEventListener('change', event => {
-    if (!event.target.checked || !$('symmetry-auto-center-y')) return;
-    $('symmetry-auto-center-y').checked = mode === 'center'; $('symmetry-auto-center-y').dispatchEvent(new Event('change', {bubbles: true})); syncModelControls();
+  for (const mode of ['none', 'wall', 'center']) $(`symmetry-placement-${mode}`)?.addEventListener('change', event => {
+    if (!event.target.checked || !$('symmetry-placement')) return;
+    $('symmetry-placement').value = mode;
+    if ($('symmetry-auto-center-y')) $('symmetry-auto-center-y').checked = mode === 'center';
+    $('symmetry-placement').dispatchEvent(new Event('change', {bubbles: true})); syncModelControls();
   });
-  for (const id of ['boundary', 'model-widget', 'symmetry-auto-center-y']) $(id)?.addEventListener('change', syncModelControls);
+  for (const id of ['boundary', 'model-widget', 'symmetry-placement', 'symmetry-auto-center-y']) $(id)?.addEventListener('change', syncModelControls);
   $('domain-sizing')?.addEventListener('change', syncDomainControls);
   $('live-results')?.addEventListener('change', syncLiveResults);
   $('run-live-results')?.addEventListener('change', () => { if ($('live-results')) { $('live-results').checked = $('run-live-results').checked; $('live-results').dispatchEvent(new Event('change', {bubbles:true})); } });

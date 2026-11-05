@@ -145,12 +145,12 @@
     const title=document.createElement('h2');title.id='study-picker-title';title.textContent='Open study';
     const close=pickerButton('Close',()=>dialog.close());close.title='Close the study picker and keep the current study';
     header.appendChild(title);header.appendChild(close);dialog.appendChild(header);
-    recentHelp=document.createElement('p');recentHelp.className='study-picker-help';dialog.appendChild(recentHelp);
-    recentList=document.createElement('div');recentList.className='study-picker-list';recentList.setAttribute('aria-label','Previously saved studies');dialog.appendChild(recentList);
     const actions=document.createElement('div');actions.className='study-picker-actions';
     const browse=pickerButton('Browse other study…',()=>{dialog.close();open();});browse.title='Navigate to another .ludwig-study file using the system file dialog';
     const refresh=pickerButton('Refresh list',()=>loadRecentList());refresh.title='Refresh available saved studies and run snapshots';
     actions.appendChild(browse);actions.appendChild(refresh);dialog.appendChild(actions);
+    recentHelp=document.createElement('p');recentHelp.className='study-picker-help';dialog.appendChild(recentHelp);
+    recentList=document.createElement('div');recentList.className='study-picker-list';recentList.setAttribute('aria-label','Previously saved studies');dialog.appendChild(recentList);
     document.body.appendChild(dialog);recentDialog=dialog;return dialog;
   }
   async function loadRecentList(){

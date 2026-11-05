@@ -167,6 +167,8 @@ function _check_study_setup(setup)
     setup["cuts"] isa AbstractVector || throw(ArgumentError("Study cuts must be an array"))
     get(setup["domain"],"symmetry_center_y",false) isa Bool ||
         throw(ArgumentError("Study domain.symmetry_center_y must be true or false"))
+    _symmetry_placement(setup["domain"])
+    _number(get(setup["domain"],"symmetry_offset_y_m",0.),"Study domain.symmetry_offset_y_m";lo=-10_000,hi=10_000)
     _domain_sizing(get(setup["domain"],"sizing","minimum"))
     _number(get(setup["domain"],"x_offset_m",0.),"Study domain.x_offset_m";lo=-10_000,hi=10_000)
     _domain_proportions(get(setup["domain"],"proportions",[1.,1.,1.]))
@@ -245,6 +247,10 @@ function _same_study_domain(a,b)
         result=merge(Dict{String,Any}(String(k)=>v for (k,v) in pairs(value)),
             Dict{String,Any}("symmetry_center_y"=>get(value,"symmetry_center_y",false),
                 "sizing"=>get(value,"sizing","minimum"),"x_offset_m"=>get(value,"x_offset_m",0.)))
+        result["symmetry_placement"]=get(value,"boundary","")=="symmetry" ? _symmetry_placement(value) : "wall"
+        result["symmetry_center_y"]=result["symmetry_placement"]=="center"
+        result["symmetry_placement"]=="none" ? (result["symmetry_offset_y_m"]=get(value,"symmetry_offset_y_m",0.)) : pop!(result,"symmetry_offset_y_m",nothing)
+        pop!(result,"symmetry_body_y_max",nothing) # derived from geometry, transform and frozen offset
         result["proportions"]=result["sizing"]=="proportions" ? _effective_domain_proportions(value) : [1.,1.,1.]
         result
     end
@@ -253,8 +259,15 @@ function _same_study_domain(a,b)
     left==right && isapprox(ratios_left,ratios_right;rtol=1e-12,atol=1e-14)
 end
 
+function _q19_result_settings(case)
+    settings=_q19_settings(case)
+    # Retention and plane display sampling cannot invalidate already computed fields.
+    for key in ("checkpoint_keep","max_plane_samples");pop!(settings,key,nothing);end
+    settings
+end
+
 function _same_study_setup(a::AbstractDict,b::AbstractDict)
-    _q19_case(a)==_q19_case(b) && (!_q19_case(a) || _q19_settings(a)==_q19_settings(b)) &&
+    _q19_case(a)==_q19_case(b) && (!_q19_case(a) || _q19_result_settings(a)==_q19_result_settings(b)) &&
     get(a,"surface_triangle_max_edge_m",0.0)==get(b,"surface_triangle_max_edge_m",0.0) &&
     _geometry_handling(get(a,"geometry_handling","closed_solid")) ==
         _geometry_handling(get(b,"geometry_handling","closed_solid")) &&

@@ -1347,7 +1347,7 @@ function validate_half_domain_mesh!(mesh::Geometry.SolverMesh)
     if GROUND_ANALYSIS
         extent_y <= tol && error("symmetric_analysis: ground produced a near-zero y extent after rotation; check the STL orientation and scale.")
         @printf("[Domain] Ground mode bounds before anchoring: y=[%.6f, %.6f]\n", min_y, max_y)
-    elseif abs(min_y) > tol
+    elseif abs(min_y) > tol && !(isdefined(@__MODULE__,:DOMAIN_PRESERVE_SYMMETRY_Y) && DOMAIN_PRESERVE_SYMMETRY_Y)
         @printf("[Domain] Half-domain placement: shifting mesh min-y %.6e to y=0\n", min_y)
     end
 end
@@ -1369,7 +1369,7 @@ function print_placed_mesh_bounds(bounds, mesh_offset)
         else
             @printf("[Domain] Slip symmetry plane at y=0; placed body y-min %.6f m\n", placed_min[2])
         end
-        if !GROUND_ANALYSIS && abs(placed_min[2]) > 1.0e-6
+        if !GROUND_ANALYSIS && abs(placed_min[2]) > 1.0e-6 && !(isdefined(@__MODULE__,:DOMAIN_PRESERVE_SYMMETRY_Y) && DOMAIN_PRESERVE_SYMMETRY_Y)
             @printf("[Domain] Warning: half-domain placement expected y_min=0, got %.6e\n", placed_min[2])
         end
     end
@@ -1441,7 +1441,7 @@ function setup_multilevel_domain(runtime::CaseIDContract.RuntimeSelection,
     mesh = Geometry.rotate_mesh(mesh, ALPHA_DEG, BETA_DEG;
                                 ground_mode=GROUND_ANALYSIS,
                                 ground_up_axis=GROUND_UP_AXIS)
-    if SYMMETRIC_ANALYSIS && mesh.min_bounds[2] < -1.0e-6
+    if SYMMETRIC_ANALYSIS && mesh.min_bounds[2] < -1.0e-6 && !(isdefined(@__MODULE__,:DOMAIN_PRESERVE_SYMMETRY_Y) && DOMAIN_PRESERVE_SYMMETRY_Y)
         mesh = Geometry.auto_slice_half_y(mesh)
         # Enforce the requested final sampling edge after symmetry welding,
         # including roundoff at nearly coplanar cap faces.

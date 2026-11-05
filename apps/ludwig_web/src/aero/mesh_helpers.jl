@@ -21,9 +21,9 @@ function _mesh_limits(case; available_ram_bytes=Sys.free_memory())
     body=_resolved_body_extent(case["domain"],ext)
     lengths=_domain_lengths(case["domain"],ext)
     dx=Float64(case["surface_dx"]);levels=Int(case["levels"]);h0=dx*2.0^(levels-1)
-    coarse=prod(8.0*_stable_grid_block_count(length,h0,8;minimum_blocks=4) for length in lengths)
-    fine=_q19_case(case) ? _q19_cells_estimate(case,0,get(case,"surface_area_m2",0.0),dx,levels) : levels==1 ? 0.0 : prod(body./dx .+ 16)
-    pyramid=levels==1 || all(_roundoff_snap_grid_integer(length/(32h0))>=1 for length in lengths)
+    coarse=prod(_q19_case(case) ? Float64(_q19_coarse_axis(length,h0)) : 8.0*_stable_grid_block_count(length,h0,8;minimum_blocks=4) for length in lengths)
+    fine=_q19_case(case) ? _q19_cells_estimate(case,0,_mesh_surface_area(case),dx,levels) : levels==1 ? 0.0 : prod(body./dx .+ 16)
+    pyramid=_q19_case(case) ? all(isfinite(length)&&length>0 for length in lengths) : levels==1 || all(_roundoff_snap_grid_integer(length/(32h0))>=1 for length in lengths)
     reasons=String[]
     pyramid || push!(reasons,"The fixed domain cannot retain $levels AMR levels at this cell size.")
     coarse<=MESH_CELL_LIMIT || push!(reasons,"The coarse lattice exceeds 30 million cells.")
@@ -62,7 +62,7 @@ function _mesh_candidate(original,dx;levels=Int(original["levels"]))
     current["domain"]=deepcopy(get(original,"requested_domain",original["domain"]))
     ext=Float64.(current["bounds"]["max"]).-Float64.(current["bounds"]["min"])
     tx=get(get(current,"transform",Dict()),"translation",[0.,0.,0.])[1]
-    adjustment=_expand_minimum_domain!(current["domain"],ext,dx,levels;translation_x=tx)
+    adjustment=_expand_minimum_domain!(current["domain"],ext,dx,levels;translation_x=tx,octree=_q19_case(current))
     current["domain_adjustment"]=adjustment
     current["requested_domain"]=adjustment["requested_domain"]
     current
@@ -72,7 +72,7 @@ function _mesh_dx_cap(case,levels=Int(case["levels"]))
     _domain_sizing(get(case["domain"],"sizing","minimum"))!="fixed" && return 100.0
     levels==1 && return 100.0
     ext=Float64.(case["bounds"]["max"]).-Float64.(case["bounds"]["min"])
-    min(100.0,.999*minimum(_domain_lengths(case["domain"],ext))/(32*2.0^(levels-1)))
+    min(100.0,.999*minimum(_domain_lengths(case["domain"],ext))/((_q19_case(case) ? 2 : 32)*2.0^(levels-1)))
 end
 
 "Find the nearest coarser feasible request, preserving physical geometry and prescribed boundaries."

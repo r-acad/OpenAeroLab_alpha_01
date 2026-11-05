@@ -116,12 +116,17 @@ function domain_and_offset(raw, lo::V3, hi::V3, reference_length::Float64, level
     lat = _f(_get(raw, "advanced", "domain", "lateral"), 4.0) * reference_length
     hgt = _f(_get(raw, "advanced", "domain", "height"), 4.0) * reference_length
     ext = vsub(hi, lo)
+    preserve_y=_get(raw,"advanced","domain","preserve_symmetry_y")
+    preserve_y===nothing && (preserve_y=false)
+    preserve_y isa Bool || error("advanced.domain.preserve_symmetry_y must be true or false")
+    preserve_y && !half_y && error("preserve_symmetry_y requires a symmetry boundary")
+    preserve_y && hi[2]<=0 && error("The preserved model lies entirely outside the positive-Y symmetry domain")
     dx1 = dx_finest * 2.0^(levels - 1)
     span = _get(raw, "advanced", "domain", "span_override")
     size_x = up + ext[1] + down
     # A staged full model straddles Y=0: retain its location and mesh only Y>=0.
     centered_symmetry=half_y && lo[2]<0<hi[2]
-    size_y = span !== nothing ? Float64(span) : half_y ? (centered_symmetry ? hi[2] : ext[2]) + lat : ground ? ext[2]+hgt : ext[2]+2lat
+    size_y = span !== nothing ? Float64(span) : half_y ? (preserve_y || centered_symmetry ? hi[2] : ext[2]) + lat : ground ? ext[2]+hgt : ext[2]+2lat
     size_z = ext[3] + 2*(ground ? lat : hgt)
     # round each axis up to an even number of coarse cells (the generator requires it; periodic axes must be exact)
     n = ntuple(a -> (v = (size_x, size_y, size_z)[a] / dx1; c = ceil(Int, v - 1e-9); c + c % 2), 3)
@@ -129,7 +134,7 @@ function domain_and_offset(raw, lo::V3, hi::V3, reference_length::Float64, level
     cx = _get(raw, "advanced", "domain", "object_center_x_m"); cy = _get(raw, "advanced", "domain", "object_center_y_m"); cz = _get(raw, "advanced", "domain", "object_center_z_m")
     half_y && cy !== nothing && error("advanced.domain.object_center_y_m cannot move a body off the y = 0 symmetry plane; omit it")
     centre = (cx === nothing ? up + ext[1] / 2 : Float64(cx),
-              cy === nothing ? (centered_symmetry ? (lo[2]+hi[2])/2 : half_y||ground ? ext[2]/2 : domain[2]/2) : Float64(cy),
+              cy === nothing ? (preserve_y || centered_symmetry ? (lo[2]+hi[2])/2 : half_y||ground ? ext[2]/2 : domain[2]/2) : Float64(cy),
               cz === nothing ? domain[3] / 2 : Float64(cz))
     offset = vsub(centre, vmul(vadd(lo, hi), 0.5))
     domain, offset
