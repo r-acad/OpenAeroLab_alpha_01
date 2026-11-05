@@ -35,12 +35,19 @@ end
 include("cmesh_steady_diagnostics_ka.jl")
 
 function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
-                                      preconditioner::Symbol=:line)
-    2<=m<=24 || throw(ArgumentError("JFNK restart length must be 2:24"))
+                                      preconditioner::Symbol=:line,
+                                      pseudo_scale::Float32=1f0)
+    2<=m<=96 || throw(ArgumentError("JFNK restart length must be 2:96"))
     preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi,
                        :swept_line,:cut_swept_line,:multilevel,
-                       :kinetic_block_adi) ||
+                       :kinetic_block_adi,:kinetic_fullvisc_block_adi,
+                       :kinetic_weno_fullvisc_block_adi,
+                       :kinetic_block_unfloored_adi,
+                       :kinetic_weno_fullvisc_unfloored_adi) ||
         throw(ArgumentError("unknown airfoil preconditioner"))
+    (pseudo_scale==1f0 || preconditioner in
+        (:kinetic_block_unfloored_adi,:kinetic_weno_fullvisc_unfloored_adi)) ||
+        throw(ArgumentError("pseudo_scale requires an unfloored block preconditioner"))
     vec()=ntuple(_->similar(s.dtf),4)
     v=vec()
     swept_line=preconditioner in (:swept_line,:cut_swept_line)
@@ -55,8 +62,19 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
     coupled_cut=preconditioner in (:cut_line,:cut_block_adi,:cut_swept_line)
     line=build_implicit_line_workspace(s)
     mg=preconditioner==:multilevel ? build_airfoil_mg_workspace(s,line,adi) : nothing
-    kinetic=preconditioner==:kinetic_block_adi ?
-        build_airfoil_kinetic_block_workspace(s;block_length=min(s.NI,64)) : nothing
+    kinetic=preconditioner in (:kinetic_block_adi,:kinetic_fullvisc_block_adi,
+                               :kinetic_weno_fullvisc_block_adi,
+                               :kinetic_block_unfloored_adi,
+                               :kinetic_weno_fullvisc_unfloored_adi) ?
+        build_airfoil_kinetic_block_workspace(s;block_length=min(s.NI,64),
+            fullvisc_block=preconditioner in (:kinetic_fullvisc_block_adi,
+                :kinetic_weno_fullvisc_block_adi,
+                :kinetic_weno_fullvisc_unfloored_adi),
+            weno_block=preconditioner in (:kinetic_weno_fullvisc_block_adi,
+                :kinetic_weno_fullvisc_unfloored_adi),
+            unfloored=preconditioner in (:kinetic_block_unfloored_adi,
+                :kinetic_weno_fullvisc_unfloored_adi),
+            pseudo_scale) : nothing
     JFNKAirfoilWorkspace(line,adi,mg,kinetic,coupled_cut,
         swept_line,swept_line ? vec() : nothing,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
@@ -250,6 +268,7 @@ function _airfoil_fgmres!(s::KSol,w::JFNKAirfoilWorkspace;
     0<linear_tol<1 || throw(ArgumentError("linear_tol must be in (0,1)"))
     m=w.m;V=w.basis;Z=w.preconditioned
     H=zeros(Float64,m+1,m);g=zeros(Float64,m+1)
+    cs=zeros(Float64,m);sn=zeros(Float64,m)
     _av_fill!(w.delta,0.0f0)
     beta=_av_norm(w.rhs)
     beta==0 && return (0,0.0)
@@ -265,9 +284,21 @@ function _airfoil_fgmres!(s::KSol,w::JFNKAirfoilWorkspace;
         H[j+1,j]=_av_norm(V[j+1])
         isfinite(H[j+1,j]) || throw(ArgumentError("nonfinite JFNK Arnoldi vector"))
         H[j+1,j]>0 && _av_scale!(V[j+1],1/H[j+1,j])
-        y=H[1:j+1,1:j] \ g[1:j+1]
-        rel=norm(g[1:j+1]-H[1:j+1,1:j]*y)/beta
+        # Incremental Givens QR avoids solving a new dense least-squares
+        # problem at every Arnoldi vector, particularly for m > 24.
+        for i in 1:j-1
+            top=cs[i]*H[i,j]+sn[i]*H[i+1,j]
+            H[i+1,j]=-sn[i]*H[i,j]+cs[i]*H[i+1,j]
+            H[i,j]=top
+        end
+        den=hypot(H[j,j],H[j+1,j])
+        den>0 || throw(ArgumentError("singular JFNK Arnoldi column"))
+        cs[j]=H[j,j]/den;sn[j]=H[j+1,j]/den
+        H[j,j]=den;H[j+1,j]=0.0
+        g[j+1]=-sn[j]*g[j];g[j]=cs[j]*g[j]
+        rel=abs(g[j+1])/beta
         if rel<=linear_tol || j==m
+            y=UpperTriangular(@view H[1:j,1:j]) \ (@view g[1:j])
             for k in 1:j; _av_axpy!(w.delta,y[k],Z[k]); end
             return (j,rel)
         end
@@ -322,6 +353,12 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     1<=max_backtracks<=16 || throw(ArgumentError("max_backtracks must be 1:16"))
     size(w.rhs[1])==size(s.dtf) && size(w.line.rho0)==size(s.rho) ||
         throw(ArgumentError("JFNK workspace does not match solver"))
+    if w.kinetic!==nothing
+        w.kinetic.fullvisc_block && s.fullvisc!=Int32(1) &&
+            throw(ArgumentError("full-viscous block preconditioner requires fullvisc=1"))
+        w.kinetic.weno_block && s.recon!=Int32(1) &&
+            throw(ArgumentError("WENO block preconditioner requires recon=1"))
+    end
     line=w.line;b=s.backend;ni=Int32(s.NI);nj=Int32(s.NJ);g=Int32(s.g)
     saved=(s.rho,s.ux,s.uy,s.T)
     backup=(line.rho0,line.ux0,line.uy0,line.T0)
@@ -344,6 +381,11 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
         s.rho,s.ux,s.uy,s.T,s.nut,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,
         s.nu_lam,s.rho_inf,s.suth,s.air_sutherland,Int32(s.sst),
         cfl,ni,nj,g;ndrange=(s.NI,s.NJ))
+    if w.kinetic!==nothing && w.kinetic.unfloored
+        _k_airfoil_kinetic_unfloored_d0!(b)(line.d0,
+            s.ux,s.uy,s.T,s.Six,s.Siy,cfl,w.kinetic.pseudo_scale,
+            ni,nj,g;ndrange=(s.NI,s.NJ))
+    end
     w.kinetic!==nothing && _airfoil_kinetic_build!(s,w.kinetic,line.d0)
     if w.adi!==nothing
         _k_implicit_i_coeffs!(b)(w.adi.lamW,w.adi.lamE,
@@ -424,6 +466,7 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     max_cfl::Float32=2.0f0,growth::Float32=1.05f0,
     max_attempts::Int=4,linear_solver::Symbol=:native,
     nonmonotone_window::Int=0,preconditioner::Symbol=:line,
+    pseudo_scale::Float32=1f0,
     recovery_steps::Int=0,recovery_limit::Int=200)
     isfinite(min_cfl) && isfinite(initial_cfl) && isfinite(max_cfl) &&
         0.0f0<min_cfl<=initial_cfl<=max_cfl<=10.0f0 ||
@@ -437,7 +480,7 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
         throw(ArgumentError("nonmonotone_window must be 0:20"))
     0<=recovery_steps<=100 && recovery_steps<=recovery_limit<=10_000 ||
         throw(ArgumentError("recovery_steps must be 0:100 and recovery_limit must be between recovery_steps and 10000"))
-    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner)
+    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale)
     krylov_workspace=linear_solver==:krylov ?
         build_krylov_airfoil_workspace(s,workspace) : nothing
     JFNKAirfoilController(workspace,krylov_workspace,initial_cfl,

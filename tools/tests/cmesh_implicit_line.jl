@@ -272,7 +272,7 @@ end
 end
 
 function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native,
-                                preconditioner=:line)
+                                preconditioner=:line,pseudo_scale=1f0)
     xs=[.5*(1-cospi(k/24)) for k in 0:24]
     yt(x)=x==1.0 ? 0.0 : 5*.12*(.2969*sqrt(x)-.126x-.3516x^2+.2843x^3-.1036x^4)
     foil=CMeshGen.AirfoilPts(vcat(reverse(xs),xs[2:end]),
@@ -284,10 +284,15 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native,
     cx,cy,cz,w,_,_=build_d3q39_static()
     s=M.build_sol_ka(backend,met;drot=2.0f0,cxv=cx,cyv=cy,czv=cz,wv=w)
     s.wall_flux=true
+    if preconditioner in (:kinetic_fullvisc_block_adi,
+                           :kinetic_weno_fullvisc_block_adi,
+                           :kinetic_weno_fullvisc_unfloored_adi)
+        s.fullvisc=Int32(1);s.recon=Int32(1)
+    end
     M.set_freestream_ka!(s,.2,2.0)
     s.nu_lam=1.0f-4
     M.set_sst_ka!(s)
-    work=jfnk ? M.build_jfnk_airfoil_workspace(s;m=6,preconditioner) :
+    work=jfnk ? M.build_jfnk_airfoil_workspace(s;m=6,preconditioner,pseudo_scale) :
                 M.build_implicit_line_workspace(s)
     step=jfnk ? M.step_jfnk_airfoil_ka! : M.step_implicit_line_ka!
     kw=jfnk && linear_solver==:krylov ?
@@ -314,11 +319,12 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native,
     @test all(isfinite,s.tk) && all(isfinite,s.tom)
     if jfnk
         ctrl=M.build_jfnk_airfoil_controller(s;m=4,linear_solver,preconditioner,
+            pseudo_scale,
             nonmonotone_window=3)
         r=M.step_jfnk_rans_ka!(s,ctrl;max_backtracks=16,
             sst_substeps=2)
         @test r.accepted && ctrl.iterations==1
-        @test r.pseudo_cfl_next>=r.pseudo_cfl_used
+        @test ctrl.min_cfl<=r.pseudo_cfl_next<=ctrl.max_cfl
         @test r.sst_substeps==2
         @test r.step_kind==:implicit && r.recovery_steps==0
         @test r.physical_trials>=1 && r.best_trial_merit<=r.flow_trial_merit_after
@@ -328,6 +334,31 @@ function airfoil_implicit_smoke(backend; jfnk=false,linear_solver=:native,
         @test all(isfinite,s.tk) && all(isfinite,s.tom)
     end
     s
+end
+
+@testset "six-state WENO kinetic face center block directional action" begin
+    cx,cy,cz,w,_,_=build_d3q39_static()
+    eint=2f0;drot=2f0
+    qs=(M._airfoil_conserved4(1.03f0,0.13f0,-0.03f0,1.04f0,eint),
+        M._airfoil_conserved4(1.05f0,0.16f0,-0.02f0,1.03f0,eint),
+        M._airfoil_conserved4(1.08f0,0.19f0,-0.04f0,1.02f0,eint),
+        M._airfoil_conserved4(0.97f0,0.15f0,0.03f0,0.95f0,eint),
+        M._airfoil_conserved4(0.95f0,0.12f0,0.02f0,0.96f0,eint),
+        M._airfoil_conserved4(0.92f0,0.10f0,0.01f0,0.97f0,eint))
+    nxr=.7f0;nyr=-.4f0
+    jl,jr=M._airfoil_weno_face_jacobians(qs...,nxr,nyr,
+        cx,cy,cz,w,drot,eint)
+    dl=SVector{4,Float32}(0.15f0,-0.09f0,0.07f0,0.12f0)
+    dr=SVector{4,Float32}(-0.08f0,0.04f0,0.11f0,-0.05f0)
+    h=.002f0
+    fp=M._airfoil_kinetic_flux6(qs[1],qs[2],qs[3]+h*dl,
+        qs[4]+h*dr,qs[5],qs[6],nxr,nyr,cx,cy,cz,w,drot,eint)
+    fm=M._airfoil_kinetic_flux6(qs[1],qs[2],qs[3]-h*dl,
+        qs[4]-h*dr,qs[5],qs[6],nxr,nyr,cx,cy,cz,w,drot,eint)
+    actual=(fp-fm)/(2h)
+    predicted=jl*dl+jr*dr
+    @test all(isfinite,predicted)
+    @test norm(predicted-actual)/norm(actual)<0.05
 end
 
 function airfoil_recovery_and_diagnostics(backend)
@@ -431,6 +462,33 @@ end
     @test wall[2,4]==nxr*M.CS2/eint
 end
 
+@testset "frozen-gradient full-viscous face block directional action" begin
+    eint=2f0
+    ql=M._airfoil_conserved4(1.08f0,0.19f0,-0.04f0,1.02f0,eint)
+    qr=M._airfoil_conserved4(0.97f0,0.15f0,0.03f0,0.95f0,eint)
+    gl=SVector{6,Float32}(0.7f0,-0.5f0,0.4f0,0.6f0,-0.2f0,0.3f0)
+    gr=SVector{6,Float32}(0.5f0,-0.3f0,0.2f0,0.4f0,-0.1f0,0.2f0)
+    dx=0.018f0;dy=0.009f0;nxr=0.02f0;nyr=0.012f0
+    mu=0.004f0;ke=0.006f0
+    jl,jr=M._airfoil_fullvisc_face_jacobians(ql,qr,gl,gr,
+        dx,dy,nxr,nyr,mu,ke,eint)
+    dl=SVector{4,Float32}(0.15f0,-0.09f0,0.07f0,0.12f0)
+    dr=SVector{4,Float32}(-0.08f0,0.04f0,0.11f0,-0.05f0)
+    function flux(q1,q2)
+        _,u1,v1,t1=M._airfoil_primitive4(q1,eint)
+        _,u2,v2,t2=M._airfoil_primitive4(q2,eint)
+        area=hypot(nxr,nyr)
+        fx,fy,fe=M._viscous_face_full(gl...,gr...,
+            u1,v1,t1,u2,v2,t2,dx,dy,nxr/area,nyr/area,area,mu,ke)
+        SVector{4,Float32}(0f0,-fx,-fy,-fe)
+    end
+    h=0.001f0
+    actual=(flux(ql+h*dl,qr+h*dr)-flux(ql-h*dl,qr-h*dr))/(2h)
+    predicted=jl*dl+jr*dr
+    @test all(isfinite,predicted)
+    @test norm(predicted-actual)/norm(actual)<0.01
+end
+
 @testset "four-variable wake-cut block inverse" begin
     ni,nj,niw,nif=6,4,2,2
     lower=zeros(Float32,4,4,ni,nj)
@@ -471,6 +529,28 @@ end
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:kinetic_block_adi)
     airfoil_implicit_smoke(CPU();jfnk=true,linear_solver=:krylov,
         preconditioner=:kinetic_block_adi)
+end
+
+@testset "single-phase airfoil full-viscous block ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,
+        preconditioner=:kinetic_fullvisc_block_adi)
+end
+
+@testset "single-phase airfoil WENO full-viscous block ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,
+        preconditioner=:kinetic_weno_fullvisc_block_adi)
+end
+
+@testset "single-phase airfoil unfloored block ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,
+        preconditioner=:kinetic_block_unfloored_adi)
+    s=airfoil_implicit_smoke(CPU();jfnk=true,
+        preconditioner=:kinetic_weno_fullvisc_unfloored_adi,
+        pseudo_scale=0.5f0)
+    w=M.build_jfnk_airfoil_workspace(s;m=4,
+        preconditioner=:kinetic_weno_fullvisc_unfloored_adi)
+    s.recon=Int32(0)
+    @test_throws ArgumentError M.step_jfnk_airfoil_ka!(s,w,0.45f0)
 end
 
 @testset "symmetric matrix-free airfoil Jacobian CPU" begin
