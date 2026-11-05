@@ -80,6 +80,74 @@ end
     @test next(0.005f0,0.0000610352f0,0.005f0,10f0,1.05f0)==0.005f0
 end
 
+@testset "C-mesh multilevel aggregation preserves scalar operator" begin
+    ni,nj,niw,nif=8,4,2,4
+    lw=[Float32(1+.1i+.02j) for i in 1:ni,j in 1:nj]
+    le=[Float32(1.3+.03i+.04j) for i in 1:ni,j in 1:nj]
+    ls=[Float32(2+.05i+.06j) for i in 1:ni,j in 1:nj]
+    ln=[Float32(2.4+.07i+.01j) for i in 1:ni,j in 1:nj]
+    d0=fill(1.5f0,ni,nj)
+    cw=zeros(Float32,ni÷2,nj);ce=similar(cw);cs=similar(cw)
+    cn=similar(cw);cd0=similar(cw)
+    M._k_airfoil_mg_aggregate!(CPU())(cw,ce,cs,cn,cd0,
+        lw,le,ls,ln,d0,Int32(ni÷2),Int32(nj);ndrange=(ni÷2,nj))
+    xc=reshape(Float32.(1:(ni÷2)*nj),ni÷2,nj)./17f0
+    xf=repeat(xc;inner=(2,1))
+    rf=similar(xf);rc=similar(xc);restricted=similar(xc)
+    M._k_airfoil_mg_residual!(CPU())(rf,zero(xf),xf,lw,le,ls,ln,d0,
+        Int32(ni),Int32(nj),Int32(niw),Int32(nif);ndrange=(ni,nj))
+    M._k_airfoil_mg_restrict!(CPU())(restricted,rf,Int32(ni÷2),Int32(nj);
+        ndrange=(ni÷2,nj))
+    M._k_airfoil_mg_residual!(CPU())(rc,zero(xc),xc,cw,ce,cs,cn,cd0,
+        Int32(ni÷2),Int32(nj),Int32(niw÷2),Int32(nif÷2);
+        ndrange=(ni÷2,nj))
+    KernelAbstractions.synchronize(CPU())
+    @test isapprox(restricted,rc;rtol=2e-6,atol=2e-6)
+end
+
+@testset "wall-normal aggregation preserves scalar operator" begin
+    ni,nj,niw,nif=8,4,2,4
+    lw=[Float32(1+.1i+.02j) for i in 1:ni,j in 1:nj]
+    le=[Float32(1.3+.03i+.04j) for i in 1:ni,j in 1:nj]
+    ls=[Float32(2+.05i+.06j) for i in 1:ni,j in 1:nj]
+    ln=[Float32(2.4+.07i+.01j) for i in 1:ni,j in 1:nj]
+    d0=fill(1.5f0,ni,nj)
+    cw=zeros(Float32,ni,nj÷2);ce=similar(cw);cs=similar(cw)
+    cn=similar(cw);cd0=similar(cw)
+    M._k_airfoil_mg_aggregate_j!(CPU())(cw,ce,cs,cn,cd0,
+        lw,le,ls,ln,d0,Int32(ni),Int32(nj÷2);ndrange=(ni,nj÷2))
+    xc=reshape(Float32.(1:ni*(nj÷2)),ni,nj÷2)./17f0
+    xf=repeat(xc;inner=(1,2))
+    rf=similar(xf);rc=similar(xc);restricted=similar(xc)
+    M._k_airfoil_mg_residual!(CPU())(rf,zero(xf),xf,lw,le,ls,ln,d0,
+        Int32(ni),Int32(nj),Int32(niw),Int32(nif);ndrange=(ni,nj))
+    M._k_airfoil_mg_restrict_j!(CPU())(restricted,rf,Int32(ni),Int32(nj÷2);
+        ndrange=(ni,nj÷2))
+    M._k_airfoil_mg_residual!(CPU())(rc,zero(xc),xc,cw,ce,cs,cn,cd0,
+        Int32(ni),Int32(nj÷2),Int32(niw),Int32(nif);
+        ndrange=(ni,nj÷2))
+    KernelAbstractions.synchronize(CPU())
+    @test isapprox(restricted,rc;rtol=2e-6,atol=2e-6)
+end
+
+@testset "wake-aware coarse factor solves scalar system" begin
+    ni,nj,niw,nif=8,4,2,4
+    lw=fill(1f0,ni,nj);le=fill(1.2f0,ni,nj)
+    ls=fill(2f0,ni,nj);ln=fill(2.2f0,ni,nj)
+    d0=fill(1.5f0,ni,nj)
+    level=M._airfoil_mg_level((n,m)->zeros(Float32,n,m),
+        ni,nj,niw,nif,lw,le,ls,ln,d0)
+    rhs=reshape(Float32.(1:ni*nj),ni,nj)./17f0
+    factor=M._airfoil_mg_coarse_factor(level)
+    @test factor!==nothing
+    x=reshape(Float32.(factor\vec(rhs)),ni,nj)
+    residual=similar(rhs)
+    M._k_airfoil_mg_residual!(CPU())(residual,rhs,x,lw,le,ls,ln,d0,
+        Int32(ni),Int32(nj),Int32(niw),Int32(nif);ndrange=(ni,nj))
+    KernelAbstractions.synchronize(CPU())
+    @test maximum(abs,residual)<2e-6
+end
+
 @testset "streamwise implicit factor" begin
     ni,nj=9,3
     lw=fill(2.0f0,ni,nj);le=fill(3.0f0,ni,nj)
@@ -242,6 +310,10 @@ end
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:swept_line)
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:cut_swept_line)
 end
+@testset "single-phase airfoil multilevel JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:multilevel)
+end
+
 @testset "symmetric matrix-free airfoil Jacobian CPU" begin
     airfoil_central_difference_smoke(CPU())
     airfoil_central_difference_smoke(CPU();linear_solver=:krylov)
@@ -285,6 +357,9 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     @testset "single-phase airfoil swept-line JFNK flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:swept_line)
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:cut_swept_line)
+    end
+    @testset "single-phase airfoil multilevel JFNK flow CUDA" begin
+        airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:multilevel)
     end
     @testset "symmetric matrix-free airfoil Jacobian CUDA" begin
         airfoil_central_difference_smoke(CUDA.CUDABackend())

@@ -4,12 +4,14 @@
 # preconditioner. SST is segregated. The ADI variants have not shown a
 # time-to-convergence gain on the qualified NACA 0012 study mesh.
 using LinearAlgebra
+include("cmesh_steady_multilevel_ka.jl")
 export JFNKAirfoilWorkspace, build_jfnk_airfoil_workspace, step_jfnk_airfoil_ka!
 export JFNKAirfoilController, build_jfnk_airfoil_controller, step_jfnk_rans_ka!
 
-struct JFNKAirfoilWorkspace{L,V,A,S}
+struct JFNKAirfoilWorkspace{L,V,A,S,M}
     line::L
     adi::A
+    mg::M
     coupled_cut::Bool
     swept_line::Bool
     sweep_old::S
@@ -33,21 +35,23 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
                                       preconditioner::Symbol=:line)
     2<=m<=24 || throw(ArgumentError("JFNK restart length must be 2:24"))
     preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi,
-                       :swept_line,:cut_swept_line) ||
+                       :swept_line,:cut_swept_line,:multilevel) ||
         throw(ArgumentError("unknown airfoil preconditioner"))
     vec()=ntuple(_->similar(s.dtf),4)
     v=vec()
     swept_line=preconditioner in (:swept_line,:cut_swept_line)
     block_length=preconditioner==:adi ? s.NI : min(s.NI,64)
     adi=preconditioner in (:adi,:block_adi,:cut_block_adi,
-                           :swept_line,:cut_swept_line) ?
+                           :swept_line,:cut_swept_line,:multilevel) ?
         (lamW=similar(s.dtf),lamE=similar(s.dtf),
          cp=similar(s.dtf,preconditioner==:adi ? Float64 : Float32),
          d0_eff=swept_line ? similar(s.dtf) : nothing,
          block_length=Int32(block_length),
          blocks_per_row=Int32(cld(s.NI,block_length))) : nothing
     coupled_cut=preconditioner in (:cut_line,:cut_block_adi,:cut_swept_line)
-    JFNKAirfoilWorkspace(build_implicit_line_workspace(s),adi,coupled_cut,
+    line=build_implicit_line_workspace(s)
+    mg=preconditioner==:multilevel ? build_airfoil_mg_workspace(s,line,adi) : nothing
+    JFNKAirfoilWorkspace(line,adi,mg,coupled_cut,
         swept_line,swept_line ? vec() : nothing,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
         vec(),vec(),vec(),vec(),vec(),vec(),m)
@@ -95,6 +99,10 @@ end
 function _airfoil_line_precondition!(out,input,s::KSol,w::JFNKAirfoilWorkspace)
     line=w.line; b=s.backend; ni=Int32(s.NI);nj=Int32(s.NJ)
     for k in 1:4
+        if w.mg!==nothing
+            _airfoil_mg_precondition!(out[k],input[k],s.vol,w.mg,b)
+            continue
+        end
         if w.swept_line
             fill!(w.sweep_old[k],0.0f0)
             for sweep in 1:3
@@ -335,6 +343,7 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
             s.nu_lam,s.rho_inf,s.suth,s.air_sutherland,Int32(s.sst),
             ni,nj,g;ndrange=(s.NI,s.NJ))
         w.swept_line && (@. w.adi.d0_eff=line.d0+w.adi.lamW+w.adi.lamE)
+        w.mg!==nothing && _prepare_airfoil_mg!(w.mg,b)
     end
     for k in 1:4; @. w.rhs[k]=w.base_residual[k]/s.vol; end
     kits,rel=krylov_workspace===nothing ?
