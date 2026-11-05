@@ -30,6 +30,7 @@ window.AirfoilStudies = (() => {
   function markDirty() { if(restoring)return;dirty=true;edits++;status('Unsaved changes'); }
   function closeMenus(){document.querySelectorAll('.top-menu[open]').forEach(node=>node.open=false);}
   function detach() {
+    state.datImportGeneration=(state.datImportGeneration||0)+1;
     clearTimeout(state.pollTimer);clearTimeout(state.historyTimer);state.pollGeneration++;
     state.previewAbort?.abort();clearTimeout(state.previewTimer);state.previewGeneration++;
     state.cavitationReferenceSelection++;
@@ -78,7 +79,7 @@ window.AirfoilStudies = (() => {
       applySavedRequestToForm(study.request);
       restoreControls(study.controls);
       const foil=study.request.airfoil;
-      state.embeddedAirfoil=foil.kind==='uiuc'?{kind:foil.kind,id:foil.id,coordinates:{x:study.geometry.x,y:study.geometry.y}}:null;
+      state.embeddedAirfoil=['uiuc','dat'].includes(foil.kind)?{kind:foil.kind,id:foil.id,coordinates:{x:study.geometry.x,y:study.geometry.y}}:null;
       updateSetup();
       // Retain API-only numerical settings without resurrecting optional GUI
       // controls (e.g. a flap or trip after its checkbox is switched off).

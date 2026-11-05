@@ -100,6 +100,7 @@
         downstream:inputNumber('downstream','downstream clearance',{min:0.02,max:10000}),
         lateral:inputNumber('lateral','lateral clearance',{min:0.02,max:10000}),
         height:inputNumber('height','vertical clearance',{min:0.02,max:10000}),boundary,
+        x_offset_m:inputNumber('domain-x-offset','domain X offset',{min:-10000,max:10000}),
         symmetry_center_y:boundary==='symmetry'&&Boolean($('symmetry-auto-center-y')?.checked),sizing,proportions},
       surface_dx:inputNumber('surface-dx','surface cell size',{min:0.00001,max:100}),
       surface_triangle_max_edge_m:$('surface-triangle-max-edge-mm')?inputNumber('surface-triangle-max-edge-mm','maximum surface triangle edge in millimetres',{min:.1,max:100000})/1000:.05,
@@ -185,6 +186,7 @@
     state.surfaceRefinementPending=Boolean(state.jobId&&requestedEdge>0&&Math.abs(requestedEdge-builtEdge)>1e-10*Math.max(1,requestedEdge,builtEdge));
     if($('mesh-visibility')){$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible!==false));$('mesh-visibility').textContent=state.meshVisible===false?'Show mesh':'Hide mesh';}
     $('model-file').disabled=state.importing||state.uploading;
+    if($('symmetry-align-model'))$('symmetry-align-model').disabled=!state.source||state.importing||state.uploading||activeStatuses.has(state.job?.status);
     $('build-mesh').disabled=state.importing||state.uploading||!validSettings()||activeStatuses.has(state.job?.status);
     $('run-solver').disabled=!canRun()||state.uploading;
     $('cancel-job').disabled=!state.jobId||!activeStatuses.has(state.job?.status);
@@ -192,7 +194,7 @@
     $('build-mesh').textContent=meshing?'Creating mesh…':'Create mesh';
     $('build-mesh').classList.toggle('is-working',meshing);
     if($('model-widget'))$('model-widget').disabled=state.importing||state.uploading||activeStatuses.has(state.job?.status)||!state.modelId||Boolean(state.importedResults);
-    const glbOption=Array.from($('model-appearance')?.options||[]).find(option=>option.value==='glb');if(glbOption)glbOption.disabled=!/\.glb$/i.test(state.originalFile?.name||'');
+    updateModelAppearance();
     window.LudwigAeroLayout?.syncModelControls?.();updateResultsAvailability();
     const jobActive=activeStatuses.has(state.job?.status);if(modelTools&&state.modelToolJobActive!==jobActive){state.modelToolJobActive=jobActive;queueRender();}
   }
@@ -270,16 +272,18 @@
     const centeredSymmetry=boundary==='symmetry'&&Boolean($('symmetry-auto-center-y')?.checked);
     const dims=[ext[0]+up+down,(centeredSymmetry?ext[1]/2:ext[1])+(boundary==='free_air'?2*lat:ground?height:lat),ext[2]+2*(ground?lat:height)];
     const sizing=$('domain-sizing')?.value||'minimum';
+    const domainX=Number($('domain-x-offset')?.value)||0,relativeX=p.translation[0]-domainX,required=dims.slice();
+    if(sizing!=='fixed')required[0]+=2*Math.abs(relativeX);
     const coarse=Math.max(.00001,Number($('surface-dx').value)||.01)*2**(Math.max(1,Number($('levels').value)||1)-1);
-    let target=dims.slice();
+    let target=required.slice();
     if(sizing==='proportions'){
       const ratio=['x','y','z'].map(axis=>Math.max(.000001,Number($('domain-ratio-'+axis)?.value)||1));
       if(boundary==='symmetry')ratio[1]=.5*Math.min(ratio[0],ratio[2]);
-      const factor=Math.max(...dims.map((size,axis)=>Math.max(size,32*coarse)/ratio[axis]));target=ratio.map(value=>value*factor);
+      const factor=Math.max(...required.map((size,axis)=>Math.max(size,32*coarse)/ratio[axis]));target=ratio.map(value=>value*factor);
     }else if(sizing==='minimum'&&boundary==='symmetry'){
-      const floor=32*coarse,minimumY=Math.max(dims[1],floor);
-      target=[Math.max(dims[0],floor,2*minimumY),0,Math.max(dims[2],floor,2*minimumY)];target[1]=.5*Math.min(target[0],target[2]);
-    }else if(sizing==='minimum')target=dims.map(size=>size<32*coarse*(1+1e-10)?40*coarse:size);
+      const floor=32*coarse,minimumY=Math.max(required[1],floor);
+      target=[Math.max(required[0],floor,2*minimumY),0,Math.max(required[2],floor,2*minimumY)];target[1]=.5*Math.min(target[0],target[2]);
+    }else if(sizing==='minimum')target=required.map(size=>size<32*coarse*(1+1e-10)?40*coarse:size);
     if(sizing==='proportions'||sizing==='minimum'&&boundary==='symmetry'){
       const block=8*coarse;
       const blockCeil=value=>{const nearest=Math.round(value),tolerance=2**(Math.floor(Math.log2(Math.max(1,Math.abs(nearest))))-22);return Math.ceil(Math.abs(value-nearest)<=tolerance?nearest:value);};
@@ -290,11 +294,11 @@
     up+=extra[0]/2;down+=extra[0]/2;if(ground)height+=extra[1];else lat+=extra[1]/(boundary==='free_air'?2:1);
     if(ground)lat+=extra[2]/2;else height+=extra[2]/2;
     for(let axis=0;axis<3;axis++)dims[axis]+=extra[axis];
-    const offset=[up-body.min[0],boundary==='free_air'?dims[1]/2-body.center[1]:centeredSymmetry?-body.center[1]:-body.min[1],dims[2]/2-body.center[2]];
+    const offset=[up-body.min[0]-domainX,boundary==='free_air'?dims[1]/2-body.center[1]:centeredSymmetry?-body.center[1]:-body.min[1],dims[2]/2-body.center[2]];
     const move=ground?[p.translation[0],p.translation[2],-p.translation[1]]:p.translation;
     for(let i=0;i<3;i++)offset[i]+=move[i];
     for(let i=0;i<shape.length;i++)shape[i]+=offset[i%3];
-    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_center_y:centeredSymmetry,sizing:$('domain-sizing')?.value||'minimum'}}};
+    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_center_y:centeredSymmetry,x_offset_m:domainX,sizing:$('domain-sizing')?.value||'minimum'}}};
   }
   function previewTriangles() {return previewFrame()?.triangles||null;}
   function binaryStl(triangles) {
@@ -319,7 +323,7 @@
     return triangles;
   }
   async function loadStoredModel(modelId) {
-    if(state.source&&state.sourceModelId===modelId){restoreOriginalSource(modelId);return;}
+    if(state.source&&state.sourceModelId===modelId){await restoreOriginalSource(modelId);return;}
     state.sourceModelId=modelId;
     try{
       const response=await fetch(`/api/aero/models/${encodeURIComponent(modelId)}/file`,{cache:'no-store'});
@@ -327,21 +331,49 @@
       const source=readBinaryStl(await response.arrayBuffer());
       if(state.modelId!==modelId)return;
       state.source=source;state.sourceBounds=boundsOf(source);
-      restoreOriginalSource(modelId);
+      await restoreOriginalSource(modelId);
       if(state.camera)state.camera._aeroFit=false;
       queueRender();
     }catch(error){console.warn('Stored model preview unavailable:',error);}
   }
   async function restoreOriginalSource(modelId) {
-    if(state.sourceAssetModelId===modelId)return;state.sourceAssetModelId=modelId;
-    if(state.originalFile){modelTools?.refreshSource(state.originalFile);return;}
-    try{
-      const response=await fetch(`/api/aero/models/${encodeURIComponent(modelId)}/source`,{cache:'no-store'});
-      if(response.status===404)return;if(!response.ok)throw new Error(`HTTP ${response.status}`);
-      const asset=await response.json();if(state.modelId!==modelId)return;
-      const binary=atob(asset.data),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
-      state.originalFile=new File([bytes],asset.name,{type:asset.media_type});modelTools?.refreshSource(state.originalFile);queueRender();
-    }catch(error){console.warn('Original model appearance unavailable:',error);}
+    if(state.modelId!==modelId)return;
+    const original=state.originalFile;
+    // Reopening the same study resets originalFile. A remembered model ID alone
+    // must never suppress retrieval of its retained GLB asset.
+    if(state.sourceAssetModelId===modelId&&original&&state.sourceAssetFile===original){
+      await modelTools?.refreshSource(original,{retry:true});updateModelAppearance();return;
+    }
+    const pending=state.sourceAssetRequest;
+    if(pending?.modelId===modelId&&pending.original===original)return pending.promise;
+    const request={modelId,original,promise:null};state.sourceAssetRequest=request;
+    request.promise=(async()=>{
+      try{
+        let file=original;
+        if(!/\.glb$/i.test(file?.name||'')){
+          const response=await fetch(`/api/aero/models/${encodeURIComponent(modelId)}/source`,{cache:'no-store'});
+          if(response.status!==404){
+            if(!response.ok)throw new Error(`HTTP ${response.status}`);
+            const asset=await response.json();
+            const binary=atob(asset.data),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+            file=new File([bytes],asset.name,{type:asset.media_type});
+          }
+        }
+        if(state.modelId!==modelId||state.sourceAssetRequest!==request)return;
+        state.originalFile=file||null;state.sourceAssetModelId=modelId;state.sourceAssetFile=file||null;
+        await modelTools?.refreshSource(file||null,{retry:true});
+        if(state.modelId===modelId){updateModelAppearance();queueRender();}
+      }catch(error){
+        if(state.modelId===modelId){state.modelToolStatus=`Original model appearance could not be restored: ${error.message}. Reopen the study to retry.`;updateModelAppearance();updateLabels();}
+        console.warn('Original model appearance unavailable:',error);
+      }finally{if(state.sourceAssetRequest===request)state.sourceAssetRequest=null;}
+    })();
+    return request.promise;
+  }
+  function updateModelAppearance(info) {
+    const option=Array.from($('model-appearance')?.options||[]).find(o=>o.value==='glb');
+    if(option)option.disabled=!/\.glb$/i.test(state.originalFile?.name||'');
+    if(info)state.modelToolStatus=info.loading?'Loading original GLB materials and textures…':info.ready?'Original GLB materials and textures are available. Selecting GLB appearance switches to geometry; Surface displays computed fields.':info.error||'Original GLB appearance requires the original GLB file. Load it from File → Open geometry if it was not retained.';
   }
   function hydrateCase(caseInfo) {
     const set=(id,value)=>{if(value!==undefined&&value!==null)$(id).value=String(value);};
@@ -351,6 +383,7 @@
       set('rotate-'+axis,transform.rotation_deg?.[i]);set('move-'+axis,transform.translation?.[i]);
     }
     for(const key of ['upstream','downstream','lateral','height'])set(key,domain[key]);
+    set('domain-x-offset',domain.x_offset_m??resolved.x_offset_m??0);
     set('domain-sizing',domain.sizing||'minimum');for(let axis=0;axis<3;axis++)set('domain-ratio-'+['x','y','z'][axis],domain.proportions?.[axis]??1);set('boundary',domain.boundary);if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').checked=Boolean(domain.symmetry_center_y);set('surface-dx',caseInfo.surface_dx);set('levels',caseInfo.levels);
     set('geometry-handling',caseInfo.geometry_handling||'closed_solid');
     set('surface-triangle-max-edge-mm',Number(caseInfo.surface_triangle_max_edge_m)>0?Number(caseInfo.surface_triangle_max_edge_m)*1000:50);
@@ -389,7 +422,7 @@
       state.importing=false;state.uploading=true;message(`Uploading ${fmt(nTri)} triangles…`);updateActions();
       const response=await api('/api/aero/models',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Model-Name':encodeURIComponent(file.name)},body:binaryStl(triangles)});
       state.modelId=response.model_id;
-      state.sourceModelId=state.modelId;state.sourceAssetModelId=state.modelId;
+      state.sourceModelId=state.modelId;state.sourceAssetModelId=state.modelId;state.sourceAssetFile=file;
       if(file.size<=50_000_084)try{await api(`/api/aero/models/${state.modelId}/source?name=${encodeURIComponent(file.name)}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:await file.arrayBuffer()});}catch(error){console.warn('Original asset could not be retained:',error);}
       showGeometryAudit(response.geometry_audit);
       message(`${file.name} · ${fmt(response.triangles||nTri)} triangles · ready for lattice build.`);
@@ -800,6 +833,12 @@
     state.renderQueued=false;if(!state.scene||inspector?.isDragging()||modelTools?.isInteracting())return;
     let frame;
     try{frame=currentFrame();state.frame=frame;}catch(error){state.viewNotice=error.message;progress(`View error: ${error.message}`,'View error');$('viewer-overlay').hidden=true;updateLabels();return;}
+    if(state.domainCameraAnchor!==undefined&&state.camera&&frame.body){
+      // Keep the aircraft stationary on screen while the domain moves relative
+      // to it. Mesh/field coordinates remain the native solver coordinates.
+      const dx=frame.body.center[0]-state.domainCameraAnchor,eye=state.camera.position.clone(),target=state.camera.target.clone();
+      state.domainCameraAnchor=undefined;eye.x+=dx;target.x+=dx;clearCameraMotion();state.camera.setTarget(target,false,true);state.camera.setPosition(eye);state.camera._aeroFit=true;
+    }
     const source=frame.triangles,bodyBounds=frame.body;
     const imported=state.importedResults,field=imported?$('results-field').value:$('surface-field').value,surface=imported?state.importedSurface:state.surface;
     const values=surface?.fields?.[field]??surface?.[field],offset=imported?(surface?.surface_offset||surface?.offset||imported.surface_offset||[0,0,0]):surface?.surface_offset||state.amr?.mesh_offset;
@@ -892,7 +931,7 @@
       getSourceFile:()=>state.originalFile||null,getSourceBounds:()=>state.sourceBounds,getTransformSettings:transformSettings,
       setTransformSettings(settings){for(const [key,prefix] of [['scale','scale'],['rotation_deg','rotate'],['translation','move']])for(let i=0;i<3;i++)$(prefix+'-'+['x','y','z'][i]).value=String(Number(settings[key][i].toPrecision(10)));},
       onTransformCommit:invalidateMesh,onRender:queueRender,
-      onAvailability(info){const option=Array.from($('model-appearance')?.options||[]).find(o=>o.value==='glb');if(option)option.disabled=!info.supported;state.modelToolStatus=info.loading?'Loading original GLB materials and textures…':info.ready?'Original GLB materials and textures are available. Surface-field mode shows computed values.':info.error||'Original GLB appearance requires the original GLB file. Load it from File → Open geometry if it was not retained.';updateLabels();},
+      onAvailability(info){updateModelAppearance(info);updateLabels();},
       onStatus(text,error){state.modelToolStatus=text;if(error)progress(`Appearance error: ${text}`,'Appearance unavailable');updateLabels();}});
     }catch(error){state.modelToolStatus=`Model tools are unavailable: ${error.message}`;console.warn(state.modelToolStatus);}
   }
@@ -1320,14 +1359,32 @@
       center?.checked?'Symmetry: the model Y centre is placed on Y = 0. The solver uses the positive half and mirrors the symmetry boundary. Disable automatic centring for an already prepared half model.':'Symmetry: the minimum Y edge of the prepared half model is placed at Y = 0. Enable automatic centring to use half of a full model.';
   }
   function syncFlowAngles(){const symmetry=$('boundary').value==='symmetry';for(const id of ['flow-beta','reference-y'])if($(id)){$(id).disabled=symmetry;if(symmetry)$(id).value='0';}}
-  function syncSolverLattice() {
-    const sel=$('solver'),thermal=sel.value==='pond_thermal',octree=sel.value==='q19_octree';
+  function alignModelSymmetry() {
+    if($('boundary').value!=='symmetry'||!state.source)return;
+    $('symmetry-auto-center-y').checked=true;$('move-y').value='0';
+    const frame=previewFrame(),center=frame.body.center[1]-frame.bodyOrigin[1];
+    window.LudwigAeroLayout?.syncModelControls?.();boundaryNote();invalidateMesh();
+    const text=`Full model aligned: Y placement offset ${Number((-center).toPrecision(7))} m, computed from the centre of its transformed Y bounds. The symmetry plane is Y = 0. Create the mesh to apply this placement.`;
+    if($('symmetry-alignment-status'))$('symmetry-alignment-status').textContent=text;
+    progress(text,'Symmetry aligned');
+  }
+  function syncSolverLattice(origin='solver') {
+    const sel=$('solver'),latticeSelect=$('lattice');
+    const available=value=>Array.from(sel.options).some(option=>option.value===value&&option.dataset.available==='true');
+    if(origin==='lattice'){
+      if(latticeSelect.value==='d3q19'&&available('q19_octree'))sel.value='q19_octree';
+      else if(sel.value==='q19_octree'||sel.value==='pond_thermal'||latticeSelect.value==='d3q39'){
+        const next=Array.from(sel.options).find(option=>option.dataset.available==='true'&&!['q19_octree','pond_thermal'].includes(option.value)&&String(option.dataset.lattices||'d3q27').split(',').includes(latticeSelect.value));
+        sel.value=next?.value||'';
+      }
+    }
+    const thermal=sel.value==='pond_thermal',octree=sel.value==='q19_octree';
     if(thermal)$('lattice').value='d3q27';
     if(octree)$('lattice').value='d3q19';
     else if($('lattice').value==='d3q19')$('lattice').value='d3q27';   // D3Q19 belongs to the CPU octree solver only
     const lattice=$('lattice').value,forced=thermal||octree;
-    $('lattice').disabled=forced;
-    $('lattice').querySelector('option[value="d3q19"]').disabled=!octree;
+    $('lattice').disabled=false;
+    $('lattice').querySelector('option[value="d3q19"]').disabled=!available('q19_octree');
     $('lattice-label').textContent=thermal?'Mesh layout':'LBM lattice / collision';
     $('lattice').querySelector('option[value="d3q27"]').textContent=thermal?'Cartesian AMR · thermal finite volume':'D3Q27 + cumulant';
     const levels=$('levels');
@@ -1407,8 +1464,10 @@
       'upstream','downstream','lateral','height','domain-ratio-x','domain-ratio-y','domain-ratio-z','surface-dx','levels','velocity','density','viscosity','sound-speed','steps','frames'])
       $(id).addEventListener('input',invalidateMesh);
     $('surface-triangle-max-edge-mm')?.addEventListener('input',invalidateMesh);
+    $('domain-x-offset')?.addEventListener('input',()=>{if(state.frame?.body&&state.domainCameraAnchor===undefined)state.domainCameraAnchor=state.frame.body.center[0];invalidateMesh();});
+    $('symmetry-align-model')?.addEventListener('click',alignModelSymmetry);
     for(const id of ['octree-band-fine','octree-band','octree-wake','octree-wake-offset','octree-threads'])$(id)?.addEventListener('input',invalidateMesh);
-    $('lattice').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
+    $('lattice').addEventListener('change',()=>{syncSolverLattice('lattice');invalidateMesh();});
     $('solver').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
     for(const id of ['flow-input-mode','flow-mach','flow-temperature','flow-cfl','flow-wall-model'])$(id).addEventListener('input',()=>{syncThermalFlow();invalidateMesh();});
     $('velocity').addEventListener('input',syncThermalFlow);
@@ -1431,7 +1490,7 @@
     $('results-browse')?.addEventListener('click',async()=>{const button=$('results-browse');button.disabled=true;try{const path=await window.LudwigOutputControls.chooseFolder({path:$('results-path').value,title:'Choose results folder'});if(path)$('results-path').value=path;}catch(error){window.LudwigAeroLayout?.showMessage(error.message,{urgent:true,title:'Folder selection'});}finally{button.disabled=false;}});
     $('reset-transform').addEventListener('click',()=>{for(const a of ['x','y','z']){$('scale-'+a).value='1';$('rotate-'+a).value='0';$('move-'+a).value='0';}invalidateMesh();});
     $('geometry-handling')?.addEventListener('change',()=>{updateActions();renderMeshDetails(state.job);updateLabels();});
-    $('model-appearance')?.addEventListener('change',queueRender);
+    $('model-appearance')?.addEventListener('change',()=>{if($('model-appearance').value==='glb'){state.mode='geometry';syncViewButtons();selectResultPane('scene');}queueRender();});
     $('model-opacity')?.addEventListener('input',()=>{$('model-opacity-value').value=$('model-opacity').value;queueRender();});$('model-widget')?.addEventListener('change',queueRender);
     $('add-cut').addEventListener('click',()=>{if(state.cuts.length>=6)return;state.cuts.push({axis:'y',position:0.5});recordingChanged();});
     $('build-mesh').addEventListener('click',buildMesh);$('run-solver').addEventListener('click',runSolver);$('cancel-job').addEventListener('click',cancelJob);

@@ -40,16 +40,21 @@ function study_coordinates(data)
     Dict("x"=>Float64.(x),"y"=>Float64.(y))
 end
 
+include("dat_import.jl")
+
 function resolve_airfoil(source::AbstractDict; offline=false)
     kind,id = String(source["kind"]),String(source["id"])
-    if kind == "uiuc" && haskey(source,"coordinates")
-        _safe_uiuc_id(id)
+    if kind in ("uiuc","dat") && haskey(source,"coordinates")
+        kind=="uiuc" && _safe_uiuc_id(id)
+        kind=="dat" && _safe_dat_id(id)
         coordinates = study_coordinates(source["coordinates"])
+        kind=="dat" && _validate_dat_contour(coordinates["x"],coordinates["y"])
         foil = JXfoil.Airfoil(id,coordinates["x"],coordinates["y"])
         return (airfoil=foil,metadata=Dict{String,Any}("source"=>kind,"id"=>id,"name"=>id,
-            "source_url"=>UIUC_BASE_URL*"/ads/coord/"*id,"embedded"=>true,
+            "source_url"=>kind=="uiuc" ? UIUC_BASE_URL*"/ads/coord/"*id : nothing,"embedded"=>true,
             "x"=>copy(foil.x),"y"=>copy(foil.y)))
     end
+    kind=="dat" && throw(ArgumentError("The imported .dat source is missing its coordinates; open the file again"))
     resolve_airfoil(kind,id;offline=offline)
 end
 const LOCAL_FALLBACK = Dict(

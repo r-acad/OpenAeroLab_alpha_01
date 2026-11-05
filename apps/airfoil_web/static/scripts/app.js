@@ -197,7 +197,7 @@ const el = Object.fromEntries([
   "cav-fs-controls", "cav-conventional-controls", "cav-speed", "cav-water-depth", "cav-air-height", "cav-fs-duration", "cav-fs-max-steps", "cav-fs-resolution", "cav-fs-vapor", "geometry-axis-label", "cav-fs-formulation", "cav-fs-formulation-note", "history-residual-title", "cfd-te-topology-field", "underwater-mesh-note",
   "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord", "rans-acceleration-line", "rans-acceleration", "rans-acceleration-note",
   "rans-method-line", "rans-method", "rans-method-note", "implicit-method-options", "implicit-warmup", "implicit-cfl", "implicit-basis", "implicit-sst-substeps", "implicit-nonmonotone", "implicit-preconditioner", "implicit-recovery",
-  "server-state", "transport", "theme-mode", "source-kind", "naca-picker", "naca-code", "uiuc-picker", "airfoil-search", "airfoil-select", "catalog-status", "airfoil-meta", "airfoil-name", "airfoil-description", "airfoil-link", "show-reference", "curvature-mapping-field", "curvature-mapping-help", "cfd-te-topology",
+  "server-state", "transport", "theme-mode", "source-kind", "naca-picker", "naca-code", "uiuc-picker", "dat-picker", "dat-file", "dat-status", "airfoil-search", "airfoil-select", "catalog-status", "airfoil-meta", "airfoil-name", "airfoil-description", "airfoil-link", "show-reference", "curvature-mapping-field", "curvature-mapping-help", "cfd-te-topology",
   "mach", "reynolds", "alpha", "ncrit", "transition-mode", "trip-controls", "trip-upper", "trip-lower", "sigma", "sigma-field", "flow-hint", "backend", "backend-note", "advanced-cfd", "advanced-air", "advanced-cav", "cfd-steps", "cfd-gpu", "cfd-rk", "cfd-rk-field", "gas-physics-fields", "cfd-auto-stop", "cfd-mass-ceiling", "gas-mesh-field", "cfd-mesh", "cfd-resolution", "base-faces-field", "cfd-n-base", "cfd-sfd-storage", "cfd-viscosity-model", "cfd-temperature-field", "cfd-temperature", "cav-warm-steps", "cav-duration", "cav-frames", "cav-channel", "cav-channel-field", "cav-fluid", "cav-domain", "cav-domain-note", "cav-depth", "cav-depth-field", "cav-air-mode", "cav-air-mode-field", "operation-feedback", "operation-label", "curvature-scale", "curvature-scale-field",
   "cav-reference-picker", "cav-reference-select", "cav-reference-meta", "cav-reference-status", "cav-reference-note", "cav-reference-link", "run-status", "job-progress", "gas-mesh-label", "sweep-enabled", "sweep-controls", "alpha-start", "alpha-stop", "alpha-step", "sweep-count", "run-button", "form-error", "job-title", "job-message", "job-percent", "progress-bar", "job-id", "log-state", "log-count", "log-follow", "log-download", "log-view", "log-empty", "log-warning",
   "lowspeed-controls", "lowspeed-resolution", "lowspeed-tu", "lowspeed-mut-ratio", "lowspeed-note", "lowspeed-gpu", "lowspeed-gpu-note", "recent-select", "recent-open", "recent-refresh", "recent-status",
@@ -363,12 +363,13 @@ function updateOperationFeedback() {
 }
 function afterPaint() { return new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve))); }
 
-async function request(path, { method = "GET", value, format = "msgpack", signal } = {}) {
+async function request(path, { method = "GET", value, raw, format = "msgpack", signal } = {}) {
   const headers = { Accept: format === "bson" ? "application/bson" : "application/msgpack" };
   if (value !== undefined) headers["Content-Type"] = format === "bson" ? "application/bson" : "application/msgpack";
+  if(raw!==undefined)headers["Content-Type"]="text/plain; charset=utf-8";
   let response;
   try {
-    response = await fetch(path, { method, headers, body: value === undefined ? undefined : (format === "bson" ? encodeBson(value) : encodeMsgpack(value)), cache: "no-store", signal });
+    response = await fetch(path, { method, headers, body: raw!==undefined ? raw : value === undefined ? undefined : (format === "bson" ? encodeBson(value) : encodeMsgpack(value)), cache: "no-store", signal });
   } catch (err) {
     if (err.name === "AbortError") throw err;
     throw new Error(`Cannot reach Julia at ${location.origin}. Keep the launcher window open and use the new tab opened by run.cmd.`);
@@ -554,8 +555,8 @@ function usesCoupledCh({airfoil,flow={},backends=[],preview=null}) {
   return Array.isArray(x)&&Array.isArray(y)&&x.length>2&&x.length===y.length&&Math.hypot(x[0]-x.at(-1),y[0]-y.at(-1))>1e-8;
 }
 function coupledChForControls() {
-  const kind=el["source-kind"].value,id=kind==="naca4"?el["naca-code"].value.trim():kind==="uiuc"?el["airfoil-select"].value:kind==="cavitation_reference"?el["cav-reference-select"].value:kind;
-  const airfoil={kind,id},thickness=el["trailing-edge-thickness"].value.trim()===""?undefined:Number(el["trailing-edge-thickness"].value);
+  const kind=el["source-kind"].value,id=selectedSourceId(kind);
+  const airfoil=portableAirfoil(kind,id),thickness=el["trailing-edge-thickness"].value.trim()===""?undefined:Number(el["trailing-edge-thickness"].value);
   const gurney=gurneyFlow(false)||{},sourceKey=geometrySourceKey(airfoil,{cfd_te_thickness:thickness,...gurney});
   return usesCoupledCh({airfoil,flow:{cfd_te_topology:el["cfd-te-topology"].value||"auto",cfd_te_thickness:thickness,...gurney},
     backends:selectedBackends(el.backend.value),preview:state.preview?.sourceKey===sourceKey?state.preview:null});
@@ -566,6 +567,7 @@ function updateSetup() {
   const isCavitationReference=sourceKind==="cavitation_reference";
   el["naca-picker"].classList.toggle("hidden", sourceKind !== "naca4");
   el["uiuc-picker"].classList.toggle("hidden", !isUiuc);
+  el["dat-picker"].classList.toggle("hidden", sourceKind!=="dat");
   el["cav-reference-picker"].classList.toggle("hidden",!isCavitationReference);
   el["cav-reference-meta"].classList.toggle("hidden",!isCavitationReference);
   if (isUiuc && !state.catalogLoaded && !state.embeddedAirfoil) loadAirfoils();
@@ -749,6 +751,9 @@ function portableAirfoil(kind,id) {
   const embedded=state.embeddedAirfoil;
   return embedded?.kind===kind&&embedded.id===id ? {...embedded} : {kind,id};
 }
+function selectedSourceId(kind) {
+  return kind==="naca4" ? el["naca-code"].value.trim() : kind==="uiuc" ? el["airfoil-select"].value : kind==="dat" ? (state.embeddedAirfoil?.kind==="dat"?state.embeddedAirfoil.id:"") : kind==="cavitation_reference" ? el["cav-reference-select"].value : kind;
+}
 function collectCase() {
   const kind = el["source-kind"].value;
   const preset=selectedCavitationReference();
@@ -756,9 +761,10 @@ function collectCase() {
   const selected=el.backend.value,backends=selectedBackends(selected),hasCfd=backends.some(isCfdBackend);
   const underwater=backends.includes("cavitation")&&el["cav-domain"].value==="underwater";
   if(underwater&&(backends.length!==1||backends[0]!=="cavitation"))throw new Error("Nonlinear free surface currently requires the standalone Species / cavitation backend. Other backends use different flow conditions.");
-  const id = kind === "naca4" ? el["naca-code"].value.trim() : kind === "uiuc" ? el["airfoil-select"].value : kind === "cavitation_reference" ? el["cav-reference-select"].value : kind;
+  const id = selectedSourceId(kind);
   if (kind === "naca4" && !/^\d{4}$/.test(id)) throw new Error("Enter a four digit NACA designation.");
   if (kind === "uiuc" && !id) throw new Error("Select an airfoil from the UIUC catalog.");
+  if (kind === "dat" && !id) throw new Error("Choose an XFOIL .dat coordinate file first.");
   const flow = {
     ...(state.studyFlowExtras||{}),
     ...(preset?.flow||{}),
@@ -913,7 +919,7 @@ function previewCase(mesh) {
   const kind = el["source-kind"].value;
   const preset=selectedCavitationReference();
   if(kind==="cavitation_reference"&&(!preset||state.cavitationReferenceAppliedId!==preset.id))return null;
-  const id = kind === "naca4" ? el["naca-code"].value.trim() : kind === "uiuc" ? el["airfoil-select"].value : kind === "cavitation_reference" ? el["cav-reference-select"].value : kind;
+  const id = selectedSourceId(kind);
   if ((kind === "naca4" && !/^\d{4}$/.test(id)) || !id) return null;
   const valueOr = (id, fallback) => finite(Number(el[id].value)) ? Number(el[id].value) : fallback;
   const flow = { ...(preset?.flow||{}), mach: valueOr("mach", 0.3), reynolds: valueOr("reynolds", 300000), alpha_deg: valueOr("alpha", 0),
@@ -2632,7 +2638,9 @@ async function downloadResult() {
 }
 
 function sourceChanged() {
+  state.datImportGeneration=(state.datImportGeneration||0)+1;
   state.embeddedAirfoil=null;state.studyFlowExtras={};
+  el["dat-file"].value="";el["dat-status"].textContent="Choose a .dat file. Its coordinates are embedded when you save the study.";
   const source = el["source-kind"].value;
   if(source==="cavitation_reference"){updateSetup();return selectCavitationReference();}
   state.cavitationReferenceSelection++;
@@ -2642,6 +2650,22 @@ function sourceChanged() {
   }
   updateSetup();
   scheduleGeometryPreview();
+}
+async function importDatFile(file) {
+  if(!file)return;
+  const generation=state.datImportGeneration=(state.datImportGeneration||0)+1;
+  try {
+    if(!/\.dat$/i.test(file.name))throw new Error("Choose an XFOIL .dat coordinate file.");
+    if(file.size>2*1024*1024)throw new Error("Airfoil file exceeds 2 MB.");
+    if(state.serviceRevision!=null&&state.serviceRevision<23)throw new Error("Restart the Julia workbench to enable .dat import.");
+    el["dat-status"].textContent="Reading and checking airfoil coordinates…";
+    const data=await request('/api/airfoil/import-dat?filename='+encodeURIComponent(file.name),{method:'POST',raw:await file.text()});
+    if(generation!==state.datImportGeneration||el["source-kind"].value!=="dat")return;
+    state.embeddedAirfoil=data.airfoil;el["dat-status"].textContent=data.message;
+    updateSetup();invalidatePreviewMesh();scheduleGeometryPreview();switchTab('geometry');
+    window.AirfoilStudies?.markDirty();
+  }catch(error){if(generation===state.datImportGeneration){el["dat-status"].textContent=error.message;displayError(error);}}
+  finally {el["dat-file"].value="";}
 }
 function setTheme(mode) {
   if (["light", "dark"].includes(mode)) document.documentElement.dataset.theme = mode;
@@ -2789,6 +2813,9 @@ function applySavedRequestToForm(saved) {
     el["source-kind"].value="uiuc";state.embeddedAirfoil=foil.coordinates?{...foil}:null;
     if(![...el["airfoil-select"].options].some(option=>option.value===foil.id))el["airfoil-select"].add(new Option(foil.id,foil.id));
     el["airfoil-select"].value=foil.id;
+  } else if(foil.kind==="dat"){
+    el["source-kind"].value="dat";state.embeddedAirfoil=foil.coordinates?{...foil}:null;
+    el["dat-file"].value="";el["dat-status"].textContent=`${foil.id} · ${foil.coordinates?.x?.length||0} saved points. Coordinates are embedded in this study.`;
   } else if(foil.kind==="cavitation_reference"){el["source-kind"].value=foil.kind;el["cav-reference-select"].value=foil.id;state.cavitationReferenceAppliedId=foil.id;}
   else return false;
   const selection=["jxfoil","xfoil","transonic","cavitation","lowspeed","both","cfd_both","xfoil_cfd_both","xfoil_lowspeed","lbm"].find(value=>{
@@ -2858,6 +2885,7 @@ async function openSavedJob(id=el["recent-select"].value,{restoreForm=true,rethr
   } catch(err) {displayError(err);if(rethrow)throw err;} finally {done();}
 }
 el["source-kind"].addEventListener("change", sourceChanged);
+el["dat-file"].addEventListener("change",()=>importDatFile(el["dat-file"].files?.[0]));
 el["recent-open"].addEventListener("click",()=>openSavedJob());
 el["recent-refresh"].addEventListener("click",()=>loadRecentResults());
 el["reynolds"].addEventListener("input",()=>{state.reynoldsEdited=true;});

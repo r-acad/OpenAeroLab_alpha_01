@@ -82,7 +82,7 @@ function _study_validate_document(document)
     geometry isa AbstractDict || throw(ArgumentError("Study has no embedded source geometry"))
     coordinates = AirfoilJXBackend.study_coordinates(geometry)
     foil = get(request,"airfoil",Dict())
-    if get(foil,"kind","") == "uiuc"
+    if get(foil,"kind","") in ("uiuc","dat")
         request = merge(request,Dict("airfoil"=>merge(foil,Dict("coordinates"=>coordinates))))
     end
     case = _validated_case(request)

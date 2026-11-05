@@ -18,6 +18,14 @@ are bundled; they work offline in a fresh installation.
 
 ## Studies
 
+Choose **Model → Airfoil source → XFOIL coordinate file (.dat)** to open a local
+coordinate file with the system file picker. Plain or titled XFOIL contours and
+the two-surface count format are supported. Points are ordered from the trailing
+edge around the leading edge and back. Import normalizes the chord to one and
+places the leading edge at the origin. Invalid rows are reported with their line
+number. Save the study to embed the coordinates; reopening needs no original
+file or network connection.
+
 Use **Project → New study / Open study / Save study / Save study as**. Open
 offers recent Airfoil studies and a native system file picker. Save reuses the
 opened filename; Save As chooses a different folder or name. Ctrl+S, Ctrl+Shift+S

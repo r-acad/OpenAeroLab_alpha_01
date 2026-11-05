@@ -37,7 +37,8 @@ function _mesh_candidate(original,dx;levels=Int(original["levels"]))
     current["surface_dx"]=Float64(dx);current["levels"]=levels
     current["domain"]=deepcopy(get(original,"requested_domain",original["domain"]))
     ext=Float64.(current["bounds"]["max"]).-Float64.(current["bounds"]["min"])
-    adjustment=_expand_minimum_domain!(current["domain"],ext,dx,levels)
+    tx=get(get(current,"transform",Dict()),"translation",[0.,0.,0.])[1]
+    adjustment=_expand_minimum_domain!(current["domain"],ext,dx,levels;translation_x=tx)
     current["domain_adjustment"]=adjustment
     current["requested_domain"]=adjustment["requested_domain"]
     current

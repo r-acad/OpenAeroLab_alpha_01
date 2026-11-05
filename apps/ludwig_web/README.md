@@ -17,7 +17,8 @@ Project / Model / Domain / Mesh / Analysis / Results / Display menus use the
 shared Boxer-style interface in `../common/static/`. Help explains the workflow.
 Display offers six palettes for numeric fields; changing palette retains the
 loaded surface/plane and does not change saved PNGs. Mac supports study/result
-viewing and JXfoil; CUDA runs require Windows or Linux with an NVIDIA GPU.
+viewing, JXfoil and the CPU D3Q19 backend; CUDA runs require Windows or Linux
+with an NVIDIA GPU.
 
 Aero Lab offers **D3Q27 + cumulant** (Mach at most 0.6) from either solver
 source and **D3Q39 + entropic** (Mach at most 1.6) from the main solver. D3Q39
@@ -45,8 +46,27 @@ of currently available VRAM. The GUI shows the corresponding GB value and any
 device reserve cap; the final
 built mesh is checked again before a GPU run.
 Build and inspect the mesh before a run; these web cases are development cases,
-not validated flow predictions. D3Q19 remains retired pending a separate
-solver review.
+not validated flow predictions. **D3Q19 + regularised · CPU octree** selects
+the separate CPU backend automatically; it supports native/VTK results and
+1–10 levels at Mach ≤ 0.3. It is experimental and is distinct from the retired
+legacy GPU D3Q19 implementation.
+
+**Model → Appearance and GLB textures** restores the original GLB materials
+from the study when retained. Choosing GLB switches to the geometry view;
+**Surface** returns to computed fields. One opacity slider controls neutral,
+GLB and field surfaces. At 100%, original GLB transparency (such as glass) is
+preserved; at 0%, the model is hidden without changing solver geometry.
+
+With **Domain → Symmetry plane**, **Align model symmetry plane to domain**
+centres the full model's transformed Y bounds on Y = 0. This assumes the model
+is symmetric about that plane. Prepared half models use **Adjust model to wall**.
+Changing placement requires a new mesh.
+
+**Domain → X domain offset, m** shifts the domain relative to the model:
+positive downstream, negative upstream. Minimum-clearance and proportion modes
+grow the domain as needed to preserve clearances and AMR levels. Fixed-section
+mode retains its size and refuses inlet/outlet intersections. The setting is
+saved with the study and applies to every Aero backend.
 
 In Aero Lab, import an STL, OBJ, or GLB from **File**, set its scale, rotation,
 and offset under **Model**, then choose domain clearances, boundary conditions,

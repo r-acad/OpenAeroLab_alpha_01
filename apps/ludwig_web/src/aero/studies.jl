@@ -168,6 +168,7 @@ function _check_study_setup(setup)
     get(setup["domain"],"symmetry_center_y",false) isa Bool ||
         throw(ArgumentError("Study domain.symmetry_center_y must be true or false"))
     _domain_sizing(get(setup["domain"],"sizing","minimum"))
+    _number(get(setup["domain"],"x_offset_m",0.),"Study domain.x_offset_m";lo=-10_000,hi=10_000)
     _domain_proportions(get(setup["domain"],"proportions",[1.,1.,1.]))
     _geometry_handling(get(setup,"geometry_handling","closed_solid"))
     haskey(setup,"surface_triangle_max_edge_m") &&
@@ -242,7 +243,7 @@ function _same_study_domain(a,b)
     normalized(value)=begin
         result=merge(Dict{String,Any}(String(k)=>v for (k,v) in pairs(value)),
             Dict{String,Any}("symmetry_center_y"=>get(value,"symmetry_center_y",false),
-                "sizing"=>get(value,"sizing","minimum")))
+                "sizing"=>get(value,"sizing","minimum"),"x_offset_m"=>get(value,"x_offset_m",0.)))
         result["proportions"]=result["sizing"]=="proportions" ? _effective_domain_proportions(value) : [1.,1.,1.]
         result
     end

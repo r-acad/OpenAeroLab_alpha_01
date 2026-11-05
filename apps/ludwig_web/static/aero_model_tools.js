@@ -95,11 +95,11 @@
     const notify=()=>adapter.onAvailability?.(availability());
     function disposeContainer(value) {if(!value)return;value.dispose();}
     function clear() {return refreshSource(null);}
-    async function refreshSource(nextFile) {
+    async function refreshSource(nextFile,{retry=false}={}) {
       if(disposed)return false;
-      if(nextFile===file)return loadPromise;
+      if(nextFile===file&&!(retry&&error))return loadPromise;
       file=nextFile||null;const token=++loadToken;loading=false;error='';textured=false;loadPromise=Promise.resolve(false);visualRoot.setEnabled(false);
-      disposeContainer(container);container=null;notify();
+      disposeContainer(container);container=null;if(surface&&!surface.isDisposed?.())surface.setEnabled((options.opacity??1)>0);notify();
       if(!availability().supported){adapter.onRender?.();return false;}
       loading=true;notify();
       loadPromise=(async()=>{
@@ -232,9 +232,10 @@
       const p=copySettings({...frame?.config?.transform,...(frame?.config?.flow?{flow_angles:[frame.config.flow.alpha||0,frame.config.flow.beta||0]}:adapter.getTransformSettings())}),bounds=adapter.getSourceBounds?.();
       const placed=Boolean(frame?.bodyOrigin?.length===3&&bounds?.center&&!frame?.imported);
       textured=Boolean(placed&&container&&options.appearance==='glb'&&!options.fieldMode);
-      visualRoot.setEnabled(textured);if(surface)surface.setEnabled(!textured);
-      applyOpacity(surface?.material,options.opacity??1,B);
-      for(const item of container?.meshes||[])applyOpacity(item.material,options.opacity??1,B);
+      const opacity=Math.max(0,Math.min(1,Number.isFinite(Number(options.opacity))?Number(options.opacity):1));
+      visualRoot.setEnabled(textured&&opacity>0);if(surface)surface.setEnabled(!textured&&opacity>0);
+      applyOpacity(surface?.material,opacity,B);
+      for(const item of container?.meshes||[])applyOpacity(item.material,opacity,B);
       applySymmetryClip();
       if(placed){
         const pose=rotationMatrix(B,p,Boolean(frame.ground));pose.setTranslation(B.Vector3.FromArray(solverToViewer(frame.bodyOrigin,Boolean(frame.ground))));
@@ -258,7 +259,7 @@
       if(disposed)return;disposed=true;++loadToken;disposeContainer(container);container=null;
       clearProjections();manager.dispose();proxy.dispose();visualRoot.dispose();
     }
-    return {sync,refreshSource,clear,availability,isModelMesh,isInteracting:()=>Boolean(drag),isTexturedVisible:()=>textured,ownsPointer,dispose};
+    return {sync,refreshSource,clear,availability,isModelMesh,isInteracting:()=>Boolean(drag),isTexturedVisible:()=>textured&&visualRoot.isEnabled(),ownsPointer,dispose};
   }
   window.LudwigAeroModelTools={create,extractTriangles,applyOpacity};
 })();

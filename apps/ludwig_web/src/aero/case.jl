@@ -74,9 +74,17 @@ function _quantize_proportioned_domain(target,coarse_dx,boundary)
 end
 
 "Treat physical clearances as minima while preserving a ground or symmetry plane at Y=0."
-function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels::Integer)
+function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels::Integer;
+                                 translation_x::Real=0.)
     requested = deepcopy(domain)
     before = _domain_lengths(domain,extent)
+    x_offset=_number(get(domain,"x_offset_m",0.),"domain.x_offset_m";lo=-10_000,hi=10_000)
+    relative_x=Float64(translation_x)-x_offset
+    required=copy(before)
+    # X clearances grow equally about the shifted domain centre. This preserves
+    # the requested minima and uses any AMR/proportion padding before growing
+    # the final envelope further; the geometry itself is never translated here.
+    required[1]+=2abs(relative_x)
     coarse_dx = dx * 2.0^(levels-1)
     # The native healthy-pyramid rule needs four 8-cell coarse blocks per axis.
     # When an axis needs expansion, leave one additional coarse block so YAML
@@ -86,15 +94,18 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
     fit_floor = minimum_axis*(1+1e-10)
     boundary=domain["boundary"]
     sizing=_domain_sizing(get(domain,"sizing","minimum"))
+    if sizing=="fixed" && !(domain["upstream"]+relative_x>0 && domain["downstream"]-relative_x>0)
+        throw(ArgumentError("The domain X offset places the model on or outside the inlet/outlet of this fixed closed section. Reduce the offset, increase the upstream/downstream distances, or use minimum domain sizing; the model is not moved automatically."))
+    end
     proportion_target=nothing;continuous_target=nothing;effective_ratios=nothing
     if sizing == "minimum" && boundary!="symmetry"
-        target=[value<fit_floor ? expanded_axis : value for value in before]
+        target=[value<fit_floor ? expanded_axis : value for value in required]
         _grow_domain_to_lengths!(domain,before,target)
     elseif sizing=="minimum" && boundary=="symmetry"
         safe_floor=minimum_axis
-        min_y=max(before[2],safe_floor)
-        target_x=max(before[1],safe_floor,2min_y)
-        target_z=max(before[3],safe_floor,2min_y)
+        min_y=max(required[2],safe_floor)
+        target_x=max(required[1],safe_floor,2min_y)
+        target_z=max(required[3],safe_floor,2min_y)
         continuous_target=[target_x,.5*min(target_x,target_z),target_z]
         effective_ratios=continuous_target./maximum(continuous_target)
         proportion_target=_quantize_proportioned_domain(continuous_target,coarse_dx,boundary)
@@ -105,7 +116,7 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
         # In symmetry mode X/Z grow sufficiently for Y=half(shorter X/Z);
         # the interpolation buffer at the mirror plane is never weakened.
         safe_floor=minimum_axis
-        scale=maximum(max.(before,safe_floor)./effective_ratios)
+        scale=maximum(max.(required,safe_floor)./effective_ratios)
         continuous_target=effective_ratios.*scale
         all(isfinite,continuous_target) || throw(ArgumentError("Domain proportions are too extreme; choose ratios closer together"))
         proportion_target=_quantize_proportioned_domain(continuous_target,coarse_dx,boundary)
@@ -121,6 +132,14 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
         "minimum_axis_size_m"=>minimum_axis,"sizing"=>sizing,
         "anchored_plane"=>boundary=="ground" ? "ground_y0" : boundary=="symmetry" ? "symmetry_y0" : nothing,
         "message"=>note)
+    adjustment["x_offset_m"]=x_offset
+    adjustment["model_min_x_m"]=domain["upstream"]+relative_x
+    adjustment["model_center_x_m"]=domain["upstream"]+extent[1]/2+relative_x
+    adjustment["streamwise_clearances_m"]=[domain["upstream"]+relative_x,domain["downstream"]-relative_x]
+    if !iszero(x_offset)
+        adjustment["message"] *= (isempty(note) ? "" : " ") *
+            "Domain X offset $(round(x_offset,sigdigits=6)) m shifts the domain $(x_offset>0 ? "downstream" : "upstream") relative to the unchanged model. $(sizing=="fixed" ? "The fixed section keeps its requested span." : "Upstream/downstream clearances remain minima; the domain grows when needed.")"
+    end
     if proportion_target!==nothing
         sizing=="proportions" && (adjustment["requested_proportions"]=_domain_proportions(get(requested,"proportions",[1.,1.,1.])))
         adjustment["effective_proportions"]=effective_ratios
@@ -179,6 +198,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     boundary in ("free_air", "ground", "symmetry") ||
         throw(ArgumentError("domain.boundary must be free_air, ground, or symmetry"))
     domain["boundary"] = boundary
+    domain["x_offset_m"]=_number(get(d,"x_offset_m",0.),"domain.x_offset_m";lo=-10_000,hi=10_000)
     boundary=="symmetry" && beta!=0 && throw(ArgumentError("Symmetry requires beta = 0"))
     reference=haskey(raw,"reference") ? _reference_dimensions(raw["reference"],boundary) : nothing
     sizing=_domain_sizing(get(d,"sizing","minimum"))
@@ -210,8 +230,6 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     if boundary == "symmetry" && !iszero(translation[2])
         throw(ArgumentError("Symmetry requires the model anchored at the Y=0 plane; set lateral translation to zero"))
     end
-    -domain["upstream"] <= translation[1] <= domain["downstream"] ||
-        throw(ArgumentError("Streamwise translation moves the model outside the domain"))
     abs(translation[2]) <= domain["lateral"] ||
         throw(ArgumentError("Lateral translation moves the model outside the domain"))
     if boundary == "ground"
@@ -222,7 +240,7 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
             throw(ArgumentError("Vertical translation moves the model outside the domain"))
     end
     levels = _integer(get(raw, "levels", 3), "levels"; lo=1, hi=solver == "q19_octree" ? Q19_MAX_LEVELS : 7)
-    domain_adjustment = _expand_minimum_domain!(domain,extent,dx,levels)
+    domain_adjustment = _expand_minimum_domain!(domain,extent,dx,levels;translation_x=translation[1])
     lengths = domain_adjustment["resolved_size_m"]
     target_raw = get(raw, "target_vram_gb", nothing)
     target_vram_gb = target_raw === nothing ? nothing : _number(target_raw, "target_vram_gb"; lo=0.5, hi=24)
@@ -386,6 +404,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     so = boundary == "ground" ? [offset[1], offset[3], -offset[2]] : offset
     lx,ly,lz = _estimate(case)["domain_size_m"]
     coarse_dx = dx * 2.0^(levels - 1)
+    snapped_x = 8*_stable_grid_block_count(lx,coarse_dx,8)*coarse_dx
     snapped_y = 8*_stable_grid_block_count(ly,coarse_dx,8)*coarse_dx
     snapped_z = 8*_stable_grid_block_count(lz,coarse_dx,8)*coarse_dx
     # The app resolves physical dimensions and AMR levels. Native legacy domain
@@ -396,10 +415,16 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     dom = Dict("upstream" => d["upstream"], "downstream" => d["downstream"],
                "lateral" => solver_lateral, "height" => solver_height)
     placement = String[]
+    relative_x=so[1]-get(d,"x_offset_m",0.)
     if case["solver"] in ("main","pond_thermal","q19_octree")
-        !iszero(so[1]) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + so[1]))")
+        !iszero(relative_x) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + relative_x))")
         !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
         !iszero(so[3]) && push!(placement, "    object_center_z_m: $(@sprintf("%.12g", snapped_z/2 + so[3]))")
+    elseif case["solver"]=="lbmtau" && !iszero(relative_x)
+        # The pinned solver predates metre-based placement, but its fraction
+        # option uses the same final block-snapped streamwise domain length.
+        center_fraction=(d["upstream"]+e[1]/2+relative_x)/snapped_x
+        push!(placement,"    object_center_x_fraction: $(@sprintf("%.17g",center_fraction))")
     end
     plane_lines = String[]
     if isempty(case["cuts"])

@@ -28,6 +28,7 @@
     const sizing = $('domain-sizing')?.value || 'minimum';
     const proportions = sizing === 'proportions';
     const symmetry = $('boundary')?.value === 'symmetry';
+    if ($('symmetry-alignment-actions')) $('symmetry-alignment-actions').hidden = !symmetry;
     if ($('domain-proportions-controls')) $('domain-proportions-controls').hidden = !proportions;
     for (const axis of ['x', 'y', 'z']) {
       const input = $(`domain-ratio-${axis}`);

@@ -141,10 +141,12 @@ function _validated_case(data; geometry_only::Bool=false)
     foil = get(data, "airfoil", nothing)
     foil isa AbstractDict || throw(ArgumentError("airfoil must be a map"))
     kind = String(get(foil, "kind", ""))
-    kind in ("naca4", "uiuc", "rae2822", "oat15a", "cavitation_reference") ||
-        throw(ArgumentError("airfoil.kind must be naca4, uiuc, rae2822, oat15a, or cavitation_reference"))
+    kind in ("naca4", "uiuc", "dat", "rae2822", "oat15a", "cavitation_reference") ||
+        throw(ArgumentError("airfoil.kind must be naca4, uiuc, dat, rae2822, oat15a, or cavitation_reference"))
+    kind=="dat" && !haskey(foil,"coordinates") && throw(ArgumentError("Load an XFOIL .dat file first"))
     id = strip(String(get(foil, "id", "")))
     1 <= ncodeunits(id) <= 128 || throw(ArgumentError("airfoil.id is required and must be <=128 bytes"))
+    kind=="dat" && AirfoilJXBackend._safe_dat_id(id)
     preset = kind == "cavitation_reference" ? CavitationReferences.preset(id) : nothing
     flow = get(data, "flow", preset === nothing ? nothing : Dict{String,Any}())
     sweep = get(data, "sweep", preset === nothing ? Dict{String,Any}() : preset["sweep"])
@@ -345,7 +347,7 @@ function _validated_case(data; geometry_only::Bool=false)
         flow_out["gurney_height"] = gurney.height; flow_out["gurney_mode"] = gurney.mode
     end
     Dict{String,Any}(
-        "airfoil"=>merge(Dict{String,Any}("kind"=>kind, "id"=>id), kind == "uiuc" && haskey(foil,"coordinates") ?
+        "airfoil"=>merge(Dict{String,Any}("kind"=>kind, "id"=>id), kind in ("uiuc","dat") && haskey(foil,"coordinates") ?
             Dict("coordinates"=>AirfoilJXBackend.study_coordinates(foil["coordinates"])) : Dict()),
         "flow"=>flow_out,
         "sweep"=>Dict("enabled"=>length(alphas)>1, "start"=>alphas[1], "stop"=>alphas[end], "step"=>length(alphas)>1 ? alphas[2]-alphas[1] : 0.0),
@@ -1074,6 +1076,10 @@ function app_handler(req::HTTP.Request)
             return _airfoil_study_route(req,path)
         elseif method == "GET" && path == "/api/airfoil/benchmarks"
             return _study_json(200,Dict("items"=>AirfoilReferenceData.benchmark_catalog()))
+        elseif method == "POST" && path == "/api/airfoil/import-dat"
+            length(req.body)<=2*1024*1024 || return _error(413,"Airfoil file exceeds 2 MB",fmt)
+            filename=String(get(HTTP.queryparams(uri),"filename","airfoil.dat"))
+            return _response(200,AirfoilJXBackend.import_dat(String(req.body),filename),fmt)
         elseif method == "POST" && path == "/api/select-folder"
             payload=NativeDialogs.choose_folder(req,joinpath(PRIVATE_ROOT,"TEMP_DELETEABLE","native_dialogs"))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
@@ -1081,7 +1087,7 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>22,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>23,"protocols"=>["msgpack","bson"],
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),

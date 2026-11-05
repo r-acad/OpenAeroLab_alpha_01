@@ -61,6 +61,7 @@
                   <option value="rae2822">RAE 2822</option>
                   <option value="oat15a">ONERA OAT15A</option>
                   <option value="uiuc">UIUC database</option>
+                  <option value="dat">XFOIL coordinate file (.dat)</option>
                   <option value="cavitation_reference">Cavitation references</option>
                 </select>
               </label>
@@ -78,6 +79,7 @@
               <p id="catalog-status" class="hint" role="status">Catalog not loaded yet.</p>
               <div id="airfoil-meta" class="airfoil-meta hidden"><strong id="airfoil-name"></strong><p id="airfoil-description"></p><a id="airfoil-link" target="_blank" rel="noopener noreferrer" class="hidden">View source</a></div>
             </div>
+            <div id="dat-picker" class="hidden"><label class="field"><span>Airfoil coordinate file</span><input id="dat-file" type="file" accept=".dat,text/plain" title="Choose an XFOIL .dat text file: optional title, then x y points from the trailing edge around the leading edge and back. Coordinates are normalized to unit chord."></label><p id="dat-status" class="hint" role="status">Choose a .dat file. Its coordinates are embedded when you save the study.</p></div>
             <details id="gurney-group" class="gurney-group geometry-options">
               <summary>Geometry additions <span>Gurney, spoiler, streamline mesh</span></summary>
               <div class="geometry-options-body">
