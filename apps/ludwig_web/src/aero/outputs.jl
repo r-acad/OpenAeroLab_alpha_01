@@ -116,6 +116,38 @@ function _prepare_export_directory(id::String, case;study_name="Aero study",time
     throw(ArgumentError("Could not reserve a unique timestamped output folder"))
 end
 
+"""Copy a stable file snapshot without libuv sendfile's large-file limits.
+
+Only the initial source length is copied: logs may continue growing while an
+export is made. A truncated source or failed write removes the incomplete file.
+"""
+function _copy_regular_file!(source,destination;buffer_bytes::Integer=8*1024^2)
+    isfile(source) || throw(ArgumentError("The source file is unavailable"))
+    ispath(destination) && throw(ArgumentError("The destination file already exists"))
+    buffer_bytes>0 || throw(ArgumentError("The copy buffer must be positive"))
+    expected=filesize(source);remaining=expected;created=false
+    buffer=Vector{UInt8}(undef,min(buffer_bytes,max(1,expected)))
+    try
+        open(source,"r") do input
+            open(destination,"w") do output
+                created=true
+                while remaining>0
+                    wanted=min(length(buffer),remaining)
+                    count=readbytes!(input,buffer,wanted)
+                    count==wanted || error("The source file was truncated during copying")
+                    write(output,view(buffer,1:count))==count || error("Incomplete file write")
+                    remaining-=count
+                end
+            end
+        end
+        filesize(destination)==expected || error("Incomplete file copy")
+    catch
+        created && isfile(destination) && rm(destination;force=true)
+        rethrow()
+    end
+    destination
+end
+
 function _copy_case_tree!(source,destination)
     isdir(source) || throw(ArgumentError("The prepared mesh folder is unavailable"))
     mkpath(destination)
@@ -125,7 +157,7 @@ function _copy_case_tree!(source,destination)
             original=joinpath(folder,name);islink(original) && continue
             relative=relpath(original,source)
             target=joinpath(destination,relative);mkpath(dirname(target))
-            cp(original,target;force=false)
+            _copy_regular_file!(original,target)
         end
     end
     destination
@@ -157,9 +189,9 @@ function _copy_export_snapshot!(original,target;immutable=false)
     temporary=target*".$(uuid4()).partial"
     try
         if immutable && isdefined(Base.Filesystem,:hardlink)
-            try Base.Filesystem.hardlink(original,temporary) catch;cp(original,temporary);end
+            try Base.Filesystem.hardlink(original,temporary) catch;_copy_regular_file!(original,temporary);end
         else
-            cp(original,temporary)
+            _copy_regular_file!(original,temporary)
         end
         Base.Filesystem.rename(temporary,target)
     finally
