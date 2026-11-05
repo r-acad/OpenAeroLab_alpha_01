@@ -1,4 +1,4 @@
-using Test, KernelAbstractions
+using Test, KernelAbstractions, LinearAlgebra
 
 const LBM_F=Float32
 include(joinpath(@__DIR__,"..","..","src","collision","lattice.jl"))
@@ -146,6 +146,101 @@ end
         Int32(ni),Int32(nj),Int32(niw),Int32(nif);ndrange=(ni,nj))
     KernelAbstractions.synchronize(CPU())
     @test maximum(abs,residual)<2e-6
+end
+
+function check_block_line_inverse(backend,transfer)
+    ni,nj=3,5
+    lower=zeros(Float32,4,4,ni,nj)
+    diagonal=zeros(Float32,4,4,ni,nj)
+    upper=zeros(Float32,4,4,ni,nj)
+    vol=[Float32(0.8+.03i+.02j) for i in 1:ni,j in 1:nj]
+    rhs=ntuple(k->[Float32(.1k+.03i-.02j) for i in 1:ni,j in 1:nj],4)
+    for j in 1:nj,i in 1:ni
+        for k in 1:4
+            diagonal[k,k,i,j]=4f0+.1f0*j
+            if j>1
+                lower[k,k,i,j]=-.3f0
+            end
+            if j<nj
+                upper[k,k,i,j]=-.25f0
+            end
+        end
+        diagonal[1,4,i,j]=.2f0
+        diagonal[2,3,i,j]=-.15f0
+        diagonal[4,1,i,j]=.1f0
+        j>1 && (lower[2,1,i,j]=.03f0)
+        j<nj && (upper[4,2,i,j]=-.02f0)
+    end
+    out=ntuple(_->transfer(zeros(Float32,ni,nj)),4)
+    cp=transfer(zeros(Float32,4,4,ni,nj))
+    M._k_airfoil_block_line_solve!(backend)(out,cp,transfer.(rhs),
+        transfer(vol),transfer(lower),transfer(diagonal),transfer(upper),
+        Int32(ni),Int32(nj);ndrange=ni)
+    KernelAbstractions.synchronize(backend)
+    actual=Array.(out)
+    for i in 1:ni
+        a=zeros(Float64,4nj,4nj)
+        b=zeros(Float64,4nj)
+        for j in 1:nj
+            rows=(4j-3):(4j)
+            a[rows,rows]=diagonal[:,:,i,j]
+            j>1 && (a[rows,(4j-7):(4j-4)]=lower[:,:,i,j])
+            j<nj && (a[rows,(4j+1):(4j+4)]=upper[:,:,i,j])
+            b[rows]=[rhs[k][i,j]*vol[i,j] for k in 1:4]
+        end
+        expected=a\b
+        for j in 1:nj,k in 1:4
+            @test isapprox(actual[k][i,j],expected[4j-4+k];rtol=2e-5,atol=1e-6)
+        end
+    end
+end
+
+function check_block_row_inverse(backend,transfer)
+    ni,nj=5,3
+    lower=zeros(Float32,4,4,ni,nj)
+    diagonal=zeros(Float32,4,4,ni,nj)
+    upper=zeros(Float32,4,4,ni,nj)
+    vol=[Float32(0.8+.03i+.02j) for i in 1:ni,j in 1:nj]
+    rhs=ntuple(k->[Float32(.1k+.03i-.02j) for i in 1:ni,j in 1:nj],4)
+    for j in 1:nj,i in 1:ni
+        for k in 1:4
+            diagonal[k,k,i,j]=4f0+.1f0*i
+            i>1 && (lower[k,k,i,j]=-.3f0)
+            i<ni && (upper[k,k,i,j]=-.25f0)
+        end
+        diagonal[1,4,i,j]=.2f0
+        diagonal[2,3,i,j]=-.15f0
+        diagonal[4,1,i,j]=.1f0
+        i>1 && (lower[2,1,i,j]=.03f0)
+        i<ni && (upper[4,2,i,j]=-.02f0)
+    end
+    out=ntuple(_->transfer(zeros(Float32,ni,nj)),4)
+    cp=transfer(zeros(Float32,4,4,ni,nj))
+    M._k_airfoil_block_row_solve!(backend)(out,cp,transfer.(rhs),
+        transfer(vol),transfer(lower),transfer(diagonal),transfer(upper),
+        Int32(ni),Int32(nj),Int32(ni),Int32(1);ndrange=nj)
+    KernelAbstractions.synchronize(backend)
+    actual=Array.(out)
+    for j in 1:nj
+        a=zeros(Float64,4ni,4ni)
+        b=zeros(Float64,4ni)
+        for i in 1:ni
+            rows=(4i-3):(4i)
+            a[rows,rows]=diagonal[:,:,i,j]
+            i>1 && (a[rows,(4i-7):(4i-4)]=lower[:,:,i,j])
+            i<ni && (a[rows,(4i+1):(4i+4)]=upper[:,:,i,j])
+            b[rows]=[rhs[k][i,j]*vol[i,j] for k in 1:4]
+        end
+        expected=a\b
+        for i in 1:ni,k in 1:4
+            @test isapprox(actual[k][i,j],expected[4i-4+k];rtol=2e-5,atol=1e-6)
+        end
+    end
+end
+
+@testset "coupled block line inverse CPU" begin
+    check_block_line_inverse(CPU(),identity)
+    check_block_row_inverse(CPU(),identity)
 end
 
 @testset "streamwise implicit factor" begin
@@ -360,6 +455,10 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "single-phase airfoil multilevel JFNK flow CUDA" begin
         airfoil_implicit_smoke(CUDA.CUDABackend();jfnk=true,preconditioner=:multilevel)
+    end
+    @testset "coupled block line inverse CUDA" begin
+        check_block_line_inverse(CUDA.CUDABackend(),CUDA.CuArray)
+        check_block_row_inverse(CUDA.CUDABackend(),CUDA.CuArray)
     end
     @testset "symmetric matrix-free airfoil Jacobian CUDA" begin
         airfoil_central_difference_smoke(CUDA.CUDABackend())

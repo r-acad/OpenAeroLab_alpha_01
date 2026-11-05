@@ -5,6 +5,7 @@
 # time-to-convergence gain on the qualified NACA 0012 study mesh.
 using LinearAlgebra
 include("cmesh_steady_multilevel_ka.jl")
+include("cmesh_steady_block_line_ka.jl")
 export JFNKAirfoilWorkspace, build_jfnk_airfoil_workspace, step_jfnk_airfoil_ka!
 export JFNKAirfoilController, build_jfnk_airfoil_controller, step_jfnk_rans_ka!
 
