@@ -558,7 +558,7 @@ function _assess_mesh!(actual, case)
     geometry_blocked = ambiguous && !open_allowed
     geometry_warning = !ambiguous ? "" : open_allowed ?
         "Two-sided / intentional open surface is enabled. The geometry audit is advisory: outside orientation and solid interior are unverified. Wall intersections use both triangle sides without duplicating faces; openings and nonmanifold or intersecting faces can change the filled solid and computed forces." :
-        "The geometry has open, nonmanifold or inconsistently oriented faces. Choose Solver geometry: Two-sided / intentional open surface to run knowingly with this geometry, or repair the model. A matching minimum-Y symmetry opening is accepted automatically."
+        "The geometry has open, nonmanifold or inconsistently oriented faces. Choose Solver geometry: Two-sided / intentional open surface to run knowingly with this geometry, or repair the model. A symmetry opening is accepted automatically only when its placed edges lie on the domain Y=0 plane."
     isempty(geometry_warning) || (message = isempty(message) ? geometry_warning : message*" "*geometry_warning)
     actual["finest_wall_cells"] = wall
     actual["surface_area_m2"] = area

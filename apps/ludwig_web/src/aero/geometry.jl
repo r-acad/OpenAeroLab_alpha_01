@@ -161,8 +161,8 @@ function _model_geometry_audit(model_id::String)
     get(metadata,"geometry_audit",nothing)
 end
 
-"Check that all open edges of transformed half geometry lie on its minimum-Y symmetry face."
-function _open_edges_match_symmetry(tris::Vector{Triangle},bounds)
+"Check that every open edge lies on the actual solver Y=0 plane after placement."
+function _open_edges_match_symmetry(tris::Vector{Triangle},bounds;shift_y::Real=0.)
     lo=bounds["min"];hi=bounds["max"];tol=max(maximum(hi.-lo)*1e-8,1e-14)
     vertices=Dict{NTuple{3,Int64},Int}();edges=Dict{Tuple{Int,Int},Tuple{Int,Bool}}()
     for tri in tris, corner in 1:3
@@ -170,7 +170,7 @@ function _open_edges_match_symmetry(tris::Vector{Triangle},bounds)
         ka=ntuple(i->round(Int64,(a[i]-lo[i])/tol),3);kb=ntuple(i->round(Int64,(b[i]-lo[i])/tol),3)
         ia=get!(vertices,ka,length(vertices)+1);ib=get!(vertices,kb,length(vertices)+1)
         key=minmax(ia,ib);old=get(edges,key,(0,true))
-        edges[key]=(old[1]+1,old[2]&&abs(a[2]-lo[2])<=tol&&abs(b[2]-lo[2])<=tol)
+        edges[key]=(old[1]+1,old[2]&&abs(a[2]+shift_y)<=tol&&abs(b[2]+shift_y)<=tol)
     end
     any(value[1]==1 for value in values(edges)) && all(value[1]==2 || (value[1]==1&&value[2]) for value in values(edges))
 end
