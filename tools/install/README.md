@@ -25,11 +25,15 @@ written to the log path printed by setup.
 
 Pass these to `setup.cmd`, `bash setup.sh` or `bash setup.command`:
 
-- `--help`: describe the available options (requires Julia to read the detailed help).
+- `--help`: describe the available options (on Windows, this does not require Julia).
 - `--dry-run`: show the plan without installing or changing files; requires the pinned Julia.
 - `--offline`: use the existing Julia, packages and artifacts only; fail if something is missing.
 - `--no-precompile`: skip the explicit precompile stage.
 - `--no-verify`: skip import/application checks. Combine with `--no-precompile` for download-only setup.
+- Windows only: `--install-julia` allows the verified Julia download without a prompt;
+  `--no-install-julia` requires an existing Julia. When neither is passed,
+  `setup.cmd` asks if the pinned Julia is missing. Choosing no stops setup until
+  Julia 1.13.2 is installed manually. `--offline` and `--dry-run` never download Julia.
 
 Unknown options fail with a nonzero exit status. Failed runs keep their logs
 and downloaded caches; rerun to resume. A setup lock prevents two installers

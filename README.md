@@ -17,7 +17,9 @@ not required. Keep the setup console open until it reports **Setup complete**.
 | macOS Intel / Apple Silicon | `bash setup.command` | `bash "__Start here!__/Mac/OpenAeroLab.command"` | [Mac instructions](__Start%20here!__/Mac/README.md) |
 
 Setup reuses the required **Julia 1.13.2**, or downloads an official archive and
-verifies its SHA-256 before installing it privately. It automatically downloads
+verifies its SHA-256 before installing it privately. On Windows, `setup.cmd` asks
+before downloading Julia when it is missing; unattended runs can pass
+`--install-julia` or `--no-install-julia`. Setup automatically downloads
 the Julia packages and binary artifacts for the web workbenches, JXfoil,
 supported solver backends, and CairoMakie reports/renders. It then precompiles
 packages and verifies each runtime. Subsequent setup runs reuse downloaded packages;

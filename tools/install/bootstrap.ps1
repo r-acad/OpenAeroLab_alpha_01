@@ -20,7 +20,7 @@ function Install-LudwigVisualCpp {
 }
 
 function Get-LudwigJulia {
-    param([string]$Repository, [switch]$Install)
+    param([string]$Repository, [switch]$Install, [switch]$AllowMissing)
     $version = (Get-Content -LiteralPath (Join-Path $Repository 'tools\install\julia_version.txt') -Raw).Trim()
     if (-not $env:LUDWIG_PRIVATE_ROOT) {
         $env:LUDWIG_PRIVATE_ROOT = [IO.Path]::GetFullPath((Join-Path $Repository '..\02_PRIVATE_PROJECT_DEVELOPMENT'))
@@ -39,6 +39,7 @@ function Get-LudwigJulia {
         }
     }
     if ($explicit) { throw "LUDWIG_JULIA / AIRFOIL_JULIA must point to Julia $version. Remove the override to let setup install it." }
+    if ($AllowMissing -and -not $Install) { return $null }
     if (-not $Install) { throw "Julia $version is missing. Run setup.cmd at the repository root first." }
     if (-not [Environment]::Is64BitOperatingSystem) { throw 'OpenAeroLab requires a 64-bit operating system.' }
     $record = Get-Content -LiteralPath (Join-Path $Repository 'tools\install\runtimes.tsv') | Where-Object { $_.StartsWith('windows-x86_64|') }
