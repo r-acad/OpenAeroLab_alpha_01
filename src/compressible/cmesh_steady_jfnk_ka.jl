@@ -1,18 +1,20 @@
 # Matrix-free pseudo-transient Newton-Krylov for the steady A+/C airfoil flow.
 # Experimental: uses the exact nonlinear residual but a finite-difference
-# Jacobian and optional scalar line or approximate-factorization right
-# preconditioner. SST is segregated. The ADI variants have not shown a
-# time-to-convergence gain on the qualified NACA 0012 study mesh.
+# Jacobian and optional scalar or flux-consistent block right
+# preconditioner. SST is segregated. The ADI variants have not yet shown a
+# qualified time-to-convergence gain on the NACA 0012 study mesh.
 using LinearAlgebra
 include("cmesh_steady_multilevel_ka.jl")
 include("cmesh_steady_block_line_ka.jl")
+include("cmesh_steady_kinetic_blocks_ka.jl")
 export JFNKAirfoilWorkspace, build_jfnk_airfoil_workspace, step_jfnk_airfoil_ka!
 export JFNKAirfoilController, build_jfnk_airfoil_controller, step_jfnk_rans_ka!
 
-struct JFNKAirfoilWorkspace{L,V,A,S,M}
+struct JFNKAirfoilWorkspace{L,V,A,S,M,K}
     line::L
     adi::A
     mg::M
+    kinetic::K
     coupled_cut::Bool
     swept_line::Bool
     sweep_old::S
@@ -36,7 +38,8 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
                                       preconditioner::Symbol=:line)
     2<=m<=24 || throw(ArgumentError("JFNK restart length must be 2:24"))
     preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi,
-                       :swept_line,:cut_swept_line,:multilevel) ||
+                       :swept_line,:cut_swept_line,:multilevel,
+                       :kinetic_block_adi) ||
         throw(ArgumentError("unknown airfoil preconditioner"))
     vec()=ntuple(_->similar(s.dtf),4)
     v=vec()
@@ -52,7 +55,9 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
     coupled_cut=preconditioner in (:cut_line,:cut_block_adi,:cut_swept_line)
     line=build_implicit_line_workspace(s)
     mg=preconditioner==:multilevel ? build_airfoil_mg_workspace(s,line,adi) : nothing
-    JFNKAirfoilWorkspace(line,adi,mg,coupled_cut,
+    kinetic=preconditioner==:kinetic_block_adi ?
+        build_airfoil_kinetic_block_workspace(s;block_length=min(s.NI,64)) : nothing
+    JFNKAirfoilWorkspace(line,adi,mg,kinetic,coupled_cut,
         swept_line,swept_line ? vec() : nothing,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
         vec(),vec(),vec(),vec(),vec(),vec(),m)
@@ -98,6 +103,7 @@ _av_norm(a)=sqrt(max(0.0,_av_dot(a,a)))
 end
 
 function _airfoil_line_precondition!(out,input,s::KSol,w::JFNKAirfoilWorkspace)
+    w.kinetic!==nothing && return _airfoil_kinetic_precondition!(out,input,s,w.kinetic)
     line=w.line; b=s.backend; ni=Int32(s.NI);nj=Int32(s.NJ)
     for k in 1:4
         if w.mg!==nothing
@@ -338,6 +344,7 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
         s.rho,s.ux,s.uy,s.T,s.nut,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,
         s.nu_lam,s.rho_inf,s.suth,s.air_sutherland,Int32(s.sst),
         cfl,ni,nj,g;ndrange=(s.NI,s.NJ))
+    w.kinetic!==nothing && _airfoil_kinetic_build!(s,w.kinetic,line.d0)
     if w.adi!==nothing
         _k_implicit_i_coeffs!(b)(w.adi.lamW,w.adi.lamE,
             s.rho,s.ux,s.uy,s.T,s.nut,s.Six,s.Siy,s.vol,
@@ -537,8 +544,8 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
                                  recovery_total=c.recovery_iterations))
         end
         c.rejections+=1
-        c.cfl=used*0.5f0
-        c.cfl<c.min_cfl && break
+        c.cfl=max(c.min_cfl,used*0.5f0)
+        used<=c.min_cfl && break
     end
     recovered=_airfoil_explicit_recovery!(s,c;corrected_wall_metric,nonorth_diffusion)
     if recovered.accepted

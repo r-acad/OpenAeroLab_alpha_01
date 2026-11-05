@@ -1,4 +1,4 @@
-using Test, KernelAbstractions, LinearAlgebra
+using Test, KernelAbstractions, LinearAlgebra, StaticArrays
 
 const LBM_F=Float32
 include(joinpath(@__DIR__,"..","..","src","collision","lattice.jl"))
@@ -407,6 +407,70 @@ end
 end
 @testset "single-phase airfoil multilevel JFNK flow CPU" begin
     airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:multilevel)
+end
+
+@testset "two-state kinetic face block directional action" begin
+    cx,cy,cz,w,_,_=build_d3q39_static()
+    eint=2.0f0;drot=2.0f0
+    ql=M._airfoil_conserved4(1.08f0,0.19f0,-0.04f0,1.02f0,eint)
+    qr=M._airfoil_conserved4(0.97f0,0.15f0,0.03f0,0.95f0,eint)
+    nxr=0.7f0;nyr=-0.4f0
+    jl,jr=M._airfoil_kinetic_face_jacobians(ql,qr,nxr,nyr,
+        cx,cy,cz,w,drot,eint)
+    dl=SVector{4,Float32}(0.15f0,-0.09f0,0.07f0,0.12f0)
+    dr=SVector{4,Float32}(-0.08f0,0.04f0,0.11f0,-0.05f0)
+    h=0.002f0
+    fp=M._airfoil_kinetic_flux2(ql+h*dl,qr+h*dr,nxr,nyr,cx,cy,cz,w,drot,eint)
+    fm=M._airfoil_kinetic_flux2(ql-h*dl,qr-h*dr,nxr,nyr,cx,cy,cz,w,drot,eint)
+    actual=(fp-fm)/(2h)
+    predicted=jl*dl+jr*dr
+    @test all(isfinite,predicted)
+    @test norm(predicted-actual)/norm(actual)<0.02
+    wall=M._airfoil_wall_pressure_jacobian(0.19f0,-0.04f0,nxr,nyr,eint)
+    @test wall[1,:]==zeros(Float32,4) && wall[4,:]==zeros(Float32,4)
+    @test wall[2,4]==nxr*M.CS2/eint
+end
+
+@testset "four-variable wake-cut block inverse" begin
+    ni,nj,niw,nif=6,4,2,2
+    lower=zeros(Float32,4,4,ni,nj)
+    upper=zeros(Float32,4,4,ni,nj)
+    diagonal=zeros(Float32,4,4,ni,nj)
+    vol=fill(1.0f0,ni,nj)
+    rhs=ntuple(k->fill(Float32(0.03k),ni,nj),4)
+    for j in 1:nj,i in 1:ni
+        for k in 1:4
+            diagonal[k,k,i,j]=4f0+0.1f0*k
+            if j>1 || i<=niw || i>niw+nif
+                lower[k,k,i,j]=-0.2f0
+            end
+            j<nj && (upper[k,k,i,j]=-0.3f0)
+        end
+        diagonal[2,4,i,j]=0.1f0
+        diagonal[4,1,i,j]=-0.05f0
+    end
+    out=ntuple(_->zeros(Float32,ni,nj),4)
+    cp=similar(lower)
+    M._k_airfoil_block_cut_line_solve!(CPU())(out,cp,rhs,vol,
+        lower,diagonal,upper,Int32(ni),Int32(nj),Int32(niw),Int32(nif);
+        ndrange=niw+nif)
+    KernelAbstractions.synchronize(CPU())
+    for j in 1:nj,i in 1:ni
+        x=SVector{4,Float32}((out[k][i,j] for k in 1:4)...)
+        south=j>1 ? SVector{4,Float32}((out[k][i,j-1] for k in 1:4)...) :
+            (i<=niw || i>niw+nif ?
+             SVector{4,Float32}((out[k][ni+1-i,1] for k in 1:4)...) : zero(x))
+        north=j<nj ? SVector{4,Float32}((out[k][i,j+1] for k in 1:4)...) : zero(x)
+        lhs=diagonal[:,:,i,j]*x+lower[:,:,i,j]*south+upper[:,:,i,j]*north
+        expected=SVector{4,Float32}((rhs[k][i,j] for k in 1:4)...)
+        @test isapprox(lhs,expected;rtol=2e-5,atol=2e-6)
+    end
+end
+
+@testset "single-phase airfoil kinetic block ADI JFNK flow CPU" begin
+    airfoil_implicit_smoke(CPU();jfnk=true,preconditioner=:kinetic_block_adi)
+    airfoil_implicit_smoke(CPU();jfnk=true,linear_solver=:krylov,
+        preconditioner=:kinetic_block_adi)
 end
 
 @testset "symmetric matrix-free airfoil Jacobian CPU" begin
