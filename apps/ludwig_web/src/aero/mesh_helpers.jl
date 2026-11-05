@@ -16,7 +16,7 @@ function _apply_measured_mesh_estimate!(state,actual)
 end
 
 "Check allocations before integer grid counts or a CPU mesh process are created."
-function _mesh_limits(case)
+function _mesh_limits(case; available_ram_bytes=Sys.free_memory())
     ext=Float64.(case["bounds"]["max"]).-Float64.(case["bounds"]["min"])
     body=_resolved_body_extent(case["domain"],ext)
     lengths=_domain_lengths(case["domain"],ext)
@@ -27,9 +27,33 @@ function _mesh_limits(case)
     reasons=String[]
     pyramid || push!(reasons,"The fixed domain cannot retain $levels AMR levels at this cell size.")
     coarse<=MESH_CELL_LIMIT || push!(reasons,"The coarse lattice exceeds 30 million cells.")
-    fine<=MESH_CELL_LIMIT || push!(reasons,_q19_case(case) ? "The octree surface-band estimate exceeds 30 million cells; increase surface cell size before building." : "The conservative near-body fine-cell envelope exceeds 30 million cells.")
-    Dict{String,Any}("valid"=>isempty(reasons),"reasons"=>reasons,"coarse_cells"=>coarse,
+    result=Dict{String,Any}("coarse_cells"=>coarse,
         "fine_envelope_cells"=>fine,"pyramid_fits"=>pyramid)
+    if _q19_case(case)
+        # A CPU octree is not subject to the GPU mesher's fixed fine-cell cap.
+        # Account for its dense refinement masks as well as the surface and wake
+        # storage. This is an admission estimate, not a replacement for the native
+        # measured run allowance checked again immediately before Run.
+        o=get(case,"octree",_q19_settings(Dict{String,Any}()))
+        wake_level=max(1,levels-o["wake_level_offset"])
+        wake_volume=prod(min.(lengths,[o["wake_length"]*body[1],1.2body[2],1.2body[3]]))
+        wake_cells=sum((wake_volume/(dx*2.0^(levels-l))^3 for l in 2:wake_level);init=0.)
+        mask_bytes=coarse*sum(8.0^k for k in 0:levels-1)/8
+        # Construction stores topology, marking work and serialized mesh copies;
+        # it does not allocate the population buffers used by a solver run.
+        # Two mask pyramids cover refinement/balancing scratch. The separate
+        # native run estimate includes populations and coupling buffers.
+        build_bytes=256*(coarse+fine+wake_cells)+2mask_bytes+512_000_000
+        budget=.8min(Float64(Sys.total_memory()),Float64(available_ram_bytes))
+        result["build_memory_estimate_gb"]=build_bytes/1e9
+        result["build_ram_budget_gb"]=budget/1e9
+        result["dense_mask_bytes"]=mask_bytes
+        build_bytes<=budget || push!(reasons,"The CPU octree build allowance ($(round(build_bytes/1e9,digits=2)) GB, including refinement masks and wake) exceeds 80% of available RAM ($(round(budget/1e9,digits=2)) GB). Increase surface cell size or reduce domain/levels.")
+    else
+        fine<=MESH_CELL_LIMIT || push!(reasons,"The conservative near-body fine-cell envelope exceeds 30 million cells.")
+    end
+    result["valid"]=isempty(reasons);result["reasons"]=reasons
+    result
 end
 
 function _mesh_candidate(original,dx;levels=Int(original["levels"]))

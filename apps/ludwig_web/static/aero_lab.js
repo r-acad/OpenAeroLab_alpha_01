@@ -107,7 +107,7 @@
       levels:inputNumber('levels','AMR levels',{min:1,max:octree?10:7,integer:true}),solver,lattice,
       octree:octree?{band_fine:inputNumber('octree-band-fine','finest band',{min:3,max:64,integer:true}),band:inputNumber('octree-band','coarser bands',{min:3,max:64,integer:true}),
         wake_length:inputNumber('octree-wake','wake length',{min:0,max:20}),wake_level_offset:inputNumber('octree-wake-offset','wake level offset',{min:0,max:4,integer:true}),
-        threads:inputNumber('octree-threads','CPU threads',{min:0,max:256,integer:true})}:undefined,
+        threads:inputNumber('octree-threads','CPU threads',{min:0,max:256,integer:true}),seal_cavities:Boolean($('octree-seal-cavities')?.checked)}:undefined,
       mesh_sizing:$('mesh-sizing').value,
       target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),
       outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,
@@ -391,7 +391,7 @@
     set('mesh-sizing',caseInfo.mesh_sizing??(sized?'vram':'manual'));
     const free=Number(state.capabilities?.gpu?.free_gb),legacy=free>0?Math.min(100,Math.max(1,100*Number(caseInfo.target_vram_gb)/free)):80;
     set('target-vram',caseInfo.target_vram_percent??(sized?Math.round(legacy):80));$('target-vram').disabled=false;
-    const octree=caseInfo.octree||{};set('octree-band-fine',octree.band_fine??8);set('octree-band',octree.band??6);set('octree-wake',octree.wake_length??1);set('octree-wake-offset',octree.wake_level_offset??1);set('octree-threads',octree.threads??0);
+    const octree=caseInfo.octree||{};set('octree-band-fine',octree.band_fine??8);set('octree-band',octree.band??6);set('octree-wake',octree.wake_length??1);set('octree-wake-offset',octree.wake_level_offset??1);set('octree-threads',octree.threads??0);if($('octree-seal-cavities'))$('octree-seal-cavities').checked=octree.seal_cavities===true;
     set('lattice',caseInfo.lattice||'d3q27');set('solver',caseInfo.solver);syncSolverLattice();
     set('flow-alpha',flow.alpha||0);set('flow-beta',flow.beta||0);referenceTools?.restore(caseInfo.reference||{});syncFlowAngles();
     set('velocity',flow.velocity);set('density',flow.density);
@@ -1467,6 +1467,7 @@
     $('domain-x-offset')?.addEventListener('input',()=>{if(state.frame?.body&&state.domainCameraAnchor===undefined)state.domainCameraAnchor=state.frame.body.center[0];invalidateMesh();});
     $('symmetry-align-model')?.addEventListener('click',alignModelSymmetry);
     for(const id of ['octree-band-fine','octree-band','octree-wake','octree-wake-offset','octree-threads'])$(id)?.addEventListener('input',invalidateMesh);
+    $('octree-seal-cavities')?.addEventListener('change',invalidateMesh);
     $('lattice').addEventListener('change',()=>{syncSolverLattice('lattice');invalidateMesh();});
     $('solver').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
     for(const id of ['flow-input-mode','flow-mach','flow-temperature','flow-cfl','flow-wall-model'])$(id).addEventListener('input',()=>{syncThermalFlow();invalidateMesh();});

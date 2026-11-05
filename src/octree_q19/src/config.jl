@@ -43,6 +43,7 @@ Base.@kwdef struct OutputSpec
     ramp_steps::Int = 100
     output_every::Int = 1000          # volume output cadence, coarse steps
     slice_every::Int = 100
+    startup_slices::Bool = false     # optional step-zero initialized fields, never converged results
     forces_every::Int = 10
     diagnostics_every::Int = 100
     planes::Vector{Plane} = Plane[]
@@ -235,6 +236,7 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
     end
     outputs = OutputSpec(steps=steps, ramp_steps=_i(_get(raw, "basic", "simulation", "ramp_steps"), min(100, steps ÷ 10)),
                          output_every=_i(_get(raw, "basic", "simulation", "output_freq"), steps + 1), slice_every=_i(_get(raw, "basic", "simulation", "slice_output_freq"), max(1, steps ÷ 10)),
+                         startup_slices=_b(_get(raw,"basic","simulation","output_startup_slices"),false),
                          forces_every=_i(_get(raw, "advanced", "forces", "output_freq"), 10), diagnostics_every=_i(_get(raw, "advanced", "diagnostics", "freq"), 100),
                          planes=planes, export_fields=String.(_get(raw, "advanced", "slice", "export_fields"; default=["density", "pressure", "u", "v", "w", "velocity_magnitude", "vorticity"])),
                          slice_png=_b(_get(raw, "advanced", "slice", "png"), false), volume_vtk=_i(_get(raw, "basic", "simulation", "output_freq"), steps + 1) <= steps,

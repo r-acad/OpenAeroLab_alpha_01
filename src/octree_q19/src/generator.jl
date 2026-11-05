@@ -250,18 +250,19 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
     # ---- 2. balance, buffers, domain-face margin, sibling closure
     t0 = time()
     for l in L:-1:2
-        # refined cells must stay one coarse cell away from non-periodic domain faces: clear the outermost level-1 row
-        R[l] .&= .!face_margin_mask(sizes[l], l, spec.periodic)
+        # Open/domain-wall faces retain the coarse buffer. Symmetry is a local
+        # reflecting condition at every level, so surface refinement reaches it.
+        R[l] .&= .!face_margin_mask(sizes[l], l, spec.periodic, spec.faces)
         P = parent_mask(R[l]); dilate!(P, 2, spec.periodic)
-        P .&= .!face_margin_mask(sizes[l - 1], l - 1, spec.periodic)
+        P .&= .!face_margin_mask(sizes[l - 1], l - 1, spec.periodic, spec.faces)
         R[l - 1] .|= P
         R[l] = children_mask(parent_mask(R[l]))
-        R[l] .&= .!face_margin_mask(sizes[l], l, spec.periodic)
+        R[l] .&= .!face_margin_mask(sizes[l], l, spec.periodic, spec.faces)
         R[l] = children_mask(parent_mask(R[l]))
     end
     # (a second pass guarantees the buffer after the sibling closure and the face margin)
     for l in L:-1:2
-        P = parent_mask(R[l]); dilate!(P, 2, spec.periodic); P .&= .!face_margin_mask(sizes[l - 1], l - 1, spec.periodic)
+        P = parent_mask(R[l]); dilate!(P, 2, spec.periodic); P .&= .!face_margin_mask(sizes[l - 1], l - 1, spec.periodic, spec.faces)
         R[l - 1] .|= P
     end
     timings["balance"] = time() - t0
@@ -295,7 +296,9 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
             p = (ox + 2dx, oy + 2dy, oz + 2dz)
             pw, inside = wrap_origin(p, sizes[l], spec.periodic)
             if !inside
-                l == 1 && push!(boundaries, pw)    # padding layer (periodic axes wrapped, the others out of range)
+                # Fine octs may meet a symmetry face. Supply real boundary
+                # padding at that level, never an AMR ghost or periodic wrap.
+                push!(boundaries, pw)
                 continue
             end
             pw in real && continue
@@ -321,9 +324,9 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
                     # a bitmask of the domain faces the padding slot lies beyond (an edge or corner slot touches
                     # two or three; the step combines their conditions, DESIGN.md A7)
                     m = UInt8(0)
-                    c[1] < 0 && (m |= face_bit(FACE_XMIN)); c[1] >= sizes[1][1] && (m |= face_bit(FACE_XMAX))
-                    c[2] < 0 && (m |= face_bit(FACE_YMIN)); c[2] >= sizes[1][2] && (m |= face_bit(FACE_YMAX))
-                    c[3] < 0 && (m |= face_bit(FACE_ZMIN)); c[3] >= sizes[1][3] && (m |= face_bit(FACE_ZMAX))
+                    c[1] < 0 && (m |= face_bit(FACE_XMIN)); c[1] >= sizes[l][1] && (m |= face_bit(FACE_XMAX))
+                    c[2] < 0 && (m |= face_bit(FACE_YMIN)); c[2] >= sizes[l][2] && (m |= face_bit(FACE_YMAX))
+                    c[3] < 0 && (m |= face_bit(FACE_ZMIN)); c[3] >= sizes[l][3] && (m |= face_bit(FACE_ZMAX))
                     Lv.face[k, o] = m
                 end
             elseif kinds[o] == K_GHOST
@@ -808,6 +811,7 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
     # ---- 6. counts
     counts = Dict{String,Any}("levels" => L, "dx" => dxs, "domain_m" => collect(domain), "requested_domain_m" => collect(spec.domain),
         "root_cells" => collect(n1), "triangles" => length(tri_orig), "triangles_with_periodic_copies" => length(tri), "band_fine" => spec.band_fine, "band" => spec.band,
+        "symmetry_boundary_refinement" => 1,
         "surface_level" => spec.surface_level, "wake_length" => spec.wake_length, "wake_level" => wake_level,
         "distance_queries" => sum(nquery), "timings_s" => timings, "reports" => reports, "seconds" => time() - t_start)
     per = Dict{String,Any}[]
@@ -824,15 +828,19 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
     OctMesh(domain, offset, spec.periodic, levels, no_geometry ? Tri[] : tri_orig, config_sha, stl_sha, counts)
 end
 
-"Mask of the cells of level l that lie in the outermost level-1 row along a non-periodic axis."
-function face_margin_mask(size_l::NTuple{3,Int}, l::Int, periodic::NTuple{3,Bool})
+"Coarse-row buffer at nonperiodic faces, except symmetry faces with level-local reflection."
+function face_margin_mask(size_l::NTuple{3,Int}, l::Int, periodic::NTuple{3,Bool},
+                          faces::NTuple{6,Symbol}=(:inlet,:outlet,:slip,:slip,:slip,:slip))
     M = falses(size_l...)
     m = 2^(l - 1)
     for a in 1:3
         periodic[a] && continue
         n = size_l[a]
-        for v in vcat(1:m, (n - m + 1):n)
-            a == 1 ? (M[v, :, :] .= true) : a == 2 ? (M[:, v, :] .= true) : (M[:, :, v] .= true)
+        for side in 1:2
+            faces[2(a-1)+side]==:symmetry && continue
+            for v in (side==1 ? (1:m) : ((n-m+1):n))
+                a == 1 ? (M[v, :, :] .= true) : a == 2 ? (M[:, v, :] .= true) : (M[:, :, v] .= true)
+            end
         end
     end
     M

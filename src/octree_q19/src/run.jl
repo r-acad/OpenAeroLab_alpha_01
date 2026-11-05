@@ -57,6 +57,11 @@ function case_mesh(cfg::CaseConfig)
         isfile(candidate) || continue
         m = try read_mesh(candidate) catch e; println("[Run] $(candidate): $(sprint(showerror, e)); rebuilding"); nothing end
         m === nothing && continue
+        current_symmetry = !(:symmetry in cfg.mesh.faces) || get(m.counts,"symmetry_boundary_refinement",0)>=1
+        if !current_symmetry
+            println("[Run] mesh $(candidate) predates refinement at symmetry faces; rebuilding")
+            continue
+        end
         if m.config_sha == cfg.config_sha && m.stl_sha == cfg.stl_sha
             println("[Run] mesh $(candidate) matches the case (config and STL hashes)")
             return m
@@ -96,10 +101,15 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
     F = zeros(3); M = zeros(3); coeffs = zeros(12)
     t_last = time(); step_last = st.step; last_ckpt = time()
     write_provenance(out, cfg, mesh.counts["reports"] isa AbstractDict ? get(mesh.counts, "mesh_sha", "") : "")
+    if o.startup_slices && !resume && st.step==0
+        println("[InitialFields] Writing step 0 initialized flow planes; these are initialization data, not converged results.")
+        export_planes(mesh,cfg,sc,0,joinpath(out,"SLICES");with_fields=true,sampler=sampler)
+        flush(stdout)
+    end
     while st.step < steps
         ramp_inlet!(st)
         step = st.step + 1
-        collect = step % o.forces_every == 0 || step == steps
+        collect = step==1 || step % o.forces_every == 0 || step == steps
         advance!(st; collect=collect)
         if collect
             F .= forces_newton(st); tri_F = st.tri_force .* tri_factor; M .= moments_newton(st, tri_F)
@@ -107,7 +117,7 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
             write_forces!(h, st, F, M, coeffs)
         end
         cfg.mass_control && step % o.diagnostics_every == 0 && mass_control!(st)
-        if step % o.diagnostics_every == 0 || step == steps
+        if step==1 || step % o.diagnostics_every == 0 || step == steps
             now = time(); dt = now - t_last; n = step - step_last
             mlups = n * W / max(dt, 1e-9) / 1e6; ips = n / max(dt, 1e-9)
             write_convergence!(h, st, (coeffs[1], coeffs[2], coeffs[3]), mlups, ips)

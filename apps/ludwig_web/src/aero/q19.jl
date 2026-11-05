@@ -1,6 +1,14 @@
 "CPU octree D3Q19 backend (src/octree_q19): its own cell-level octree mesher and solver, no GPU, any platform."
 _q19_case(case::AbstractDict) = get(case,"solver","")=="q19_octree"
 _q19_available() = isfile(joinpath(Q19_SOLVER,"main.jl")) && isfile(joinpath(Q19_SOLVER,"Project.toml"))
+
+function _require_current_q19_mesh(case,actual)
+    if _q19_case(case) && case["domain"]["boundary"]=="symmetry" &&
+            get(get(actual,"octree",Dict()),"symmetry_boundary_refinement",0)<1
+        throw(ArgumentError("Create the mesh again before running: this saved D3Q19 mesh predates refinement at the symmetry plane. Its old RAM estimate cannot be used for the corrected mesh."))
+    end
+    nothing
+end
 _memory_lattice(case::AbstractDict) = _pond_case(case) ? "pond_thermal" : _q19_case(case) ? "q19_octree" : get(case,"lattice","d3q27")
 const Q19_BYTES_PER_SLOT = 195.0   # two population buffers, two velocity buffers, kind, cut index, oct table, at FP32
 const Q19_MAX_LEVELS = 10
@@ -10,7 +18,10 @@ const Q19_MAX_MACH = 0.3
 function _q19_settings(raw::AbstractDict)
     input=get(raw,"octree",Dict{String,Any}())
     input isa AbstractDict || throw(ArgumentError("octree must be an object"))
+    seal=get(input,"seal_cavities",false)
+    seal isa Bool || throw(ArgumentError("octree.seal_cavities must be true or false"))
     Dict{String,Any}(
+        "seal_cavities"=>seal,
         "band_fine"=>_integer(get(input,"band_fine",8),"octree.band_fine";lo=3,hi=64),
         "band"=>_integer(get(input,"band",6),"octree.band";lo=3,hi=64),
         "wake_length"=>_number(get(input,"wake_length",1.0),"octree.wake_length";lo=0,hi=20),
@@ -26,6 +37,7 @@ function _q19_yaml_lines(case::AbstractDict)
     ["octree_q19:","  enabled: true","  precision: f32","  threads: $(o["threads"])",
      "  mesh:","    levels: $(case["levels"])","    finest_dx_m: $(@sprintf("%.12g",case["surface_dx"]))",
      "    band_fine: $(o["band_fine"])","    band: $(o["band"])",
+     "    seal_cavities: $(get(o,"seal_cavities",false))",
      "    wake: {length: $(o["wake_length"]), level_offset: $(o["wake_level_offset"]), margin: 0.1}",
      "  numerics: {collision: rr, sgs: wale, u_lattice: 0.08}","  walls: {scheme: bouzidi}",
      "  outputs: {surface_vtk: $(get(case,"outputs",OUTPUT_DEFAULTS)["surface_vtk"])}",

@@ -171,6 +171,7 @@ function _check_study_setup(setup)
     _number(get(setup["domain"],"x_offset_m",0.),"Study domain.x_offset_m";lo=-10_000,hi=10_000)
     _domain_proportions(get(setup["domain"],"proportions",[1.,1.,1.]))
     _geometry_handling(get(setup,"geometry_handling","closed_solid"))
+    _q19_case(setup) && _q19_settings(setup)
     haskey(setup,"surface_triangle_max_edge_m") &&
         _number(setup["surface_triangle_max_edge_m"],"Surface triangle edge length";lo=1e-4,hi=100.)
     setup
@@ -253,6 +254,7 @@ function _same_study_domain(a,b)
 end
 
 function _same_study_setup(a::AbstractDict,b::AbstractDict)
+    _q19_case(a)==_q19_case(b) && (!_q19_case(a) || _q19_settings(a)==_q19_settings(b)) &&
     get(a,"surface_triangle_max_edge_m",0.0)==get(b,"surface_triangle_max_edge_m",0.0) &&
     _geometry_handling(get(a,"geometry_handling","closed_solid")) ==
         _geometry_handling(get(b,"geometry_handling","closed_solid")) &&
