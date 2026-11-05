@@ -70,6 +70,40 @@ function chunk_ranges_min(n::Int, nt::Int, minsize::Int)
     chunk_ranges(n, nt)
 end
 
+"""Contiguous oct ranges with roughly equal fluid work rather than equal oct counts.
+An oct near the body may have few fluid children or several costly cut links;
+equal-count ranges left some C212 threads with over three times the fluid work.
+The special-cell increment is only a scheduling weight, not a numerical change.
+"""
+function weighted_oct_chunks(Lv::OctLevel, real_octs::Vector{Int32}, nt::Int; minsize::Int=256)
+    n = length(real_octs)
+    nt = max(1, min(nt, cld(n, minsize)))
+    nt == 1 && return UnitRange{Int}[1:n]
+    function weight(oi)
+        o = Int(real_octs[oi]); w = 0
+        @inbounds for k in 1:8
+            if Lv.kind[k, o] == K_FLUID
+                w += 1 + (Lv.special[k, o] != 0)
+            end
+        end
+        w
+    end
+    total = sum(weight(oi) for oi in 1:n)
+    total == 0 && return chunk_ranges(n, nt)
+    ranges = UnitRange{Int}[]
+    start = 1; cumulative = 0; part = 1
+    for oi in 1:n
+        cumulative += weight(oi)
+        if part < nt && oi - start + 1 >= minsize && n - oi >= (nt - part) * minsize && cumulative * nt >= part * total
+            push!(ranges, start:oi)
+            start = oi + 1
+            part += 1
+        end
+    end
+    push!(ranges, start:n)
+    ranges
+end
+
 "Allocate the state at rest (rho = 1, u = 0: shifted populations are zero) with first touch by the owning thread."
 function State(mesh::OctMesh, cfg::CaseConfig, ::Type{T}) where {T<:AbstractFloat}
     sc = lattice_scaling(cfg)
@@ -77,7 +111,7 @@ function State(mesh::OctMesh, cfg::CaseConfig, ::Type{T}) where {T<:AbstractFloa
     levels = LevelState{T}[]
     for (l, Lv) in enumerate(mesh.levels)
         real_octs = Int32[o for o in 1:Lv.nocts if Lv.real[o]]
-        chunks = chunk_ranges_min(length(real_octs), nt, 256)           # a small level takes fewer tasks
+        chunks = weighted_oct_chunks(Lv, real_octs, nt)                  # balance fluid work, retain oct locality
         f = Array{T,3}(undef, 8, Q, Lv.nocts); g = similar(f)
         u = Array{T,3}(undef, 8, 3, Lv.nocts); v = similar(u)
         rho = Matrix{T}(undef, 8, Lv.nocts); rhob = similar(rho)
@@ -120,7 +154,9 @@ the interfaces: a vortex started at equilibrium radiated a pressure pulse of a q
 function initialise!(st::State{T}, init; nonequilibrium::Bool=true) where T
     for (l, Lv) in enumerate(st.mesh.levels)
         S = st.levels[l]; omega = S.omega; tau = one(T) / omega; h = Lv.dx / 2
-        for o in 1:Lv.nocts, k in 1:8
+        ranges = chunk_ranges_min(Lv.nocts, nthreads(), 256)
+        @threads :static for t in 1:length(ranges)
+          for o in ranges[t], k in 1:8
             kd = Lv.kind[k, o]
             (kd == K_FLUID || kd == K_GHOST || kd == K_COVERED) || continue
             p = slot_centre(Lv, slot_id(k, o))
@@ -145,6 +181,34 @@ function initialise!(st::State{T}, init; nonequilibrium::Bool=true) where T
             @inbounds S.u[k, 1, o] = ux; S.u[k, 2, o] = uy; S.u[k, 3, o] = uz
             @inbounds S.v[k, 1, o] = ux; S.v[k, 2, o] = uy; S.v[k, 3, o] = uz
             @inbounds S.rho[k, o] = rho; S.rhob[k, o] = rho
+          end
+        end
+    end
+    nlevels(st.mesh) > 1 && couple_initial!(st)
+    st.mass0 = total_mass(st)
+    st
+end
+
+"Uniform equilibrium start for production cases. The generic initializer samples a user field and its
+gradient seven times per active slot; a constant freestream needs neither coordinates nor gradients."
+function initialise_uniform!(st::State{T}, rho0::Real, ux0::Real, uy0::Real, uz0::Real) where T
+    rho = T(rho0); ux = T(ux0); uy = T(uy0); uz = T(uz0)
+    usq = ux * ux + uy * uy + uz * uz
+    fs = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
+    for (l, Lv) in enumerate(st.mesh.levels)
+        S = st.levels[l]
+        ranges = chunk_ranges_min(Lv.nocts, nthreads(), 256)
+        @threads :static for t in 1:length(ranges)
+            @inbounds for o in ranges[t], k in 1:8
+                kd = Lv.kind[k, o]
+                (kd == K_FLUID || kd == K_GHOST || kd == K_COVERED) || continue
+                for i in 1:Q
+                    S.f[k, i, o] = fs[i]; S.g[k, i, o] = fs[i]
+                end
+                S.u[k, 1, o] = ux; S.u[k, 2, o] = uy; S.u[k, 3, o] = uz
+                S.v[k, 1, o] = ux; S.v[k, 2, o] = uy; S.v[k, 3, o] = uz
+                S.rho[k, o] = rho; S.rhob[k, o] = rho
+            end
         end
     end
     nlevels(st.mesh) > 1 && couple_initial!(st)

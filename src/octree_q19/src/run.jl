@@ -89,7 +89,7 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
     flush(stdout)
     st = State(mesh, cfg, cfg.precision)
     at_rest = cfg.outputs.ramp_steps > 0
-    initialise!(st, p -> (1.0, at_rest ? 0.0 : sc.u_lattice, 0.0, 0.0))
+    initialise_uniform!(st, 1.0, at_rest ? 0.0 : sc.u_lattice, 0.0, 0.0)
     h = open_histories(out; append=resume)
     if resume
         s = resume_checkpoint!(st, out, h)

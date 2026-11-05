@@ -203,9 +203,12 @@ end
 function read_mesh(path::AbstractString)
     bytes = read(path)
     length(bytes) > 32 || error("$path is not a mesh file")
-    body = bytes[1:end-32]; digest = bytes[end-31:end]
-    sha256(body) == digest || error("$path: hash mismatch (the file is damaged or truncated)")
-    io = IOBuffer(body)
+    # Hash the payload as a view and parse from the original byte vector. A large
+    # mesh can be several GB; slicing `bytes[1:end-32]` made a full second copy
+    # before the state was even allocated.
+    digest = @view bytes[end-31:end]
+    sha256(@view bytes[1:end-32]) == digest || error("$path: hash mismatch (the file is damaged or truncated)")
+    io = IOBuffer(bytes)
     String(read(io, length(MESH_MAGIC))) == MESH_MAGIC || error("$path: not an OctreeQ19 mesh")
     fmt = Int(read(io, Int64)); fmt == MESH_FORMAT || error("$path: mesh format $fmt, expected $MESH_FORMAT")
     domain = ntuple(_ -> read(io, Float64), 3); offset = ntuple(_ -> read(io, Float64), 3)
