@@ -135,15 +135,59 @@ function domain_and_offset(raw, lo::V3, hi::V3, reference_length::Float64, level
     domain, offset
 end
 
+"Write a deterministic typed representation, preserving array order and exact numeric values."
+function _write_config_identity(io, value)
+    if value isa AbstractDict
+        print(io,'{')
+        for key in sort!(collect(keys(value));by=string)
+            print(io,repr(String(key)),':');_write_config_identity(io,value[key])
+        end
+        print(io,'}')
+    elseif value isa AbstractVector
+        print(io,'[');foreach(v->_write_config_identity(io,v),value);print(io,']')
+    elseif value isa Bool
+        print(io,value ? "true;" : "false;")
+    elseif value isa Integer
+        print(io,"number:",value,"/1;")
+    elseif value isa AbstractFloat && isfinite(value)
+        # 1 and 1.0 are the same setting; nearby representable floats remain
+        # distinct. Exact rationals avoid rounding large integers or floats.
+        rational=rationalize(BigInt,value;tol=zero(value))
+        print(io,"number:",numerator(rational),'/',denominator(rational),';')
+    elseif value isa AbstractString
+        print(io,"string:",repr(value),';')
+    elseif value===nothing
+        print(io,"null;")
+    else
+        print(io,string(typeof(value)),':',repr(value),';')
+    end
+end
+
+"Physical setup identity; formatting and continuation/output controls do not change it."
+function _configuration_fingerprint(raw::AbstractDict)
+    setup=deepcopy(raw)
+    simulation=_get(setup,"basic","simulation")
+    if simulation isa AbstractDict
+        for key in ("build_only","steps","output_freq","slice_output_freq","ramp_steps")
+            delete!(simulation,key)
+        end
+    end
+    forces=_get(setup,"advanced","forces")
+    forces isa AbstractDict && delete!(forces,"output_freq")
+    bytes2hex(sha256(sprint(io->_write_config_identity(io,setup))))
+end
+
 "Load `config.yaml` of a case directory into a CaseConfig; the STL is read for its bounds and hash."
 function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
     path = joinpath(dir, "config.yaml")
     isfile(path) || error("no config.yaml in $dir")
-    bytes = read(path)
-    raw = YAML.load(String(bytes); dicttype=Dict{String,Any})
-    # the config hash binds the mesh and the checkpoints to the case; the run-control keys that a continued run
-    # may change (build_only, steps, output cadences) are left out of it
-    config_text = replace(String(copy(bytes)), r"^[ \t]*(build_only|steps|output_freq|slice_output_freq|ramp_steps):[^\n]*\n?"m => "")
+    # String(::Vector{UInt8}) may take ownership and empty its input. Keep the
+    # immutable text so parsing cannot erase the bytes used by the fingerprint.
+    text = read(path, String)
+    raw = YAML.load(text; dicttype=Dict{String,Any})
+    # The app can emit 1 versus 1.0 after a JSON round trip. Fingerprint parsed
+    # values so equivalent build/run inputs reuse the same mesh and checkpoint.
+    config_sha = _configuration_fingerprint(raw)
     q = _get(raw, "octree_q19"; default=Dict{String,Any}())
     q isa AbstractDict || (q = Dict{String,Any}())
     stl = _get(raw, "basic", "stl_file")
@@ -247,7 +291,7 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
     moment = mc isa AbstractVector && length(mc) == 3 ? Tuple(Float64.(mc)) : (0.25, 0.0, 0.0)
     precision = lowercase(String(something(_get(q, "precision"), "f32"))) == "f64" ? Float64 : Float32
     bo = build_only === nothing ? _b(_get(raw, "basic", "simulation", "build_only"), false) : build_only
-    CaseConfig(String(dir), basename(normpath(dir)), stl_path, stl_scale, bytes2hex(sha256(read(stl_path))), bytes2hex(sha256(codeunits(config_text))),
+    CaseConfig(String(dir), basename(normpath(dir)), stl_path, stl_scale, bytes2hex(sha256(read(stl_path))), config_sha,
                precision, _i(_get(q, "threads"), 0), _b(_get(q, "pin_threads"), false), flow,
                _f(_get(raw, "basic", "reference_chord"), ref_len), _f(_get(raw, "basic", "reference_area_of_full_model"), (hi[2] - lo[2]) * (hi[3] - lo[3])), ref_len, moment,
                mesh, offset, numerics, walls,
