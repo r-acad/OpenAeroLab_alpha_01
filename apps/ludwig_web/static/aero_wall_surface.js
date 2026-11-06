@@ -6,7 +6,8 @@
   const count64=(view,offset)=>{const n=Number(view.getBigUint64(offset,true));if(!Number.isSafeInteger(n)||n<=0)throw new Error('Invalid native wall sample count.');return n;};
   const finite=Number.isFinite;
   // A cut through a cubic fluid cell can extend to its three-dimensional
-  // circumradius. These overlapping discs are display support, not area weights.
+  // circumradius. Each native link is displayed as a two-triangle tangent
+  // patch at its measured intersection. Patches are display support, not area weights.
   const footprintRadius=dx=>Math.sqrt(3)*.5*dx;
   function readFrame(buffer){
     const v=new DataView(buffer);if(v.byteLength<128||!magic(v,'LBMWFLD\0')||v.getUint32(8,true)!==1||v.getUint32(12,true)!==1)throw new Error('Unsupported native wall field.');
@@ -55,11 +56,11 @@
   }
   const vertexSource=`precision highp float;
     attribute vec3 position; attribute vec4 world0; attribute vec4 world1; attribute vec4 world2; attribute vec4 world3; attribute vec4 wallColor;
-    uniform mat4 viewProjection; varying vec2 disc; varying vec4 colour; varying vec3 pointWorld;
-    void main(){mat4 transform=mat4(world0,world1,world2,world3);vec4 point=transform*vec4(position,1.0);pointWorld=point.xyz;gl_Position=viewProjection*point;disc=position.xy;colour=wallColor;}`;
-  const fragmentSource=`precision highp float; varying vec2 disc; varying vec4 colour; varying vec3 pointWorld;
+    uniform mat4 viewProjection; varying vec4 colour; varying vec3 pointWorld;
+    void main(){mat4 transform=mat4(world0,world1,world2,world3);vec4 point=transform*vec4(position,1.0);pointWorld=point.xyz;gl_Position=viewProjection*point;colour=wallColor;}`;
+  const fragmentSource=`precision highp float; varying vec4 colour; varying vec3 pointWorld;
     uniform float opacity; uniform float clipEnabled; uniform vec4 sampleClipPlane; uniform float clipEnabled2; uniform vec4 sampleClipPlane2;
-    void main(){if(dot(disc,disc)>1.0)discard;if(clipEnabled>0.5&&dot(vec4(pointWorld,1.0),sampleClipPlane)>0.0)discard;if(clipEnabled2>0.5&&dot(vec4(pointWorld,1.0),sampleClipPlane2)>0.0)discard;gl_FragColor=vec4(colour.rgb,opacity);}`;
+    void main(){if(clipEnabled>0.5&&dot(vec4(pointWorld,1.0),sampleClipPlane)>0.0)discard;if(clipEnabled2>0.5&&dot(vec4(pointWorld,1.0),sampleClipPlane2)>0.0)discard;gl_FragColor=vec4(colour.rgb,opacity);}`;
   function render(surface,values,range,{B,scene,keep,color,ground=false,opacity=1,batchSize=125000}){
     const geometry=surface.geometry,view=geometry.view,objects=[],meshes=[];
     const retain=o=>{objects.push(o);keep(o);return o;};
@@ -81,11 +82,11 @@
       }
       if(!used)continue;
       const mesh=retain(new B.Mesh(`Native wall samples ${start}`,scene)),data=new B.VertexData();data.positions=[-1,-1,0,1,-1,0,1,1,0,-1,1,0];data.indices=[0,1,2,0,2,3];data.applyToMesh(mesh);
-      mesh.material=material;mesh.isPickable=false;mesh.metadata={modelSurface:true,wallSamples:true};
+      mesh.material=material;mesh.isPickable=false;mesh.metadata={modelSurface:true,wallSamples:true,linkPatchMesh:true};
       mesh.thinInstanceSetBuffer('matrix',used===end-start?matrices:matrices.subarray(0,used*16),16,true);mesh.thinInstanceSetBuffer('wallColor',used===end-start?colors:colors.subarray(0,used*4),4,true);
       mesh.thinInstanceCount=used;mesh.thinInstanceRefreshBoundingInfo();meshes.push(mesh);drawn+=used;
     }
-    return {objects,meshes,material,drawn,total:surface.count};
+    return {objects,meshes,material,drawn,total:surface.count,patchTriangles:2*drawn};
   }
   function section(surface,values,axis,position){
     const geometry=surface.geometry;if(!geometry)return [];const view=geometry.view,n='xyz'.indexOf(axis),out=[];

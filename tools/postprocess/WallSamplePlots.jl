@@ -106,7 +106,8 @@ function rasterize(geometry,frame;width=1500,height=850,legacy=nothing)
         tz=radius*dot3(t,eye);uz=radius*dot3(u,eye)
         for j in max(1,floor(Int,py-ry)):min(height,ceil(Int,py+ry)),i in max(1,floor(Int,px-rx)):min(width,ceil(Int,px+rx))
             sx=i-px;sy=j-py;a=(sx*by-bx*sy)/det;b=(ax*sy-sx*ay)/det
-            a*a+b*b<=1||continue;z=pz+a*tz+b*uz
+            # Match the browser's two-triangle tangent patch at each native link.
+            max(abs(a),abs(b))<=1||continue;z=pz+a*tz+b*uz
             if z>=depth[i,j]-2e-4;depth[i,j]=z;values[i,j]=cp;covered[i,j]=true;visible[]+=1;end
         end
     end
@@ -126,8 +127,8 @@ function plot_wall_samples(geometry,field,output;title="Native wall-sample Cp",l
     Label(fig[2,1:2],"Recorded step $(frame.step) · $(frame.count) native cell/facet samples · t = $(round(frame.time;sigdigits=5)) s")
     ax=Axis(fig[3,1],aspect=DataAspect());image!(ax,colors);hidedecorations!(ax);hidespines!(ax)
     Colorbar(fig[3,2],colormap=ramp,limits=limits,label="Cp",width=22)
-    Label(fig[4,1:2],"Fine native wall samples; gray: pressure unavailable. Adjacent fluid-cell pressure, no facet averaging.",fontsize=16)
-    Label(fig[5,1:2],"Native saved-field render · Aero Lab browser capture unavailable · convergence not certified",fontsize=16)
+    Label(fig[4,1:2],"Fine LBM link patches; white gaps: pressure unavailable. Adjacent fluid-cell pressure, no facet averaging.",fontsize=16)
+    Label(fig[5,1:2],"Native saved-field patch render · convergence not certified",fontsize=16)
     mkpath(dirname(output));Base.invokelatest(save,output,fig;px_per_unit=1)
     (frame=frame,image=image,limits=limits)
 end

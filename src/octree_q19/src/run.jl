@@ -1,5 +1,5 @@
 # Command line, case dispatch and the time loop.
-#   julia --project=src/octree_q19 src/octree_q19/main.jl --case <dir> [--build-only] [--resume]
+#   julia --project=src/octree_q19 src/octree_q19/main.jl --case <dir> [--build-only] [--resume] [--hrr-sigma <0..1>]
 # The case directory holds config.yaml and the STL; outputs go to <dir>/RESULTS as for the existing solver.
 
 "Advance the state by one coarse step: the recursive step over all levels; forces in coarse-lattice units when collected."
@@ -71,17 +71,30 @@ function case_mesh(cfg::CaseConfig)
     build_only_case(cfg)
 end
 
+"Explicitly recorded collision override for an existing mesh/checkpoint; all physical scaling remains identical."
+function runtime_hrr_case(cfg::CaseConfig, sigma::Real)
+    isfinite(sigma) && 0 <= sigma <= 1 || throw(ArgumentError("--hrr-sigma must be finite and in [0,1]"))
+    n = cfg.numerics
+    adjusted = Numerics(collision=:hrr, hrr_sigma=Float64(sigma), sgs=n.sgs,
+        c_wale=n.c_wale, c_smagorinsky=n.c_smagorinsky, u_lattice=n.u_lattice,
+        temporal=n.temporal, body_force=n.body_force)
+    CaseConfig(ntuple(i -> fieldname(CaseConfig,i) == :numerics ? adjusted : getfield(cfg,i),
+        fieldcount(CaseConfig))...)
+end
+
 """
 Run a case: the time loop over coarse steps with the inlet ramp, forces every `forces_every` steps, histories,
 field planes, surface and volume outputs, periodic checkpoints, and a final summary. `resume` restarts from the
 latest checkpoint of RESULTS/checkpoints.
 """
-function run_case(cfg::CaseConfig; resume::Bool=false)
+function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union{Nothing,Float64}=nothing)
     t_start = time()
     POSITIVITY_LIMITED_CELLS[] = 0
     out = joinpath(cfg.dir, "RESULTS"); mkpath(out)
     println("[Run] $(SOLVER_NAME): $(cfg.name), $(cfg.outputs.steps) coarse steps, precision $(cfg.precision), threads $(Threads.nthreads())")
     mesh = case_mesh(cfg)
+    source_collision = cfg.numerics.collision
+    hrr_sigma_override === nothing || (cfg = runtime_hrr_case(cfg, hrr_sigma_override))
     sc = lattice_scaling(cfg)
     L = nlevels(mesh)
     W = sum(p["fluid"] * 2^(p["level"] - 1) for p in mesh.counts["per_level"])
@@ -96,6 +109,17 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
         s = resume_checkpoint!(st, out, h)
         s === nothing ? println("[Run] no checkpoint to resume; starting from step 0") : println("[Run] resumed at step $s")
         s === nothing || println("[Run] repaired $(repair_state_positivity!(st)) pre-existing non-positive checkpoint tuples")
+    end
+    if hrr_sigma_override !== nothing
+        receipt = joinpath(out, @sprintf("runtime_numerics_from_%09d.toml", st.step))
+        open(receipt, "w") do io
+            TOML.print(io, Dict("starting_step"=>st.step,"source_config_sha256"=>cfg.config_sha,
+                "source_collision"=>String(source_collision),"effective_collision"=>"hrr",
+                "hrr_sigma"=>hrr_sigma_override,"stl_sha256"=>cfg.stl_sha,
+                "note"=>"Runtime collision override only; mesh, checkpoint, physical scaling and output cadence unchanged."))
+        end
+        println("[Run] runtime collision override: HRR sigma=$(hrr_sigma_override); receipt $receipt")
+        flush(stdout)
     end
     sampler = field_sampler(st)
     steps = cfg.outputs.steps; o = cfg.outputs
@@ -166,7 +190,7 @@ function ramp_inlet!(st::State{T}) where T
 end
 
 function main(args::Vector{String})
-    case = ""; build_only = nothing; resume = false
+    case = ""; build_only = nothing; resume = false; hrr_sigma_override = nothing
     i = 1
     while i <= length(args)
         a = args[i]
@@ -176,8 +200,11 @@ function main(args::Vector{String})
             build_only = true
         elseif a == "--resume"
             resume = true
+        elseif a == "--hrr-sigma"
+            i += 1; i <= length(args) || error("--hrr-sigma needs a value")
+            hrr_sigma_override = parse(Float64, args[i])
         elseif a == "--help" || a == "-h"
-            println("usage: main.jl --case <dir> [--build-only] [--resume]"); return 0
+            println("usage: main.jl --case <dir> [--build-only] [--resume] [--hrr-sigma <0..1>]"); return 0
         else
             error("unknown argument $a")
         end
@@ -190,6 +217,6 @@ function main(args::Vector{String})
         build_only_case(cfg)
         return 0
     end
-    run_case(cfg; resume=resume)
+    run_case(cfg; resume=resume, hrr_sigma_override)
     0
 end

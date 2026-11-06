@@ -879,13 +879,9 @@
     if(reuse){for(const object of cached.objects||[cached.mesh,cached.material])if(object)keep(object);drawnSurface=cached.mesh;}
     else if(wantsScalar&&range&&wallSamples){
       const start=state.sceneObjects.length;
-      if(source){
-        drawnSurface=addTriangleSurface(source);
-        // A deliberately neutral gray reveals unmapped regions without the
-        // bright specular/ambient highlights used for geometry inspection.
-        drawnSurface.material.diffuseColor=BABYLON.Color3.Black();drawnSurface.material.emissiveColor=new BABYLON.Color3(.25,.27,.29);
-        drawnSurface.material.specularColor=BABYLON.Color3.Black();drawnSurface.material.disableLighting=true;
-      }
+      // The native link patches are the entire field surface. Drawing the
+      // original STL beneath them makes the display look facet-averaged and
+      // can hide fine variation where the two surfaces intersect in depth.
       const samples=window.LudwigAeroWallSurface.render(surface,values,range,{B:BABYLON,scene:state.scene,keep,color:scalarColor,ground:groundSolverFrame(),opacity:Number($('model-opacity')?.value??100)/100});
       state.scalarMeshCache={scene:state.scene,mesh:drawnSurface,material:drawnSurface?.material,objects:state.sceneObjects.slice(start),samples,vertices:geometryIdentity,values,field,range,rangeMode,palette,offset:offset.slice(),ground:groundSolverFrame()};
     }
@@ -912,7 +908,7 @@
       legend.title=`Actual data minimum ${Number(range.actualLo).toPrecision(6)}, maximum ${Number(range.actualHi).toPrecision(6)}. ${range.mode==='manual'?'Manual colour limits; use Results > Field scale limits > Automatic to restore automatic limits.':range.mode==='full'?'All values use the full colour scale.':'Values outside the displayed limits use the end colours. Choose Full data range to include every value in the scale.'}`;
     }}
     const noSurface=state.mode==='surface'&&!range;
-    state.viewNotice=wallSamples&&range?`${surface.count.toLocaleString()} native wall-cell/facet samples. No averaging between cells or facets. Overlapping display discs have radius √3/2 of the local cell size; their areas are not physical integration weights. Missing samples draw nothing; gray marks surface outside the displayed footprints. ${surface.geometry.ambiguous?surface.geometry.ambiguous.toLocaleString()+' grazing/ambiguous sides are shown two-sided.':''}`:imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
+    state.viewNotice=wallSamples&&range?`${surface.count.toLocaleString()} native wall-cell/facet samples displayed as ${state.scalarMeshCache?.samples?.patchTriangles?.toLocaleString()||'fine'} LBM link patch triangles. No original STL facets are drawn in this field view; no pressure averaging between cells or facets. Patches overlap at the local cell scale and are not physical integration areas. Missing samples leave gaps. ${surface.geometry.ambiguous?surface.geometry.ambiguous.toLocaleString()+' grazing/ambiguous sides are shown two-sided.':''}`:imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
     $('viewer-overlay').textContent='';$('viewer-overlay').hidden=true;
     $('viewer-note').textContent=state.amr?'Solver placement and snapped domain · drag to orbit · right drag to pan · wheel to zoom':
       'Domain preview · +X prescribed flow · build for the snapped lattice · drag to orbit';
@@ -1033,7 +1029,7 @@
   function syncSurfaceQuantities(surface){
     const select=$('surface-field');for(const option of select.options)option.disabled=!(surface?.fields?.[option.value]??surface?.[option.value]);
     if(select.selectedOptions[0]?.disabled)select.value=surface?.cp?'cp':'pressure';
-    const description=$('surface-sampling-note');if(description)description.textContent=surface?.representation==='wall_samples'?`Native wall-cell/facet intersections · ${surface.count.toLocaleString()} samples. Each colour is its own fluid-cell pressure. Display discs overlap within the local cell's circumradius; their areas are not physical integration weights. Missing samples draw nothing; unmapped surface is gray. Shear is available only in facet averages.`:'Facet averages use the original geometry faces. Choose native wall samples when the solver has exported them to see detail within each face.';
+    const description=$('surface-sampling-note');if(description)description.textContent=surface?.representation==='wall_samples'?`Native LBM link patch mesh · ${surface.count.toLocaleString()} local samples, two display triangles each. Each colour is its own fluid-cell pressure. Original STL facets are hidden in this field view. Patches overlap within the local cell's circumradius; their areas are not physical integration weights. Missing samples leave gaps. Shear is available only in facet averages.`:'Facet averages use the original geometry faces. Choose native wall samples when the solver has exported them to see detail within each face.';
   }
   async function maybeLoadSurface(job,force=false) {
     if(!force&&(state.liveResults===false||state.surfaceFollowLive===false))return;
