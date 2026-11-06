@@ -1,4 +1,5 @@
-"""Read-only access to the solver's case artifacts for Aero Lab."""
+# Read-only access to the solver's case artifacts for Aero Lab.
+include(joinpath(@__DIR__,"wall_surface.jl"))
 
 _case_dir(id::AbstractString, kind::AbstractString) = begin
     _id(id)
@@ -204,7 +205,11 @@ function _artifact_complete(path::AbstractString)
     ext in (".partial",".tmp") && return false
     filesize(path)>0 || return false
     try
-        if ext==".lbmp"
+        if ext==".lbmw"
+            _wall_surface_metadata(path);return true
+        elseif ext==".lbmwg"
+            _wall_geometry_header(path);return true
+        elseif ext==".lbmp"
             return open(path,"r") do io
                 String(read(io,4))=="LBMP" || return false
                 version=Int(ltoh(read(io,UInt32)));count=Int(ltoh(read(io,UInt32)));objects=Int(ltoh(read(io,UInt32)))
@@ -235,6 +240,7 @@ function _artifact_complete(path::AbstractString)
 end
 
 function _surface_frame_metadata(path)
+    lowercase(splitext(path)[2])==".lbmw" && return _wall_surface_metadata(path)
     result=Dict{String,Any}("geometry_frame"=>"legacy_unverified","geometry_binding"=>"amr_if_triangle_count_matches")
     sidecar=path*".toml"
     if isfile(sidecar)
@@ -256,14 +262,15 @@ function _artifact_catalog_entry(id,phase,root,path)
     relative=replace(relpath(path,root),'\\'=>'/');name=basename(path);ext=lowercase(splitext(name)[2])
     category=_export_category(relative)
     kind=_catalog_kind(category)
-    endswith(lowercase(name),".lbmp.toml") && (kind="setup")
+    (endswith(lowercase(name),".lbmp.toml") || endswith(lowercase(name),".lbmw.toml") || ext==".lbmwg") && (kind="setup")
     matchstep=match(r"(?:_|step_)(\d{6,10})(?:\.[^.]+)?$",name)
     step=matchstep===nothing ? nothing : parse(Int,matchstep[1])
     quantity=match(r"velocity|pressure|vorticity|density|mach|temperature|cp|shear",lowercase(name))
     entry=Dict{String,Any}("name"=>relative,"url"=>_artifact_url(id,phase,relative),"kind"=>kind,
         "phase"=>phase,"step"=>step,"format"=>replace(ext,"."=>""),"bytes"=>filesize(path))
     quantity===nothing || (entry["quantity"]=quantity.match)
-    ext==".lbmp" && merge!(entry,_surface_frame_metadata(path))
+    ext in (".lbmp",".lbmw") && merge!(entry,_surface_frame_metadata(path))
+    ext==".lbmw" && (entry["geometry_url"]=_artifact_url(id,phase,replace(joinpath(dirname(relative),entry["geometry_file"]),'\\'=>'/')))
     if ext==".lbmslice"
         header=_slice_header(path)
         entry["has_fields"]=get(header,"with_fields",false)
@@ -310,16 +317,27 @@ function discover_artifacts(id::AbstractString)
 
     vtk = joinpath(run, "RESULTS", "VTK")
     if isdir(vtk)
-        surfaces = Tuple{Int,String}[]
+        surfaces = Tuple{Int,String}[];native=Tuple{Int,String}[]
         for f in readdir(vtk)
             m = match(r"^surface_(\d+)\.lbmp$", f)
             m === nothing || (_artifact_complete(joinpath(vtk,f)) && push!(surfaces, (parse(Int, m.captures[1]), f)))
+            w=match(r"^surface_(\d+)\.lbmw$",f)
+            w===nothing || (_artifact_complete(joinpath(vtk,f)) && push!(native,(parse(Int,w.captures[1]),f)))
         end
         if !isempty(surfaces)
             sort!(surfaces; by=first)
             _, latest = last(surfaces)
             result["surface_latest"] = _artifact_url(id, "run", "RESULTS/VTK/$latest")
             result["surface_latest_info"]=merge(Dict("url"=>result["surface_latest"]),_surface_frame_metadata(joinpath(vtk,latest)))
+            result["surface_facet_latest"]=result["surface_latest"];result["surface_facet_latest_info"]=result["surface_latest_info"]
+        end
+        if !isempty(native)
+            sort!(native;by=first);_,latest=last(native)
+            url=_artifact_url(id,"run","RESULTS/VTK/$latest")
+            info=_artifact_catalog_entry(id,"run",_case_dir(id,"run"),joinpath(vtk,latest))
+            result["surface_native_latest"]=url;result["surface_native_latest_info"]=info
+            result["wall_surface_latest_info"]=info
+            result["surface_latest"]=url;result["surface_latest_info"]=info
         end
     end
 
@@ -355,6 +373,7 @@ function discover_artifacts(id::AbstractString)
     for key in ("files","surfaces","volumes","images")
         sort!(result[key];by=entry->(get(entry,"step",nothing)===nothing ? -1 : entry["step"],entry["name"]))
     end
+    result["wall_surfaces"]=[entry for entry in result["surfaces"] if get(entry,"format",nothing)=="lbmw"]
     state=_load_job(String(id));opts=get(get(state,"case",Dict()),"outputs",Dict())
     availability=Dict{String,Any}()
     for (label,key,reason) in (("surface","surfaces","No completed surface field has been written yet."),

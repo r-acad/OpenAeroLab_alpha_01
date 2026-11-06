@@ -139,6 +139,20 @@ end
     end
 end
 
+@testset "Native Q19 fields do not subdivide solver geometry" begin
+    request=deepcopy(SETTINGS);request["surface_triangle_max_edge_m"]=.0001
+    case,triangles=A._validate_case(request)
+    @test case["surface_subdivision"]["applied"]===false
+    @test case["surface_subdivision"]["refined_triangles_before_symmetry"]==length(original)
+    @test case["surface_subdivision"]["gpu_surface_allowance_gb"]==0
+    yaml=YAML.load(A._yaml_case(case,case["bounds"];build_only=true))
+    @test yaml["basic"]["subdivision"]===false
+    @test yaml["basic"]["minimum_facet_size"]==0
+    changed=deepcopy(case);changed["surface_triangle_max_edge_m"]=.05
+    @test A._same_study_setup(case,changed)
+    @test_throws ArgumentError A._surface_subdivision_preview(triangles,.0001)
+end
+
 @testset "Open half-model admission uses placed Y=0" begin
     # Five sides of a box: the missing Y-min cap is the intended mirror opening.
     p=[(-.5,0.,-.5),(.5,0.,-.5),(.5,1.,-.5),(-.5,1.,-.5),

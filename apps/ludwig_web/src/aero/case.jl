@@ -221,7 +221,9 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         bounds=_bounds(transformed)
     end
     triangle_edge=_number(get(raw,"surface_triangle_max_edge_m",0.05),"surface_triangle_max_edge_m";lo=1e-4,hi=100)
-    subdivision=_surface_subdivision_preview(transformed,triangle_edge)
+    subdivision=_q19_case(raw) ? Dict{String,Any}("maximum_edge_m"=>triangle_edge,"source_triangles"=>length(transformed),
+        "refined_triangles_before_symmetry"=>length(transformed),"gpu_surface_allowance_gb"=>0.,"applied"=>false,
+        "sampling"=>"native_wall_intersections","note"=>"D3Q19 keeps the source facets for wall intersections. Native wall-cell/facet samples resolve pressure at the local fluid-cell spacing; STL subdivision is unnecessary and is not applied.") : _surface_subdivision_preview(transformed,triangle_edge)
     surface_area = 0.0
     for (a,b,c) in transformed
         u = ntuple(i -> b[i]-a[i], 3); v = ntuple(i -> c[i]-a[i], 3)
@@ -443,7 +445,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     d3q39 = lattice == "d3q39"
     q19 = _q19_case(case)
     dx = case["surface_dx"]; levels = case["levels"]
-    triangle_edge=Float64(get(case,"surface_triangle_max_edge_m",0.0))
+    triangle_edge=q19 ? 0. : Float64(get(case,"surface_triangle_max_edge_m",0.0))
     boundary = d["boundary"]
     ext = Float64[b["max"][i]-b["min"][i] for i in 1:3]
     e = boundary == "ground" ? [ext[1],ext[3],ext[2]] : ext

@@ -24,7 +24,7 @@
     if (['slice','numeric_cut','cut_plane'].includes(kind)) kind = 'cut';
     if (['amr','mesh','geometry','config','summary'].includes(kind)) kind = 'setup';
     if (['report','chart'].includes(kind)) kind = /^(png|jpe?g|webp|gif|svg)$/.test(format) ? 'image' : 'log';
-    if (!groups[kind]) kind = /^(png|jpe?g|webp|gif|svg)$/.test(format) ? 'image' : format === 'lbmp' || format === 'vtp' ? 'surface' : format === 'lbmslice' ? 'cut' : format === 'vtu' ? (/surface|wall|body/i.test(name) ? 'surface' : 'volume') : format === 'vtk' ? (/volume/i.test(name) ? 'volume' : 'surface') : format === 'csv' ? 'history' : /^(stl|obj|glb|yaml|yml|toml|json)$/.test(format) ? 'setup' : /^(log|txt|html|pdf)$/.test(format) ? 'log' : 'other';
+    if (!groups[kind]) kind = /^(png|jpe?g|webp|gif|svg)$/.test(format) ? 'image' : format === 'lbmp' || format === 'lbmw' || format === 'vtp' ? 'surface' : format === 'lbmslice' ? 'cut' : format === 'vtu' ? (/surface|wall|body/i.test(name) ? 'surface' : 'volume') : format === 'vtk' ? (/volume/i.test(name) ? 'volume' : 'surface') : format === 'csv' ? 'history' : /^(stl|obj|glb|yaml|yml|toml|json)$/.test(format) ? 'setup' : /^(log|txt|html|pdf)$/.test(format) ? 'log' : 'other';
     const stepValue = raw.step ?? raw.iteration ?? fallback.step;
     const inferred = /(?:step|iter(?:ation)?)[_-]?(\d+)/i.exec(name);
     const step = stepValue != null && Number.isFinite(Number(stepValue)) ? Number(stepValue) : inferred ? Number(inferred[1]) : null;

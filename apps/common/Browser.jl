@@ -1,7 +1,8 @@
 module DesktopBrowser
 "Open a loopback web app with the operating system's default browser."
 function open_browser(url::AbstractString; timeout::Real=10, command::Union{Nothing,Cmd}=nothing)
-    occursin(r"^http://127\.0\.0\.1:[0-9]{1,5}/$",url) || throw(ArgumentError("Browser URL must be a local workbench"))
+    address=match(r"^http://127\.0\.0\.1:([0-9]{1,5})/(?:aero-lab(?:\?job=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?:&reporting=1)?)?)?\z",url)
+    address!==nothing&&1<=parse(Int,address[1])<=65535 || throw(ArgumentError("Browser URL must be a local workbench or Aero Lab case"))
     timeout>0 || throw(ArgumentError("Browser timeout must be positive"))
     if command===nothing
         if Sys.iswindows()

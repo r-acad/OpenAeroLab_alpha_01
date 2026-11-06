@@ -20,6 +20,7 @@
     const w=out.frames.wind,b=out.frames.body;Object.assign(out,{CD:-w.force[0],CY:w.force[1],CL:-w.force[2],Cl:b.moment[0],Cm:b.moment[1],Cn:b.moment[2],LD:Math.abs(w.force[0])>1e-12?w.force[2]/w.force[0]:null});return out;
   }
   function surfaceSection(surface,values,axis,position,offset=[0,0,0],epsilon=1e-8){
+    if(surface?.representation==='wall_samples')return root.LudwigAeroWallSurface?.section(surface,values,axis,position)||[];
     const vertices=surface?.vertices;if(!vertices||!values)return [];
     const out=[],n='xyz'.indexOf(axis);
     for(let face=0;face<values.length;face++){

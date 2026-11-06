@@ -180,13 +180,13 @@
     const node=$('results-view-status');if(!node)return;
     const surface=state.importedResults?state.importedSurface:state.surface,cuts=state.job?.artifacts?.cuts||[];
     const parts=[];
-    if(surface)parts.push(`Surface loaded${finite(surface.step)?` · iteration ${fmt(surface.step)}`:''}`);
+    if(surface)parts.push(`Surface loaded${finite(surface.step)?` · iteration ${fmt(surface.step)}`:''}${surface.representation==='wall_samples'?` · ${surface.count.toLocaleString()} native wall samples (${surface.missing.toLocaleString()} missing values)`:' · original facet averages'}`);
     else if(state.job?.artifacts?.surface_latest)parts.push('Surface available · click Load results or Surface');
     if(cuts.length)parts.push(`${cuts.length} recorded plane files`);
     if(state.importedResults)parts.push(`Source: ${state.importedResults.name||'imported results'}`);
     if(state.surfaceError)parts.push(`Refresh issue: ${state.surfaceError}. Last loaded data retained.`);
     if(state.draftDirty&&(surface||cuts.length))parts.push('Showing results from the saved run; edited setup needs a new mesh');
-    if(state.surfaceRefinementPending)parts.push(`${$('surface-triangle-max-edge-mm')?.value||50} mm surface sampling is pending a new mesh; current results retain their original triangles`);
+    if(state.surfaceRefinementPending)parts.push(surface?.representation==='wall_samples'?'Geometry refinement edits do not add wall-field resolution; native samples follow the saved fluid lattice':`${$('surface-triangle-max-edge-mm')?.value||50} mm surface sampling is pending a new mesh; current results retain their original triangles`);
     const pane=$('result-pane')?.value||'scene';
     if(surface)parts.push(pane==='scene'&&state.mode==='surface'?'Surface colours visible':`Surface retained · current view: ${pane==='scene'?state.mode:pane==='cuts'?'recorded planes':'files and images'}`);
     node.textContent=parts.length?parts.join(' · '):'Open a study with results, or use Read results to load native / VTK files. Creating a mesh alone does not produce flow fields.';
@@ -194,7 +194,7 @@
   }
   function updateActions() {
     const requestedEdge=Number($('surface-triangle-max-edge-mm')?.value)/1000,builtEdge=Number(state.activeConfig?.surface_triangle_max_edge_m)||0;
-    state.surfaceRefinementPending=Boolean(state.jobId&&requestedEdge>0&&Math.abs(requestedEdge-builtEdge)>1e-10*Math.max(1,requestedEdge,builtEdge));
+    state.surfaceRefinementPending=Boolean(state.jobId&&state.activeConfig?.solver!=='q19_octree'&&requestedEdge>0&&Math.abs(requestedEdge-builtEdge)>1e-10*Math.max(1,requestedEdge,builtEdge));
     if($('mesh-visibility')){$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible!==false));$('mesh-visibility').textContent=state.meshVisible===false?'Show mesh':'Hide mesh';}
     $('model-file').disabled=state.importing||state.uploading;
     if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').disabled=$('boundary').value!=='symmetry'||!state.source||state.importing||state.uploading||activeStatuses.has(state.job?.status);
@@ -764,6 +764,16 @@
     const camera=state.camera,alpha=camera.alpha,beta=camera.beta;clearCameraMotion(camera);
     fit(displayedDomainBounds());camera.alpha=alpha;camera.beta=beta;camera._aeroFit=true;camera.getViewMatrix(true);
   }
+  function fitNativeReport(surface){
+    const bounds=surface?.geometry?.bounds||surface?.bounds,camera=state.camera;if(!bounds||!camera)return;
+    const size=bounds.max.map((value,axis)=>value-bounds.min[axis]),centre=bounds.min.map((value,axis)=>(value+bounds.max[axis])/2),span=Math.max(.01,...size),diagonal=Math.max(.01,Math.hypot(...size));
+    clearCameraMotion(camera);state.pendingStudyCamera=null;state.domainCameraAnchor=undefined;
+    camera.setTarget(v3(...centre));camera.alpha=.95;camera.beta=1.1;camera.radius=1.6*span;
+    // This dedicated view contains the body only. A tight depth interval avoids
+    // the six-order near/far ratio used while inspecting the full fluid domain.
+    camera.minZ=Math.max(.001,camera.radius-.65*diagonal);camera.maxZ=camera.radius+.8*diagonal;
+    camera._aeroFit=true;camera.getViewMatrix(true);
+  }
   function installViewerGestures(canvas,scene,camera) {
     let left=null,pan=null;
     const coordinates=event=>{const rect=canvas.getBoundingClientRect();return {x:(event.clientX-rect.left)*canvas.clientWidth/rect.width,y:(event.clientY-rect.top)*canvas.clientHeight/rect.height};};
@@ -832,7 +842,7 @@
         if(!surface.domainVertices)surface.domainVertices=Float32Array.from(surface.vertices,(v,i)=>Number(v)+Number(offset[i%3]||0));
         triangles=surface.domainVertices;
       }else triangles=dataset.amr?.geometry?.vertices||state.amr?.geometry?.vertices||previewFrame()?.triangles||null;
-      const bounds=dataset.domain_bounds,body=triangles?boundsOf(triangles):null;
+      const bounds=dataset.domain_bounds,pointBounds=surface?.representation==='wall_samples'?surface.bounds:null,body=triangles?boundsOf(triangles):pointBounds?{...pointBounds,center:pointBounds.min.map((v,i)=>(v+pointBounds.max[i])/2)}:null;
       const domain=bounds&&Array.isArray(bounds.min)&&Array.isArray(bounds.max)?bounds:body||{min:[0,0,0],max:[1,1,1]};
       return {triangles,body,domain,bodyOrigin:[0,0,0],boundary:resultBoundary(),ground:groundSolverFrame(),config:dataset.case||state.activeConfig,imported:true};
     }
@@ -859,13 +869,26 @@
     const values=surface?.fields?.[field]??surface?.[field],offset=imported?(surface?.surface_offset||surface?.offset||imported.surface_offset||[0,0,0]):surface?.surface_offset||state.amr?.mesh_offset;
     const hasPlacement=Array.isArray(offset)&&offset.length===3&&offset.every(Number.isFinite),rangeMode=$('surface-range-mode')?.value||'contrast',palette=$('results-palette')?.value||'spectrum';let range=null;
     let drawnSurface=null;
-    const cached=state.scalarMeshCache,wantsScalar=state.mode==='surface'&&values&&hasPlacement&&surface.vertices.length>=9;
+    const wallSamples=surface?.representation==='wall_samples',geometryIdentity=wallSamples?surface.geometry:surface?.vertices;
+    const cached=state.scalarMeshCache,wantsScalar=state.mode==='surface'&&values&&hasPlacement&&(wallSamples?surface.geometry?.count>0:surface?.vertices?.length>=9);
     if(wantsScalar)range=referenceTools?.range(scalarRange(values,rangeMode))||scalarRange(values,rangeMode);
-    const reuse=Boolean(wantsScalar&&range&&cached&&cached.scene===state.scene&&!cached.mesh.isDisposed()&&cached.vertices===surface.vertices&&cached.values===values&&cached.rangeMode===rangeMode&&cached.field===field&&cached.palette===palette&&cached.range.lo===range.lo&&cached.range.hi===range.hi&&cached.ground===groundSolverFrame()&&cached.offset.every((value,axis)=>value===offset[axis]));
+    const reuse=Boolean(wantsScalar&&range&&cached&&cached.scene===state.scene&&(!cached.mesh||!cached.mesh.isDisposed())&&cached.vertices===geometryIdentity&&cached.values===values&&cached.rangeMode===rangeMode&&cached.field===field&&cached.palette===palette&&cached.range.lo===range.lo&&cached.range.hi===range.hi&&cached.ground===groundSolverFrame()&&cached.offset.every((value,axis)=>value===offset[axis]));
     // Domain helpers and section fields refresh independently of the surface.
     // Keep immutable scalar buffers on the GPU while only those overlays change.
-    clearSceneObjects(reuse?new Set([cached.mesh,cached.material]):null);
-    if(reuse){drawnSurface=keep(cached.mesh);keep(cached.material);}
+    clearSceneObjects(reuse?new Set(cached.objects||[cached.mesh,cached.material]):null);
+    if(reuse){for(const object of cached.objects||[cached.mesh,cached.material])if(object)keep(object);drawnSurface=cached.mesh;}
+    else if(wantsScalar&&range&&wallSamples){
+      const start=state.sceneObjects.length;
+      if(source){
+        drawnSurface=addTriangleSurface(source);
+        // A deliberately neutral gray reveals unmapped regions without the
+        // bright specular/ambient highlights used for geometry inspection.
+        drawnSurface.material.diffuseColor=BABYLON.Color3.Black();drawnSurface.material.emissiveColor=new BABYLON.Color3(.25,.27,.29);
+        drawnSurface.material.specularColor=BABYLON.Color3.Black();drawnSurface.material.disableLighting=true;
+      }
+      const samples=window.LudwigAeroWallSurface.render(surface,values,range,{B:BABYLON,scene:state.scene,keep,color:scalarColor,ground:groundSolverFrame(),opacity:Number($('model-opacity')?.value??100)/100});
+      state.scalarMeshCache={scene:state.scene,mesh:drawnSurface,material:drawnSurface?.material,objects:state.sceneObjects.slice(start),samples,vertices:geometryIdentity,values,field,range,rangeMode,palette,offset:offset.slice(),ground:groundSolverFrame()};
+    }
     else if(wantsScalar&&range){
       drawnSurface=addTriangleSurface(surface.vertices,values,range,offset);
       state.scalarMeshCache={scene:state.scene,mesh:drawnSurface,material:drawnSurface.material,vertices:surface.vertices,values,field,range,rangeMode,palette,offset:offset.slice(),ground:groundSolverFrame()};
@@ -873,10 +896,11 @@
     else if(wantsScalar&&source)drawnSurface=addTriangleSurface(source);
     else if(source)drawnSurface=addTriangleSurface(source);
     if(!wantsScalar||!range)state.scalarMeshCache=null;
+    if(state.scalarMeshCache?.samples){const samples=state.scalarMeshCache.samples,opacity=Number($('model-opacity')?.value??100)/100;samples.material.alpha=opacity;for(const mesh of samples.meshes)mesh.setEnabled(opacity>0);}
     modelTools?.sync(frame,{surface:drawnSurface,fieldMode:state.mode==='surface',appearance:$('model-appearance')?.value||'neutral',opacity:Number($('model-opacity')?.value??100)/100,widget:$('model-widget')?.value||'none',projections:$('model-projections')?.value||'none',enabled:!activeStatuses.has(state.job?.status)&&!state.importing&&!state.uploading&&!state.importedResults});
-    drawDomain(frame.domain);drawAxes(frame);referenceTools?.draw(frame);drawFlow(frame);if(!imported){refreshRecordedVectors();drawRecordedVectors(frame);}
+    if(!state.reportPresentation){drawDomain(frame.domain);drawAxes(frame);referenceTools?.draw(frame);drawFlow(frame);if(!imported){refreshRecordedVectors();drawRecordedVectors(frame);}}
     if(state.mode==='mesh'&&state.meshVisible!==false)drawAmr();
-    inspector?.draw();
+    if(!state.reportPresentation)inspector?.draw();
     const units=surface?.field_units?.[field]||surface?.units?.[field]||'';
     $('surface-range').textContent=range?`${imported?field+(units?` [${units}]`:'')+' · ':''}${fmt(range.lo)} to ${fmt(range.hi)}`:'';
     if(window.LudwigPalettes)document.documentElement.style.setProperty('--result-ramp',window.LudwigPalettes.gradient(palette,range?.lo,range?.hi));
@@ -888,15 +912,21 @@
       legend.title=`Actual data minimum ${Number(range.actualLo).toPrecision(6)}, maximum ${Number(range.actualHi).toPrecision(6)}. ${range.mode==='manual'?'Manual colour limits; use Results > Field scale limits > Automatic to restore automatic limits.':range.mode==='full'?'All values use the full colour scale.':'Values outside the displayed limits use the end colours. Choose Full data range to include every value in the scale.'}`;
     }}
     const noSurface=state.mode==='surface'&&!range;
-    state.viewNotice=imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
+    state.viewNotice=wallSamples&&range?`${surface.count.toLocaleString()} native wall-cell/facet samples. No averaging between cells or facets. Overlapping display discs have radius √3/2 of the local cell size; their areas are not physical integration weights. Missing samples draw nothing; gray marks surface outside the displayed footprints. ${surface.geometry.ambiguous?surface.geometry.ambiguous.toLocaleString()+' grazing/ambiguous sides are shown two-sided.':''}`:imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
     $('viewer-overlay').textContent='';$('viewer-overlay').hidden=true;
     $('viewer-note').textContent=state.amr?'Solver placement and snapped domain · drag to orbit · right drag to pan · wheel to zoom':
       'Domain preview · +X prescribed flow · build for the snapped lattice · drag to orbit';
     updateLabels();updateResultViewStatus();window.LudwigAeroLayout?.refreshNotices();
     if(state.pendingStudyCamera&&state.camera&&source){const saved=state.pendingStudyCamera;state.pendingStudyCamera=null;state.camera.setTarget(new BABYLON.Vector3(...saved.target));state.camera.alpha=saved.alpha;state.camera.beta=saved.beta;state.camera.radius=saved.radius;state.camera._aeroFit=true;}
     else if(!state.camera?.target||!state.camera._aeroFit){fitDisplayedDomain();state.camera._aeroFit=true;}
+    const serial=state.viewRenderSerial||0;
+    state.scene.onAfterRenderObservable.addOnce(()=>{
+      if(serial!==(state.viewRenderSerial||0))return;
+      state.renderIdentity={jobId:state.jobId||null,step:surface?.step??null,mode:state.mode,representation:wallSamples?'wall_samples':'facet_averages',sampleCount:wallSamples?surface.count:null,field,sourceUrl:surface?.sourceUrl||null,geometrySha256:surface?.geometrySha256||null,frameSha256:surface?.frameSha256||null,colourLimits:range?[range.lo,range.hi]:null,palette};
+      window.dispatchEvent(new CustomEvent('ludwig-aero-view-ready',{detail:state.renderIdentity}));
+    });
   }
-  function queueRender() {if(!state.renderQueued){state.renderQueued=true;requestAnimationFrame(renderScene);}}
+  function queueRender() {state.renderIdentity=null;state.viewRenderSerial=(state.viewRenderSerial||0)+1;if(!state.renderQueued){state.renderQueued=true;requestAnimationFrame(renderScene);}}
   async function applyImportedResults(dataset,surface=null) {
     const initialJob=state.jobId,initialModel=state.modelId,active={...dataset,id:dataset.id||dataset.dataset_id};
     if(dataset.amr_url){try{active.amr=await api(dataset.amr_url);}catch(error){console.warn('Imported AMR metadata could not be displayed:',error);}}
@@ -980,22 +1010,39 @@
       queueRender();
     }catch(error){progress(`Lattice built, but its 3D artifact could not be displayed: ${error.message}`,job.status);}
   }
-  function bindNativeSurface(data){
+  function bindNativeSurface(data,record={}){
+    if(record.geometry_frame==='domain'){data.surface_offset=[0,0,0];data.geometry_frame='domain';return data;}
+    if(record.geometry_frame==='solver_local'&&Array.isArray(record.mesh_offset_m)){data.surface_offset=record.mesh_offset_m.slice();data.geometry_frame='solver_local';return data;}
     const vertices=state.amr?.geometry?.vertices;
     if(!vertices||vertices.length!==data.vertices.length)throw new Error('The surface snapshot does not match the solver mesh face count. Load its matching mesh or VTK surface.');
     data.vertices=Float32Array.from(vertices);data.surface_offset=[0,0,0];data.geometry_frame='domain';
     return data;
   }
+  function selectedSurfaceRecord(job){
+    const artifacts=job?.artifacts||{},choice=$('surface-representation')?.value||'auto';
+    const key=choice==='facet'?'surface_facet_latest':choice==='native'?'surface_native_latest':'surface_latest';
+    const url=apiUrl(artifacts[key]||(choice==='facet'&&!artifacts.surface_native_latest?artifacts.surface_latest:null));
+    if(!url)return null;
+    return {...(artifacts[key+'_info']||artifacts.surface_latest_info||{}),...(artifacts.surfaces||[]).find(item=>item.url===url),url};
+  }
+  async function readSurfaceRecord(record){
+    if(/\.lbmw(?:\?|$)/i.test(record.url))return window.LudwigAeroWallSurface.load(record);
+    const response=await fetch(record.url,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    const data=bindNativeSurface(readLBMP(await response.arrayBuffer()),record);data.step=record.step??Number(/_(\d+)\.lbmp(?:\?|$)/i.exec(record.url)?.[1]);data.sourceUrl=record.url;return data;
+  }
+  function syncSurfaceQuantities(surface){
+    const select=$('surface-field');for(const option of select.options)option.disabled=!(surface?.fields?.[option.value]??surface?.[option.value]);
+    if(select.selectedOptions[0]?.disabled)select.value=surface?.cp?'cp':'pressure';
+    const description=$('surface-sampling-note');if(description)description.textContent=surface?.representation==='wall_samples'?`Native wall-cell/facet intersections · ${surface.count.toLocaleString()} samples. Each colour is its own fluid-cell pressure. Display discs overlap within the local cell's circumradius; their areas are not physical integration weights. Missing samples draw nothing; unmapped surface is gray. Shear is available only in facet averages.`:'Facet averages use the original geometry faces. Choose native wall samples when the solver has exported them to see detail within each face.';
+  }
   async function maybeLoadSurface(job,force=false) {
     if(!force&&(state.liveResults===false||state.surfaceFollowLive===false))return;
-    const url=apiUrl(job?.artifacts?.surface_latest),record=(job?.artifacts?.surfaces||[]).find(item=>item.url===url),filenameStep=/_(\d+)\.lbmp(?:\?|$)/i.exec(url||'')?.[1];
+    const record=selectedSurfaceRecord(job),url=record?.url,filenameStep=/_(\d+)\.lbmw?(?:p)?(?:\?|$)/i.exec(url||'')?.[1];
     const step=finite(filenameStep)?Number(filenameStep):finite(record?.step)?Number(record.step):null,key=`${url}:${step??'unknown'}`;
     if(!url||(!force&&state.lastSurfaceKey===key)||(!force&&job.status!=='completed'&&Date.now()-state.lastSurfaceAt<8000))return;
     state.lastSurfaceAt=Date.now();
     try{
-      const response=await fetch(`${url}${url.includes('?')?'&':'?'}v=${step??0}`,{cache:'no-store'});
-      if(!response.ok)throw new Error(`HTTP ${response.status}`);
-      const data=readLBMP(await response.arrayBuffer());if(state.jobId!==job.job_id)return;bindNativeSurface(data);data.step=step;state.surface=data;state.surfaceError=null;state.lastSurfaceKey=key;if(state.autoSurfaceDisplay){state.mode='surface';syncViewButtons();state.autoSurfaceDisplay=false;}
+      state.renderIdentity=null;const data=await readSurfaceRecord({...record,step});if(state.jobId!==job.job_id)return;data.step=step;state.surface=data;syncSurfaceQuantities(data);state.surfaceError=null;state.lastSurfaceKey=key;if(state.autoSurfaceDisplay){state.mode='surface';syncViewButtons();state.autoSurfaceDisplay=false;}
       updateResultsAvailability();if(state.mode==='surface')queueRender();
     }catch(error){state.surfaceError=error.message;updateResultViewStatus();if($('results-availability-summary'))$('results-availability-summary').textContent=`Surface could not be refreshed: ${error.message}${state.surface?'. The previously loaded surface is retained.':''}`;console.warn('Surface field unavailable:',error);}
   }
@@ -1150,6 +1197,7 @@
       window.LudwigAeroLayout?.selectParameters?.('results','results-path');return false;
     }
     const fieldSelect=$(state.importedResults?'results-field':'surface-field');
+    if(!state.importedResults)syncSurfaceQuantities(surface);
     if(!(surface.fields?.[fieldSelect.value]??surface[fieldSelect.value])){
       const field=Array.from(fieldSelect.options||[]).find(option=>surface.fields?.[option.value]??surface[option.value]);if(field)fieldSelect.value=field.value;
     }
@@ -1209,11 +1257,27 @@
   }
   async function viewSurfaceRecord(file){
     const jobId=state.jobId;
-    const native=file.format==='lbmp'?file:(state.job?.artifacts?.surfaces||[]).find(item=>item.format==='lbmp'&&Number(item.step)===Number(file.step));
+    const native=['lbmp','lbmw'].includes(file.format)||/\.lbmw(?:p)?(?:\?|$)/i.test(file.url)?file:(state.job?.artifacts?.surfaces||[]).find(item=>item.format==='lbmp'&&Number(item.step)===Number(file.step));
     if(!native){if(window.LudwigAeroResults?.readUrl)return window.LudwigAeroResults.readUrl(file);throw new Error('Use the matching native surface or load this VTK file after the run.');}
-    const response=await fetch(native.url,{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);
-    const buffer=await response.arrayBuffer();if(state.jobId!==jobId)return;
-    const data=bindNativeSurface(readLBMP(buffer));data.step=native.step;state.surface=data;state.surfaceFollowLive=false;await showSurfaceResults();
+    state.renderIdentity=null;const data=await readSurfaceRecord(native);if(state.jobId!==jobId)return;
+    state.surface=data;state.surfaceFollowLive=false;if($('surface-representation'))$('surface-representation').value=data.representation==='wall_samples'?'native':'facet';syncSurfaceQuantities(data);await showSurfaceResults();
+  }
+  async function prepareReportView({jobId=state.jobId,step=null,sourceUrl=null,geometrySha256=null,frameSha256=null,field='cp',fit=false}={}){
+    if(!['cp','pressure'].includes(field))throw new Error('Native wall reports support Cp or pressure only.');
+    if(jobId!==state.jobId)throw new Error('The reporting view is attached to another study.');
+    if(sourceUrl){const record=(state.job?.artifacts?.surfaces||[]).find(item=>item.url===sourceUrl);if(!record||record.format!=='lbmw'||step!=null&&Number(record.step)!==Number(step)||geometrySha256&&record.geometry_sha256!==geometrySha256)throw new Error('The requested native wall snapshot is not in this study.');await viewSurfaceRecord(record);}
+    else{$('surface-representation').value='native';await loadLatestResults(true);}
+    if(state.surface?.representation!=='wall_samples')throw new Error('No native wall samples are available for this report.');
+    if(step!=null&&state.surface.step!==Number(step))throw new Error('The requested iteration is not loaded.');
+    if(frameSha256&&state.surface.frameSha256!==frameSha256)throw new Error('The pressure frame SHA-256 does not match the requested report.');
+    $('surface-field').value=field;state.meshVisible=false;await showSurfaceResults();updateActions();
+    if(fit){
+      state.reportPresentation=true;
+      for(const id of ['model-projections','velocity-vectors','display-aids','model-widget'])if($(id))$(id).value='none';
+      $('model-opacity').value='100';$('model-opacity-value').value='100';
+      fitNativeReport(state.surface);
+    }
+    return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{window.removeEventListener('ludwig-aero-view-ready',ready);reject(new Error('Timed out waiting for the native surface renderer.'));},120000);function ready(event){const identity=event.detail;if(identity.jobId!==jobId||identity.representation!=='wall_samples'||identity.field!==field||step!=null&&identity.step!==Number(step))return;clearTimeout(timer);window.removeEventListener('ludwig-aero-view-ready',ready);resolve(identity);}window.addEventListener('ludwig-aero-view-ready',ready);queueRender();});
   }
   function alignInspectorToRecorded(cut){
     if(!cut||!inspector?.getView||!inspector?.restoreView)return;
@@ -1417,6 +1481,7 @@
     }
     if(sel.selectedOptions[0]?.disabled){const first=Array.from(sel.options).find(o=>o.value&&!o.disabled);sel.value=first?.value||'';}
     const octreeControls=$('octree-controls');if(octreeControls)octreeControls.hidden=!octree;
+    const triangleEdge=$('surface-triangle-max-edge-mm');if(triangleEdge){triangleEdge.disabled=octree;const help=triangleEdge.parentElement?.querySelector('small');if(help)help.textContent=octree?'D3Q19 retains the original geometry. Native wall samples resolve pressure at the local fluid-cell size; change Surface cell size under Mesh to change resolution.':'Default 50 mm. Applied when creating a new mesh. Smaller triangles sample surface fields more closely; they do not add fluid cells.';}
     const sizing=$('mesh-sizing');if(octree){sizing.value='manual';}sizing.disabled=octree;$('target-vram').disabled=octree;
     if($('metric-memory-label'))$('metric-memory-label').textContent=octree?'RAM':'VRAM';
     window.LudwigOutputControls?.setCapabilities({aero:{slice_png:!octree,notices:octree?['CPU octree exports native field planes and VTK. Solver field PNG images are unavailable; use the recorded-plane viewer or Makie post-processing.']:[]}},['aero']);
@@ -1531,6 +1596,7 @@
       state.engine?.resize();const button=$('viewer-fullscreen');if(button){const label=document.fullscreenElement?'Exit full screen':'Full screen';button.textContent=document.fullscreenElement?'↙':'⛶';button.setAttribute('aria-label',label);button.title=label;}
     });
     $('surface-field').addEventListener('change',()=>{showSurfaceResults().catch(error=>progress(error.message,'Surface results'));});
+    $('surface-representation')?.addEventListener('change',async()=>{state.surfaceFollowLive=true;try{const selected=selectedSurfaceRecord(state.job);if(!selected)throw new Error('This study has no saved fields of that type. The last loaded surface is retained.');await maybeLoadSurface(state.job,true);await showSurfaceResults();}catch(error){window.LudwigAeroLayout?.showMessage(error.message,{title:'Surface sampling',urgent:true});}});
     $('surface-range-mode')?.addEventListener('change',queueRender);
     $('cut-result-select').addEventListener('change',()=>{state.selectedCut=$('cut-result-select').value;state.cutFollowLive=false;state.cutRenderKey=null;const cut=state.job?.artifacts?.cuts?.[Number(state.selectedCut)];state.selectedCutRecord=cut?.url||cut?.json_url;alignInspectorToRecorded(cut);renderCut(state.job,true);queueRender();});
     $('cut-field').addEventListener('change',()=>{state.cutRenderKey=null;renderCut(state.job,true);});
@@ -1541,11 +1607,11 @@
   if(window.LudwigAeroReference)referenceTools=window.LudwigAeroReference.create({state,$,queueRender,currentFrame,addArrow,addLabel,addLines,keep,v3});
   for(const id of ['scale-apply','scale-auto','scale-target','scale-min-slider','scale-max-slider'])$(id)?.addEventListener(id.endsWith('slider')?'input':id==='scale-target'?'change':'click',()=>{if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);});
   if(window.LudwigAeroInspector)inspector=window.LudwigAeroInspector.create({state,$,v3,keep,addQuad,addLines,addLabel,queueRender,currentFrame,scalarColor,scalarRange,api,apiUrl,renderCutRows,invalidateMesh:recordingChanged,selectResultPane,clearCameraMotion,referenceTools});
-  window.LudwigAeroResultsContext={state,api,queueRender,applyImportedResults,clearImportedResults,setImportedField,showSurfaceResults,
+  window.LudwigAeroResultsContext={state,api,queueRender,applyImportedResults,clearImportedResults,setImportedField,showSurfaceResults,prepareReportView,getRenderIdentity:()=>state.renderIdentity?{...state.renderIdentity}:null,
     getPlacement:()=>({mesh_offset:state.amr?.mesh_offset||[0,0,0],case:state.activeConfig,job_id:state.jobId})};
   window.LudwigAeroStudiesContext={state,caseSettings,attachStudyResults,hydrateCase,loadStoredModel,clearPersistedJob,queueRender,updateActions,showGeometryAudit,progress,clearImportedResults,
-    getStudyView(){const view={model_opacity:Number($('model-opacity')?.value??100),reference_display:referenceTools?.capture(),live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-range-mode','results-palette','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
-    restoreStudyView(view){const opacity=Number(view?.model_opacity??100);$('model-opacity').value=String(Number.isFinite(opacity)?Math.max(0,Math.min(100,opacity)):100);$('model-opacity-value').value=$('model-opacity').value;referenceTools?.restoreView(view?.reference_display);clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroLayout?.syncLiveResults?.();window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
+    getStudyView(){const view={model_opacity:Number($('model-opacity')?.value??100),reference_display:referenceTools?.capture(),live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-representation','surface-range-mode','results-palette','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
+    restoreStudyView(view){if($('surface-representation'))$('surface-representation').value='auto';const opacity=Number(view?.model_opacity??100);$('model-opacity').value=String(Number.isFinite(opacity)?Math.max(0,Math.min(100,opacity)):100);$('model-opacity-value').value=$('model-opacity').value;referenceTools?.restoreView(view?.reference_display);clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroLayout?.syncLiveResults?.();window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
   if(window.LudwigAeroResultBrowser)resultBrowser=window.LudwigAeroResultBrowser.create({$,isLive:()=>state.liveResults!==false,onOpenSurface:viewSurfaceRecord,onOpenCut:viewCutRecord,onOpenVolume:viewVolumeRecord,onStatus:(text,error)=>{if(error)window.LudwigAeroLayout?.showMessage(text,{urgent:true,title:'Result display'});else progress(text,'Results');}});
   window.addEventListener('ludwig-amr-visibility-change',()=>{if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);});
   window.addEventListener('ludwig-palette-change',()=>{state.cutRenderKey=null;if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);queueRender();});

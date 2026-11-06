@@ -93,6 +93,20 @@ manual Y offset and is restored without moving the model when opening a study.
 Only the positive-Y domain is solved. The pinned lbmtau backend requires automatic
 alignment; the main, thermal and D3Q19 backends support retained placement.
 
+D3Q19 surface results now include **native wall samples**: each value comes from
+one fluid wall cell intersecting one original facet. Results → Surface sampling
+selects these samples by default when available; **Facet averages** retains the
+older pressure/shear view. Native pressure and Cp keep variation inside a facet
+without subdividing the solver STL. Missing samples generate no glyph. The viewer
+draws overlapping tangent discs in GPU batches, with radius √3/2 of the local cell
+size; gray marks surface outside these footprints. Their areas are display support,
+not physical integration weights. This display does not add fluid
+cells or modify geometry. Fluid **Surface cell size** controls their resolution.
+Native `.lbmw` frames share one `.lbmwg` geometry file identified by SHA-256.
+Open a saved study to restore them, or select the frame from Read results; local
+file import also retains its matching geometry. For browser uploads, select both
+files. The original facet exports remain supported.
+
 D3Q19 uses CPU RAM and two-cell octree groups rather than the GPU mesher's
 eight-cell blocks. Its symmetry memory estimate uses the actual positive-side
 surface area. Mesh creation still checks available RAM, and Run checks the

@@ -1,6 +1,6 @@
 # Imported results are visualization data, never executable case input.
 const RESULTS_IMPORT_ROOT=joinpath(RUNTIME_ROOT,"imported_results")
-const RESULT_EXTENSIONS=(".lbmp",".lbmslice",".vtu",".vtp",".vtk",".json",".toml")
+const RESULT_EXTENSIONS=(".lbmw",".lbmwg",".lbmp",".lbmslice",".vtu",".vtp",".vtk",".json",".toml")
 const RESULT_IMPORT_CACHE=Dict{String,Any}()
 const RESULT_IMPORT_LOCK=ReentrantLock()
 const MAX_RESULT_BYTES=512_000_000
@@ -11,6 +11,13 @@ _result_metadata(id)=joinpath(_result_dir(id),"dataset.json")
 function _load_result_metadata(id)
     path=_result_metadata(id);isfile(path) || throw(ArgumentError("Unknown imported results dataset"))
     _plain(JSON3.read(read(path,String)))
+end
+
+function _read_result_wall(path)
+    metadata=_wall_surface_metadata(path;verify=true)
+    geometry=joinpath(dirname(path),metadata["geometry_file"])
+    merge(metadata,Dict{String,Any}("triangles"=>0,"fields"=>Dict("pressure"=>Any[],"cp"=>Any[]),
+        "bounds"=>_wall_geometry_bounds(geometry),"native_model_coordinates"=>false,"names"=>["Native wall samples"]))
 end
 function _result_key(name)
     key=lowercase(replace(String(name),r"[^A-Za-z0-9]"=>""))
@@ -178,10 +185,11 @@ function _result_input_files(path)
         end
         length(files)<=10000 || throw(ArgumentError("Result folder has too many files; choose a narrower folder"))
     end
-    sort!(files;by=p->(mtime(p),p),rev=true)
+    sort!(files;by=p->(lowercase(splitext(p)[2])==".lbmw",mtime(p),p),rev=true)
     chosen=String[];seen=Set{String}()
     for file in files
-        ext=lowercase(splitext(file)[2]);kind=ext in (".lbmp",".vtp",".vtk") ? "surface" : ext==".vtu" ? (startswith(lowercase(basename(file)),"surface") ? "surface" : "volume") : ext==".json" ? "amr" : ext==".toml" ? "summary" : basename(file)
+        ext=lowercase(splitext(file)[2]);ext==".lbmwg" && continue # its matching frame brings the required geometry
+        kind=ext in (".lbmw",".lbmp",".vtp",".vtk") ? "surface" : ext==".vtu" ? (startswith(lowercase(basename(file)),"surface") ? "surface" : "volume") : ext==".json" ? "amr" : ext==".toml" ? "summary" : basename(file)
         kind in seen && continue
         ext==".json" && lowercase(basename(file))!="amr_data.json" && continue
         ext==".toml" && lowercase(basename(file))!="build_only_summary.toml" && continue
@@ -218,7 +226,9 @@ function _build_result_metadata!(id,files,options)
         if ext==".json"
             data=_plain(JSON3.read(read(path,String)));haskey(data,"levels") && haskey(data,"domain_size") || throw(ArgumentError("JSON result must be amr_data.json"));amr=data;item["kind"]="mesh"
         elseif ext==".toml";summary=TOML.parsefile(path);item["kind"]="summary"
-        elseif ext==".lbmp";surface=_read_result_lbmp(path);item["kind"]="surface";surface["file"]=item["stored_name"]
+        elseif ext==".lbmwg";_wall_geometry_header(path);item["kind"]="wall_geometry"
+        elseif ext==".lbmw";surface=_read_result_wall(path);item["kind"]="surface";surface["file"]=item["stored_name"]
+        elseif ext==".lbmp";item["kind"]="surface";if get(surface===nothing ? Dict() : surface,"representation","")!="wall_samples";surface=_read_result_lbmp(path);surface["file"]=item["stored_name"];end
         elseif ext==".lbmslice"
             h=_slice_header(path);get(h,"with_fields",false) || throw(ArgumentError("Native slice has no saved fields"));push!(cuts,Dict("file"=>item["stored_name"],"axis"=>h["normal_axis"],"position"=>h["normal_coord_m"],"step"=>h["step"],"fields"=>[_result_key(spec["name"]) for spec in h["arrays"]]));item["kind"]="cut"
         elseif ext in (".vtu",".vtp")
@@ -258,6 +268,11 @@ function _build_result_metadata!(id,files,options)
         hi=copy(origin)
         hi[a1]+=h["n1"]*spacing;hi[a2]+=h["n2"]*spacing;bounds=Dict("min"=>origin,"max"=>hi)
     end
+    pending_geometry=findfirst(item->get(item,"kind",nothing)=="wall_geometry",files)
+    if bounds===nothing && pending_geometry!==nothing
+        bounds=_wall_geometry_bounds(joinpath(directory,files[pending_geometry]["stored_name"]))
+        push!(warnings,"Wall geometry retained. Load its matching .lbmw pressure snapshot to display flow values.")
+    end
     bounds===nothing && throw(ArgumentError("Results contain no surface, volume or numeric slice"))
     fields=surface===nothing ? String[] : collect(keys(surface["fields"]))
     options["case"]===nothing && volume!==nothing && push!(warnings,"Imported VTK values are shown as stored; no lattice-to-physical scaling was assumed.")
@@ -266,7 +281,7 @@ function _build_result_metadata!(id,files,options)
     display_name=named===nothing ? basename(first(source_paths)) : files[named]["name"]
     meta=Dict{String,Any}("ok"=>true,"id"=>id,"dataset_id"=>id,"name"=>display_name,"files"=>files,"source_paths"=>source_paths,"coordinate_system"=>coordinates,
         "domain_bounds"=>bounds,"surface_offset"=>offset,"fields"=>fields,"volume_fields"=>volume===nothing ? String[] : volume["fields"],
-        "surface"=>surface===nothing ? nothing : Dict("file"=>surface["file"],"triangles"=>surface["triangles"]),"volume"=>volume,"cuts"=>cuts,"options"=>options,"warnings"=>warnings,
+        "surface"=>surface===nothing ? nothing : Dict("file"=>surface["file"],"triangles"=>surface["triangles"],"representation"=>get(surface,"representation","facet_averages"),"samples"=>get(surface,"samples",nothing)),"volume"=>volume,"cuts"=>cuts,"options"=>options,"warnings"=>warnings,
         "field_units"=>surface===nothing ? Dict{String,String}() : get(surface,"field_units",Dict(name=>"as stored" for name in keys(surface["fields"]))),
         "surface_url"=>surface===nothing ? nothing : "/api/aero/results/$id/surface","cut_url"=>"/api/aero/results/$id/cut","amr_url"=>amr===nothing ? nothing : "/api/aero/results/$id/amr")
     write(_result_metadata(id),JSON3.write(meta));empty!(RESULT_IMPORT_CACHE);RESULT_IMPORT_CACHE[id]=(surface=surface,amr=amr)
@@ -277,15 +292,24 @@ function _store_result_sources(paths,raw;uploaded=nothing)
     id=get(raw,"dataset_id",nothing);existing=id===nothing ? nothing : _load_result_metadata(_id(id));id=id===nothing ? string(uuid4()) : _id(id)
     directory=_result_dir(id);mkpath(directory);files=existing===nothing ? Any[] : existing["files"]
     options=existing===nothing ? _import_result_options(raw) : existing["options"]
+    expanded=collect(paths)
     for (name,source,bytes) in paths
+        lowercase(splitext(name)[2])==".lbmw" && bytes===nothing || continue
+        info=_wall_surface_metadata(source;verify=true);geometry=joinpath(dirname(source),info["geometry_file"])
+        any(p->p[2]==geometry,expanded) || push!(expanded,(basename(geometry),geometry,nothing))
+    end
+    sort!(expanded;by=p->lowercase(splitext(p[1])[2])==".lbmwg" ? 0 : 1)
+    for (name,source,bytes) in expanded
         ext=lowercase(splitext(name)[2]);ext in RESULT_EXTENSIONS || throw(ArgumentError("Unsupported result extension $ext"))
         count=bytes===nothing ? filesize(source) : length(bytes)
         limit=bytes===nothing && ext==".lbmslice" ? 16_000_000_000 : MAX_RESULT_BYTES
         0<count<=limit || throw(ArgumentError("Result file exceeds the interactive import limit (512 MB for uploads; 16 GB for local native planes)"))
-        stored="source_$(length(files)+1)$ext";destination=joinpath(directory,stored)
+        stored=ext==".lbmwg" ? "surface_wall_geometry_"*(bytes===nothing ? _wall_geometry_sha(source) : bytes2hex(sha256(bytes)))*".lbmwg" : "source_$(length(files)+1)$ext"
+        destination=joinpath(directory,stored)
+        ext==".lbmwg" && any(f->f["stored_name"]==stored,files) && continue
         bytes===nothing ? cp(source,destination;force=false) : write(destination,bytes)
         item=Dict{String,Any}("name"=>basename(name),"original_path"=>source,"stored_name"=>stored,"bytes"=>count)
-        if ext==".lbmp" && bytes===nothing && isfile(source*".toml")
+        if ext in (".lbmp",".lbmw") && bytes===nothing && isfile(source*".toml")
             filesize(source*".toml")<=65_536 || throw(ArgumentError("Native surface coordinate metadata is too large"))
             cp(source*".toml",destination*".toml";force=false);item["geometry_metadata_file"]=stored*".toml"
         end
@@ -326,7 +350,7 @@ function _result_cached(id)
     get!(RESULT_IMPORT_CACHE,id) do
         meta=_load_result_metadata(id);surface=get(meta,"surface",nothing);amrfile=findfirst(f->get(f,"kind","")=="mesh",meta["files"])
         data=surface===nothing ? nothing : begin
-            path=joinpath(_result_dir(id),surface["file"]);ext=lowercase(splitext(path)[2]);ext==".lbmp" ? _read_result_lbmp(path) : ext==".vtk" ? _read_result_legacy_surface(path) : _read_result_xml_surface(path)
+            path=joinpath(_result_dir(id),surface["file"]);ext=lowercase(splitext(path)[2]);ext==".lbmw" ? _read_result_wall(path) : ext==".lbmp" ? _read_result_lbmp(path) : ext==".vtk" ? _read_result_legacy_surface(path) : _read_result_xml_surface(path)
         end
         (surface=data,amr=amrfile===nothing ? nothing : _plain(JSON3.read(read(joinpath(_result_dir(id),meta["files"][amrfile]["stored_name"]),String))))
     end
@@ -335,7 +359,19 @@ function imported_surface(id)
     meta=_load_result_metadata(id);data=_result_cached(id).surface;data===nothing && return _bad("Imported dataset has no surface",404)
     payload=copy(data);payload["surface_offset"]=meta["surface_offset"];payload["coordinates"]=meta["options"]["coordinates"];payload["ok"]=true
     payload["offset"]=meta["surface_offset"];payload["coordinate_system"]=meta["coordinate_system"];payload["field_units"]=meta["field_units"]
+    if get(payload,"representation",nothing)=="wall_samples"
+        payload["frame_url"]="/api/aero/results/$id/files/"*meta["surface"]["file"]
+        payload["geometry_url"]="/api/aero/results/$id/files/"*payload["geometry_file"]
+    end
     _response(200,payload)
+end
+function imported_result_file(id,name)
+    metadata=_load_result_metadata(id)
+    name isa AbstractString && basename(name)==name && any(item->item["stored_name"]==name,metadata["files"]) || throw(ArgumentError("Unknown retained result file"))
+    path=joinpath(_result_dir(id),name)
+    isfile(path) && !islink(path) || return _bad("Retained result file is unavailable",404)
+    realpath(dirname(path))==realpath(_result_dir(id)) || throw(ArgumentError("Result file escapes its dataset"))
+    HTTP.Response(200,["Content-Type"=>"application/octet-stream","Cache-Control"=>"no-store","X-Content-Type-Options"=>"nosniff"],read(path))
 end
 function imported_amr(id)
     amr=_result_cached(id).amr;amr===nothing && return _bad("Imported dataset has no AMR metadata",404);_response(200,amr)

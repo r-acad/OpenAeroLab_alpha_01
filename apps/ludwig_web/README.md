@@ -343,6 +343,25 @@ The Aero Lab browser viewer uses the bundled Babylon.js core from Airfoil Lab
 and the matching Babylon loaders in `static/vendor/` for STL, OBJ, and GLB.
 The loader's Apache-2.0 license is kept beside the bundle.
 
+D3Q19 **Native wall samples** preserve local pressure and Cp at the LBM wall
+intersections, with one value per fluid-cell/original-facet group. The original
+STL is used for fluid meshing. The optional model triangle edge limit does not
+subdivide that D3Q19 wall geometry or determine the result resolution. Choose
+**Results → Surface sampling → Native wall samples**; **Facet averages** is the
+explicit legacy comparison. Native sampling does not supply local shear stress.
+The fine `.lbmw` pressure frames share a SHA-256 identified `.lbmwg` geometry file.
+
+**Results → Save 3D view PNG** exports the actual Babylon surface view with its
+field legend, iteration and sample count. **Provide this view for Telegram
+reports** lets a connected reporting client request that exact saved frame.
+Keep the tab open and selected. A dedicated local link may use
+`/aero-lab?job=CASE_UUID&reporting=1`; it frames the solved surface for reporting.
+The server verifies the job, frame and geometry hashes before accepting an image.
+These are Aero Lab viewport images; operating-system window screenshots require
+a separate working desktop-capture connection. If no browser view is available,
+the private reporter can render the fine native samples directly; it labels that
+fallback and does not substitute original-facet averages.
+
 Completed mesh summaries are validated from complete in-memory snapshots.
 Job-state replacement is atomic, and brief Windows file locks are retried.
 The browser retains the last valid model and results through refresh failures;

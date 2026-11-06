@@ -27,13 +27,13 @@
     ctx.state.importedField=select.value;
   }
   async function display(meta){
-    let surface=null;if(meta.surface_url)surface=await request(meta.surface_url);
+    let surface=null;if(meta.surface_url){surface=await request(meta.surface_url);if(surface.representation==='wall_samples')surface=await window.LudwigAeroWallSurface.load({url:surface.frame_url,geometry_url:surface.geometry_url,step:surface.step,geometry_sha256:surface.geometry_sha256});}
     datasets.set(meta.dataset_id,meta);
     if(!Array.from($('results-source').options).some(o=>o.value===meta.dataset_id)){const option=document.createElement('option');option.value=meta.dataset_id;option.textContent=meta.name;$('results-source').appendChild(option);}
     if(!available()){status('Results were imported and retained. Select their dataset when the active case finishes.');return;}
     $('results-source').value=meta.dataset_id;fieldOptions(meta,surface);
     await ctx.applyImportedResults(meta,surface);ctx.setImportedField?.(ctx.state.importedField);ctx.queueRender();
-    status(`Loaded ${meta.files.length} saved file${meta.files.length===1?'':'s'} · ${meta.surface?.triangles?.toLocaleString()||0} surface triangles. ${(meta.warnings||[]).join(' ')}`);
+    status(`Loaded ${meta.files.length} saved file${meta.files.length===1?'':'s'} · ${surface?.representation==='wall_samples'?surface.count.toLocaleString()+' native wall samples':(meta.surface?.triangles?.toLocaleString()||0)+' surface triangles'}. ${(meta.warnings||[]).join(' ')}`);
   }
   async function importPath(){
     if(busy||!available())return;setBusy(true);status('Reading saved results…');
@@ -43,7 +43,8 @@
   async function upload(files){
     if(!files.length||busy||!available())return;setBusy(true);status('Uploading saved results for inspection…');
     try{
-      const placement=ctx.getPlacement?.(),chosen=Array.from(files).sort((a,b)=>(a.name.endsWith('.json')?0:a.name.endsWith('.toml')?1:2)-(b.name.endsWith('.json')?0:b.name.endsWith('.toml')?1:2));
+      const priority=file=>file.name.endsWith('.lbmwg')?-1:file.name.endsWith('.json')?0:file.name.endsWith('.toml')?1:2;
+      const placement=ctx.getPlacement?.(),chosen=Array.from(files).sort((a,b)=>priority(a)-priority(b));
       if(!offsetEdited&&placement?.mesh_offset)for(const [i,a] of ['x','y','z'].entries())$('results-offset-'+a).value=String(placement.mesh_offset[i]);
       let meta=null;const opts=options(),hasAmr=chosen.some(file=>file.name.toLowerCase()==='amr_data.json');
       for(const file of chosen){

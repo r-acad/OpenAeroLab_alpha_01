@@ -268,7 +268,7 @@ end
 
 function _same_study_setup(a::AbstractDict,b::AbstractDict)
     _q19_case(a)==_q19_case(b) && (!_q19_case(a) || _q19_result_settings(a)==_q19_result_settings(b)) &&
-    get(a,"surface_triangle_max_edge_m",0.0)==get(b,"surface_triangle_max_edge_m",0.0) &&
+    (_q19_case(a) || get(a,"surface_triangle_max_edge_m",0.0)==get(b,"surface_triangle_max_edge_m",0.0)) &&
     _geometry_handling(get(a,"geometry_handling","closed_solid")) ==
         _geometry_handling(get(b,"geometry_handling","closed_solid")) &&
     all(key -> key=="cuts" ? true : key=="domain" ?

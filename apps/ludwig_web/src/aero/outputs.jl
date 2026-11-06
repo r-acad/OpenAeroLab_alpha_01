@@ -165,8 +165,8 @@ end
 
 function _export_category(relative)
     name=lowercase(basename(relative));ext=lowercase(splitext(name)[2])
-    ext==".lbmp" && return "surfaces"
-    endswith(name,".lbmp.toml") && return "surfaces"
+    ext in (".lbmp",".lbmw",".lbmwg") && return "surfaces"
+    (endswith(name,".lbmp.toml") || endswith(name,".lbmw.toml") || endswith(name,".lbmwg.toml")) && return "surfaces"
     startswith(name,"surface_") && ext in (".vtu",".vtp",".vtk",".pvtu",".pvd") && return "surfaces"
     ext in (".vtu",".vtp",".vtk",".vti",".vtm",".pvtu",".pvd") && return "volumes"
     ext==".lbmslice" && return "numeric_cuts"
@@ -221,8 +221,8 @@ end
 function _selected_export(relative::String, opts)
     name = lowercase(basename(relative)); ext = lowercase(splitext(name)[2])
     startswith(name, "surface_") && ext in (".vtu", ".vtk", ".vtp", ".pvtu", ".pvd") && return opts["surface_vtk"]
-    ext == ".lbmp" && return opts["surface_lbmp"]
-    endswith(name,".lbmp.toml") && return opts["surface_lbmp"]
+    ext in (".lbmp",".lbmw",".lbmwg") && return opts["surface_lbmp"]
+    (endswith(name,".lbmp.toml") || endswith(name,".lbmw.toml") || endswith(name,".lbmwg.toml")) && return opts["surface_lbmp"]
     ext == ".lbmslice" && return opts["numeric_slices"]
     ext == ".png" && return opts["slice_png"]
     ext == ".csv" && return opts["csv_history"]
@@ -253,7 +253,7 @@ function _sync_exports!(id::String; force::Bool=false)
                 _artifact_complete(original) || continue
                 target = joinpath(destination,_typed_export_relative(kind,relative))
                 if isfile(target) && filesize(target) == filesize(original) && mtime(target) >= mtime(original); continue; end
-                _copy_export_snapshot!(original,target;immutable=lowercase(splitext(name)[2]) in (".lbmp",".lbmslice",".vtu",".vtp",".vtk",".png"))
+                _copy_export_snapshot!(original,target;immutable=lowercase(splitext(name)[2]) in (".lbmp",".lbmw",".lbmwg",".lbmslice",".vtu",".vtp",".vtk",".png"))
             end
         end
     end
