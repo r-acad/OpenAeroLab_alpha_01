@@ -10,6 +10,8 @@ export serve, app_handler
 const APP_DIR = normpath(joinpath(@__DIR__, ".."))
 const STATIC_DIR = joinpath(APP_DIR, "static")
 const ASSETS = Dict(
+    "/workbench-static/aero_view_capture.js" => ("aero_view_capture.js", "application/javascript; charset=utf-8"),
+    "/workbench-static/aero_wall_surface.js" => ("aero_wall_surface.js", "application/javascript; charset=utf-8"),
     "/workbench-static/aero_reference.js" => ("aero_reference.js", "application/javascript; charset=utf-8"),
     "/workbench-static/home.css" => ("home.css", "text/css; charset=utf-8"),
     "/workbench-static/solver_catalog.css" => ("solver_catalog.css", "text/css; charset=utf-8"),

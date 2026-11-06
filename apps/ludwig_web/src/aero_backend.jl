@@ -34,6 +34,7 @@ include(joinpath(@__DIR__, "aero", "model_assets.jl"))
 include(joinpath(@__DIR__, "aero", "volume_cuts.jl"))
 include(joinpath(@__DIR__, "aero", "results_import.jl"))
 include(joinpath(@__DIR__, "aero", "diagnostics.jl"))
+include(joinpath(@__DIR__, "aero", "view_captures.jl"))
 
 function _response(status::Integer, body)
     HTTP.Response(status, ["Content-Type" => "application/json; charset=utf-8",
@@ -112,6 +113,9 @@ function handle(req::HTTP.Request, path::AbstractString)::HTTP.Response
         if (m = match(r"^/api/aero/results/([^/]+)/surface$", route)) !== nothing && method == "GET"
             return imported_surface(_id(m[1]))
         end
+        if (m = match(r"^/api/aero/results/([^/]+)/files/([A-Za-z0-9_.-]+)$", route)) !== nothing && method == "GET"
+            return imported_result_file(_id(m[1]),m[2])
+        end
         if (m = match(r"^/api/aero/results/([^/]+)/amr$", route)) !== nothing && method == "GET"
             return imported_amr(_id(m[1]))
         end
@@ -136,6 +140,20 @@ function handle(req::HTTP.Request, path::AbstractString)::HTTP.Response
         end
         if (m = match(r"^/api/aero/jobs/([^/]+)/cancel$", route)) !== nothing && method == "POST"
             return cancel_job(_id(m[1]),req)
+        end
+        if (m=match(r"^/api/aero/jobs/([^/]+)/view-captures$",route))!==nothing
+            method=="POST"&&return request_view_capture(_id(m[1]),req)
+            method=="GET"&&return pending_view_capture(_id(m[1]),req)
+        end
+        if (m=match(r"^/api/aero/jobs/([^/]+)/view-captures/([^/]+)$",route))!==nothing
+            method=="GET"&&return view_capture_status(_id(m[1]),_id(m[2]))
+            method=="POST"&&return accept_view_capture(_id(m[1]),_id(m[2]),req)
+        end
+        if (m=match(r"^/api/aero/jobs/([^/]+)/view-captures/([^/]+)/image$",route))!==nothing&&method=="GET"
+            return view_capture_image(_id(m[1]),_id(m[2]))
+        end
+        if (m=match(r"^/api/aero/jobs/([^/]+)/view-captures/([^/]+)/error$",route))!==nothing&&method=="POST"
+            return fail_view_capture(_id(m[1]),_id(m[2]),req)
         end
         if (m = match(r"^/api/aero/jobs/([^/]+)/slice/([^/]+)$", route)) !== nothing && method == "GET"
             return slice_json(_id(m[1]), m[2], req)
