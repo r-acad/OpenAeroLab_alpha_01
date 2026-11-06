@@ -51,6 +51,7 @@ Base.@kwdef struct OutputSpec
     slice_png::Bool = false
     volume_vtk::Bool = false
     surface_lbmp::Bool = true
+    wall_samples::Bool = true         # local wall-cell/facet samples; static geometry + pressure frames
     surface_vtk::Bool = false
     averaging_start_ctu::Float64 = 0.0
     checkpoint_minutes::Float64 = 30.0
@@ -289,6 +290,7 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
                          forces_every=_i(_get(raw, "advanced", "forces", "output_freq"), 10), diagnostics_every=_i(_get(raw, "advanced", "diagnostics", "freq"), 100),
                          planes=planes, export_fields=String.(_get(raw, "advanced", "slice", "export_fields"; default=["density", "pressure", "u", "v", "w", "velocity_magnitude", "vorticity"])),
                          slice_png=_b(_get(raw, "advanced", "slice", "png"), false), volume_vtk=_i(_get(raw, "basic", "simulation", "output_freq"), steps + 1) <= steps,
+                         surface_lbmp=_b(_get(q,"outputs","surface_lbmp"),true), wall_samples=_b(_get(q,"outputs","wall_samples"),true),
                          surface_vtk=_b(_get(q,"outputs","surface_vtk"),false),
                          averaging_start_ctu=_f(_get(q, "outputs", "averaging_start_ctu"), 0.0),
                          checkpoint_minutes=_f(_get(q, "checkpoint", "every_minutes"), 30.0), checkpoint_keep=_i(_get(q, "checkpoint", "keep"), 2))

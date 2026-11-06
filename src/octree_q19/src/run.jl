@@ -133,7 +133,9 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
         end
         if step % o.slice_every == 0 || step == steps
             export_planes(mesh, cfg, sc, step, joinpath(out, "SLICES"); with_fields=true, sampler=sampler)
-            collect && write_surface!(st, out, step, st.tri_force .* tri_factor)
+            o.surface_lbmp && collect && write_surface!(st, out, step, st.tri_force .* tri_factor)
+            # Pressure sampling is independent of force collection and never inherits a facet average.
+            o.surface_lbmp && o.wall_samples && write_wall_surface!(st, out, step)
         end
         if (o.volume_vtk && step % o.output_every == 0) || (o.volume_vtk && step == steps)
             write_volume!(st, out, step)

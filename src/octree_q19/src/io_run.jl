@@ -145,8 +145,8 @@ end
 
 # ---------------------------------------------------------------- surface (LBMP)
 """
-Surface fields per triangle: pressure extrapolated from the wall cells that cut the triangle (area-weighted mean
-of their rho), shear from the per-triangle momentum-exchange force projected tangentially (its magnitude, Pa),
+Legacy surface fields per triangle: pressure from the unweighted mean density of cutting links (a wall cell
+can contribute more than once), shear from per-triangle momentum exchange projected tangentially (Pa),
 Cp. Written as VTK/surface_NNNNNN.lbmp with its TOML sidecar, in the solver's triangle order.
 """
 function write_surface!(st::State, out::AbstractString, step::Int, tri_force_newton::Matrix{Float64})
