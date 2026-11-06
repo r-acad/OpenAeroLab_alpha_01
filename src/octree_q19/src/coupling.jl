@@ -35,7 +35,9 @@ end
     usq = ux * ux + uy * uy + uz * uz
     keep = one(T) - omega
     a3 = a3_terms(p, ux, uy, uz)
-    ntuple(i -> (@inbounds feq_shifted(i, rho, ux, uy, uz, usq) + keep * fneq_regularised(i, p, a3)), Val(Q))
+    eq = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
+    out = ntuple(i -> (@inbounds eq[i] + keep * fneq_regularised(i, p, a3)), Val(Q))
+    positive_shifted(out, eq)
 end
 
 # Factor turning the non-equilibrium moments of a post-collision state into those of its pre-collision state,

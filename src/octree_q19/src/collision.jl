@@ -15,6 +15,48 @@ end
 "Shifted equilibrium of direction i."
 @inline feq_shifted(i::Int, rho::T, ux::T, uy::T, uz::T, usq::T) where {T<:AbstractFloat} = feq(i, rho, ux, uy, uz, usq) - T(WT[i])
 
+# Blend a population tuple toward its equilibrium only when a direction has
+# become non-positive. Both endpoints have the same conserved moments for the
+# unforced RR collision and AMR reconstruction, so the blend adds local
+# dissipation without changing density or momentum. This is a last-resort
+# kinetic safeguard; the count is reported by the run loop.
+const POSITIVITY_LIMITED_CELLS = Threads.Atomic{Int64}(0)
+@inline function positive_shifted(out::NTuple{Q,T}, eq::NTuple{Q,T}) where {T<:AbstractFloat}
+    alpha = one(T)
+    @inbounds for i in 1:Q
+        w = T(WT[i]); floor = T(1e-6) * w
+        actual = out[i] + w
+        if actual < floor
+            equilibrium = eq[i] + w
+            (isfinite(equilibrium) && equilibrium > floor) || return out
+            candidate = (equilibrium - floor) / (equilibrium - actual)
+            alpha = min(alpha, candidate)
+        end
+    end
+    if alpha < one(T)
+        Threads.atomic_add!(POSITIVITY_LIMITED_CELLS, Int64(1))
+        safe_alpha = max(zero(T), T(0.99) * alpha)
+        return ntuple(i -> eq[i] + safe_alpha * (out[i] - eq[i]), Val(Q))
+    end
+    out
+end
+
+# The Guo body force changes momentum during collision. If limiting is needed,
+# blend with the equilibrium of the *post-force* moments rather than with the
+# pre-force equilibrium used by the collision itself.
+@inline function positive_shifted_forced(out::NTuple{Q,T}) where {T<:AbstractFloat}
+    needs_limit = false
+    @inbounds for i in 1:Q
+        w = T(WT[i])
+        needs_limit |= out[i] + w < T(1e-6) * w
+    end
+    needs_limit || return out
+    rho, ux, uy, uz = macros_shifted(out)
+    usq = ux*ux + uy*uy + uz*uz
+    eq = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
+    positive_shifted(out, eq)
+end
+
 "Second-order non-equilibrium moments of shifted populations about the equilibrium at (rho, u)."
 @inline function pi_neq_shifted(f::NTuple{Q,T}, rho::T, ux::T, uy::T, uz::T) where {T<:AbstractFloat}
     usq = ux * ux + uy * uy + uz * uz
@@ -67,7 +109,7 @@ and the forcing term (1 - omega/2) w_i [3 (c - u) . F + 9 (c . u)(c . F)] is add
     else
         out = ntuple(i -> (@inbounds feqs[i] + keep * fneq_regularised(i, a2, a3)), Val(Q))
     end
-    out, rho, ux, uy, uz
+    (forced ? positive_shifted_forced(out) : positive_shifted(out, feqs)), rho, ux, uy, uz
 end
 
 "WALE eddy viscosity (lattice units) from the velocity gradient g[a, b] = d u_b / d x_a."

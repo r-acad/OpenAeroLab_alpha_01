@@ -78,6 +78,7 @@ latest checkpoint of RESULTS/checkpoints.
 """
 function run_case(cfg::CaseConfig; resume::Bool=false)
     t_start = time()
+    POSITIVITY_LIMITED_CELLS[] = 0
     out = joinpath(cfg.dir, "RESULTS"); mkpath(out)
     println("[Run] $(SOLVER_NAME): $(cfg.name), $(cfg.outputs.steps) coarse steps, precision $(cfg.precision), threads $(Threads.nthreads())")
     mesh = case_mesh(cfg)
@@ -94,6 +95,7 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
     if resume
         s = resume_checkpoint!(st, out, h)
         s === nothing ? println("[Run] no checkpoint to resume; starting from step 0") : println("[Run] resumed at step $s")
+        s === nothing || println("[Run] repaired $(repair_state_positivity!(st)) pre-existing non-positive checkpoint tuples")
     end
     sampler = field_sampler(st)
     steps = cfg.outputs.steps; o = cfg.outputs
@@ -111,6 +113,9 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
         step = st.step + 1
         collect = step==1 || step % o.forces_every == 0 || step == steps
         advance!(st; collect=collect)
+        rmin, rmax, umax = state_extrema(st)
+        (isfinite(rmin) && isfinite(rmax) && isfinite(umax) && rmin > 0.2 && umax < 0.5) ||
+            error("the state is leaving the stable range at step $step (rho_min $rmin, rho_max $rmax, |u|max $umax); stopping")
         if collect
             F .= forces_newton(st); tri_F = st.tri_force .* tri_factor; M .= moments_newton(st, tri_F)
             coeffs .= coefficients(st, F, M)
@@ -121,12 +126,10 @@ function run_case(cfg::CaseConfig; resume::Bool=false)
             now = time(); dt = now - t_last; n = step - step_last
             mlups = n * W / max(dt, 1e-9) / 1e6; ips = n / max(dt, 1e-9)
             write_convergence!(h, st, (coeffs[1], coeffs[2], coeffs[3]), mlups, ips)
-            rmin, rmax, umax = state_extrema(st)
-            println(@sprintf("[Step] DONE step %d of %d: %.2f MLUPS, %.3f steps/s, rho %.4f..%.4f, |u|max %.4f, Cd %.4f Cl %.4f Cs %.4f, elapsed %.0f s",
-                    step, steps, mlups, ips, rmin, rmax, umax, coeffs[1], coeffs[2], coeffs[3], now - h.t_wall0))
+            println(@sprintf("[Step] DONE step %d of %d: %.2f MLUPS, %.3f steps/s, rho %.4f..%.4f, |u|max %.4f, Cd %.4f Cl %.4f Cs %.4f, elapsed %.0f s, positivity_limited %d",
+                    step, steps, mlups, ips, rmin, rmax, umax, coeffs[1], coeffs[2], coeffs[3], now - h.t_wall0, POSITIVITY_LIMITED_CELLS[]))
             flush(stdout)
             t_last = now; step_last = step
-            (isfinite(rmin) && rmin > 0.2 && umax < 0.5) || error("the state is leaving the stable range (rho_min $rmin, |u|max $umax); stopping")
         end
         if step % o.slice_every == 0 || step == steps
             export_planes(mesh, cfg, sc, step, joinpath(out, "SLICES"); with_fields=true, sampler=sampler)

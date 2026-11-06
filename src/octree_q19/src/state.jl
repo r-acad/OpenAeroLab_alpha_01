@@ -143,6 +143,61 @@ function State(mesh::OctMesh, cfg::CaseConfig, ::Type{T}) where {T<:AbstractFloa
 end
 
 """
+Repair legacy checkpoint populations that already crossed zero before the
+positivity safeguard was active. Work on both time buffers, preserving the
+moments of each repaired tuple. Refuse an unrecoverable rho/velocity state.
+"""
+function repair_state_positivity!(st::State{T}) where T
+    total = 0
+    for (l, Lv) in enumerate(st.mesh.levels)
+        S = st.levels[l]
+        before = POSITIVITY_LIMITED_CELLS[]
+        bad = zeros(Int, Threads.nthreads())
+        Threads.@threads :static for o in 1:Lv.nocts
+            tid = Threads.threadid()
+            @inbounds for k in 1:8
+                kind = Lv.kind[k, o]
+                (kind == K_FLUID || kind == K_GHOST || kind == K_COVERED) || continue
+                for buffer in (S.f, S.g)
+                    needs_repair = false
+                    for i in 1:Q
+                        w = T(WT[i])
+                        if buffer[k, i, o] + w < T(1e-6) * w
+                            needs_repair = true
+                            break
+                        end
+                    end
+                    needs_repair || continue
+                    fs = ntuple(i -> buffer[k, i, o], Val(Q))
+                    rho, ux, uy, uz = macros_shifted(fs)
+                    if !(isfinite(rho) && rho > T(0.2) &&
+                         isfinite(ux) && isfinite(uy) && isfinite(uz) &&
+                         ux*ux + uy*uy + uz*uz < T(0.25))
+                        bad[tid] += 1
+                        continue
+                    end
+                    usq = ux*ux + uy*uy + uz*uz
+                    eq = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
+                    repaired = positive_shifted(fs, eq)
+                    if any(i -> !(isfinite(repaired[i]) && repaired[i] + T(WT[i]) > zero(T)), 1:Q)
+                        bad[tid] += 1
+                        continue
+                    end
+                    for i in 1:Q
+                        buffer[k, i, o] = repaired[i]
+                    end
+                end
+            end
+        end
+        sum(bad) == 0 || error("level $l has $(sum(bad)) unrecoverable checkpoint population tuples")
+        fixed = POSITIVITY_LIMITED_CELLS[] - before
+        total += fixed
+        fixed > 0 && println("[CheckpointRepair] level $l: $fixed population tuples projected to positive equilibrium blend")
+    end
+    total
+end
+
+"""
 Set a uniform or user-given initial field: `init(p) -> (rho, ux, uy, uz)` in lattice units (p in metres). With
 `nonequilibrium` (the default) the populations carry the Chapman-Enskog non-equilibrium of the field,
 Pi_neq = -rho cs^2 tau (grad u + grad u^T) from central differences of `init` over one cell of each level, stored
