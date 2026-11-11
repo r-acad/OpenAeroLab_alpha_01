@@ -203,6 +203,10 @@ end
     end
 end
 
+# GPU arrays can also satisfy `StridedArray`; only execute host scalar loops
+# when the array's actual KernelAbstractions backend is the CPU.
+@inline _implicit_cpu_strided(a) = a isa StridedArray && KA.get_backend(a) isa KA.CPU
+
 function _implicit_merit_cpu(raw,vr,inv_r::Float32,inv_m::Float32,inv_e::Float32)
     dr,dmx,dmy,de=raw
     total=0.0
@@ -225,7 +229,7 @@ function _implicit_merit(s::KSol)
     inv_r=Float32(1/r)
     inv_m=Float32(1/(r*u))
     inv_e=Float32(1/(r*e))
-    if vr isa StridedArray && s.dc_r isa StridedArray
+    if _implicit_cpu_strided(vr) && _implicit_cpu_strided(s.dc_r)
         return _implicit_merit_cpu((s.dc_r,s.dc_mx,s.dc_my,s.dc_e),
                                    vr,inv_r,inv_m,inv_e)
     end

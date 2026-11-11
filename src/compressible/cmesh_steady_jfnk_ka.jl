@@ -106,7 +106,7 @@ function _av_dot(a,b)
     # Arnoldi product. Accumulate in Float64: four separate Float32 BLAS dots
     # were faster but lost significant precision on uniform-field probes.
     # Keep the existing backend reduction for GPU arrays.
-    if a[1] isa StridedArray && b[1] isa StridedArray
+    if _implicit_cpu_strided(a[1]) && _implicit_cpu_strided(b[1])
         x1,x2,x3,x4=a;y1,y2,y3,y4=b
         total=0.0
         @inbounds @simd for i in eachindex(x1,y1,x2,y2,x3,y3,x4,y4)
@@ -194,7 +194,7 @@ function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
     inv_r=Float32(1/r)
     inv_m=Float32(1/(r*u))
     inv_e=Float32(1/E)
-    max_scaled=if v[1] isa StridedArray
+    max_scaled=if _implicit_cpu_strided(v[1])
         # Four cache-friendly CPU reductions avoid a mesh-sized broadcast
         # temporary at every matrix-free Jacobian action.
         max(maximum(abs,v[1])*inv_r,maximum(abs,v[2])*inv_m,
@@ -462,9 +462,12 @@ This is a convergence experiment. It does not advance physical time, and SST
 still uses the solver's segregated, stability-capped transport step. A positive
 `nonmonotone_window` uses the maximum of recent flow merits for line search;
 this is experimental and does not establish a steady RANS convergence gate."""
-mutable struct JFNKAirfoilController{W,K}
+const _AIRFOIL_COUPLED_STATE = (:rho,:ux,:uy,:T,:tk,:tom,:nut,:tnl,:pvort,:exx,:exy,:eyy,:dtf)
+
+mutable struct JFNKAirfoilController{W,K,S}
     workspace::W
     krylov_workspace::K
+    coupled_backup::S
     cfl::Float32
     min_cfl::Float32
     max_cfl::Float32
@@ -503,9 +506,71 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale)
     krylov_workspace=linear_solver==:krylov ?
         build_krylov_airfoil_workspace(s,workspace) : nothing
-    JFNKAirfoilController(workspace,krylov_workspace,initial_cfl,
+    # Reusable backups avoid allocating mesh-sized arrays on every nonlinear
+    # step while allowing an invalid segregated SST update to be rolled back.
+    coupled_backup=map(name->similar(getproperty(s,name)),_AIRFOIL_COUPLED_STATE)
+    JFNKAirfoilController(workspace,krylov_workspace,coupled_backup,initial_cfl,
         min_cfl,max_cfl,growth,max_attempts,0,0,
         nonmonotone_window,Float64[],recovery_steps,recovery_limit,0,0,initial_cfl)
+end
+
+function _airfoil_coupled_backup!(s::KSol,c::JFNKAirfoilController)
+    for (name,dst) in zip(_AIRFOIL_COUPLED_STATE,c.coupled_backup)
+        copyto!(dst,getproperty(s,name))
+    end
+    nothing
+end
+
+function _airfoil_coupled_restore!(s::KSol,c::JFNKAirfoilController)
+    for (name,src) in zip(_AIRFOIL_COUPLED_STATE,c.coupled_backup)
+        copyto!(getproperty(s,name),src)
+    end
+    nothing
+end
+
+function _airfoil_valid_sst_state(s::KSol)
+    # Wall k ghost cells are deliberately negative for the zero-wall BC, so
+    # require nonnegative turbulence only in real cells while checking all
+    # ghosts for nonfinites. Stresses can have either sign.
+    mapreduce((k,w,n,l,p)->isfinite(k) && isfinite(w) && isfinite(n) && isfinite(l) && isfinite(p),
+              &,s.tk,s.tom,s.nut,s.tnl,s.pvort) || return false
+    ir=(s.g+1):(s.g+s.NI); jr=(s.g+1):(s.g+s.NJ)
+    mapreduce((k,w,n,l)->isfinite(k) && isfinite(w) && isfinite(n) && isfinite(l) &&
+                           k>=0.0f0 && w>=0.0f0 && n>=0.0f0 && l>=0.0f0,
+              &,view(s.tk,ir,jr),view(s.tom,ir,jr),view(s.nut,ir,jr),view(s.tnl,ir,jr)) &&
+        mapreduce((x,y,z)->isfinite(x) && isfinite(y) && isfinite(z),&,s.exx,s.exy,s.eyy)
+end
+
+"""Advance SST transactionally after a proposed flow step.
+
+The caller must save the full pre-flow state in `coupled_backup`. Invalid
+turbulence or residuals reject the complete coupled step and restore that
+state. Exceptions also restore it before propagation. The injected advance
+function enables failure-path testing without modifying the solver kernels.
+"""
+function _airfoil_coupled_sst!(s::KSol,c::JFNKAirfoilController;
+    corrected_wall_metric::Bool=false,nonorth_diffusion::Bool=false,
+    sst_substeps::Int=1,advance! = sst_step_ka!,saved_clock::Float32=s.last_global_dt)
+    accepted=false
+    try
+        for k in 1:sst_substeps
+            k>1 && prepare_dt_ka!(s,0.45f0)
+            advance!(s;corrected_wall_metric,nonorth_diffusion)
+            _airfoil_physical_state(s.rho,s.ux,s.uy,s.T) && _airfoil_valid_sst_state(s) ||
+                return (accepted=false,merit_after=NaN)
+        end
+        refresh_raw_residual_ka!(s)
+        coupled_merit=_implicit_merit(s)
+        isfinite(coupled_merit) || return (accepted=false,merit_after=coupled_merit)
+        accepted=true
+        (accepted=true,merit_after=coupled_merit)
+    finally
+        if !accepted
+            _airfoil_coupled_restore!(s,c)
+            s.last_global_dt=saved_clock
+            refresh_raw_residual_ka!(s)
+        end
+    end
 end
 
 # A failed Newton direction is not proof that no steady solution exists. An
@@ -558,7 +623,7 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     fd_scale::Float32=1.0f0,fd_scheme::Symbol=:forward,
     fd_local_cap::Float32=1.0f-3,corrected_wall_metric::Bool=false,
     nonorth_diffusion::Bool=false,max_backtracks::Int=8,
-    sst_substeps::Int=1)
+    sst_substeps::Int=1,_sst_advance! = sst_step_ka!)
     s.sst || throw(ArgumentError("JFNK RANS controller requires SST"))
     1<=sst_substeps<=100 ||
         throw(ArgumentError("sst_substeps must be 1:100"))
@@ -566,6 +631,8 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     attempts=0
     used=c.cfl
     reference=isempty(c.merit_history) ? NaN : maximum(c.merit_history)
+    saved_clock=s.last_global_dt
+    _airfoil_coupled_backup!(s,c)
     for attempt in 1:c.max_attempts
         attempts=attempt
         used=c.cfl
@@ -574,20 +641,20 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
             merit_reference=reference,
             krylov_workspace=c.krylov_workspace)
         if result.accepted
-            sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
-            # The flow pseudo-time and wall-resolved SST transport have very
-            # different clocks. This opt-in multirate path advances SST at
-            # its established explicit CFL while holding the flow fixed.
-            # It changes the iteration path, not the discrete steady root.
-            for _ in 2:sst_substeps
-                prepare_dt_ka!(s,0.45f0)
-                sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
+            coupled=_airfoil_coupled_sst!(s,c;corrected_wall_metric,
+                nonorth_diffusion,sst_substeps,saved_clock,advance! = _sst_advance!)
+            if !coupled.accepted
+                result=merge(result,(accepted=false,alpha=0.0f0,
+                    merit_after=result.merit_before,))
+                c.rejections+=1
+                c.cfl=max(c.min_cfl,used*0.5f0)
+                used<=c.min_cfl && break
+                continue
             end
             # SST changes the viscosity used by the flow equations. Report
             # the residual of the state actually returned to the caller,
             # retaining the pre-SST trial merit as acceptance evidence.
-            refresh_raw_residual_ka!(s)
-            coupled_merit=_implicit_merit(s)
+            coupled_merit=coupled.merit_after
             if c.nonmonotone_window>0
                 push!(c.merit_history,result.merit_before)
                 length(c.merit_history)>c.nonmonotone_window &&

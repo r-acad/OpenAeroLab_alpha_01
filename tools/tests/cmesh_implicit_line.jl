@@ -10,6 +10,7 @@ const M=CMeshSolverKA
 @testset "CPU Newton-Krylov inner products avoid mesh-sized temporaries" begin
     a=ntuple(k->fill(Float32(.1k),512,512),4)
     b=ntuple(k->fill(Float32(.2k),512,512),4)
+    @test M._implicit_cpu_strided(a[1])
     expected=sum(sum(Float64.(a[k]).*Float64.(b[k])) for k in 1:4)
     @test isapprox(M._av_dot(a,b),expected;rtol=1e-9)
     bytes()=@allocated M._av_dot(a,b)
@@ -419,6 +420,43 @@ function airfoil_recovery_and_diagnostics(backend)
     @test_throws ArgumentError M.build_jfnk_airfoil_controller(s;recovery_steps=10,recovery_limit=5)
 end
 
+function airfoil_coupled_rollback(backend)
+    s=airfoil_implicit_smoke(backend;jfnk=true)
+    c=M.build_jfnk_airfoil_controller(s;m=4)
+    names=M._AIRFOIL_COUPLED_STATE
+    before=map(name->Array(getproperty(s,name)),names)
+    M._airfoil_coupled_backup!(s,c)
+    # A flow step has already been accepted; an invalid SST update must roll
+    # back that step as well as the turbulence fields and time-step array.
+    fill!(s.ux,0.125f0)
+    bad!(x;kwargs...)=(fill!(x.tk,NaN32);fill!(x.dtf,42f0);nothing)
+    result=M._airfoil_coupled_sst!(s,c;advance! = bad!)
+    @test !result.accepted
+    for (name,expected) in zip(names,before)
+        @test Array(getproperty(s,name))==expected
+    end
+    M._airfoil_coupled_backup!(s,c)
+    fill!(s.uy,0.125f0)
+    throwing!(x;kwargs...)=(fill!(x.nut,NaN32);error("synthetic SST failure"))
+    @test_throws ErrorException M._airfoil_coupled_sst!(s,c;advance! = throwing!)
+    for (name,expected) in zip(names,before)
+        @test Array(getproperty(s,name))==expected
+    end
+    # Exercise the real controller rejection path, not only the helper.
+    c2=M.build_jfnk_airfoil_controller(s;m=4,initial_cfl=.05f0,
+        min_cfl=.05f0,max_cfl=.05f0)
+    calls=Ref(0)
+    bad_controller!(x;kwargs...)=(calls[]+=1;fill!(x.tk,NaN32);nothing)
+    r=M.step_jfnk_rans_ka!(s,c2;max_backtracks=16,
+        _sst_advance! = bad_controller!)
+    @test calls[]==1
+    @test !r.accepted && r.step_kind==:rejected && c2.rejections==1
+    @test c2.iterations==0 && r.merit_after==r.merit_before
+    for (name,expected) in zip(names,before)
+        @test Array(getproperty(s,name))==expected
+    end
+end
+
 function airfoil_central_difference_smoke(backend;linear_solver=:native)
     s=airfoil_implicit_smoke(backend;jfnk=true)
     w=M.build_jfnk_airfoil_workspace(s;m=6)
@@ -588,6 +626,10 @@ end
     airfoil_recovery_and_diagnostics(CPU())
 end
 
+@testset "invalid coupled SST steps restore the previous state CPU" begin
+    airfoil_coupled_rollback(CPU())
+end
+
 if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     using CUDA
     @test CUDA.functional()
@@ -595,6 +637,7 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
         good=CUDA.fill(1.0f0,4,4)
         zero_velocity=CUDA.zeros(Float32,4,4)
         bad=CUDA.fill(NaN32,4,4)
+        @test !M._implicit_cpu_strided(good)
         @test M._airfoil_physical_state(good,zero_velocity,zero_velocity,good)
         @test !M._airfoil_physical_state(good,bad,zero_velocity,good)
     end
@@ -636,5 +679,8 @@ if get(ENV,"OPENLUDWIG_TEST_CUDA", "0")=="1"
     end
     @testset "bounded recovery preserves explicit equations and diagnostic probe state CUDA" begin
         airfoil_recovery_and_diagnostics(CUDA.CUDABackend())
+    end
+    @testset "invalid coupled SST steps restore the previous state CUDA" begin
+        airfoil_coupled_rollback(CUDA.CUDABackend())
     end
 end
