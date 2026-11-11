@@ -11,6 +11,73 @@ end
 
 dotfn(cw, x, y; backend) = dot(x, y)
 identity_precond!(z, r, cw, w, m, bc, cfg) = copyto!(z, r)
+
+if get(ENV, "OPENLUDWIG_TEST_CUDA", "0") == "1"
+    using CUDA
+    @test CUDA.functional()
+    CUDA.allowscalar(false)
+
+    @kernel function toy_apply_cuda!(y, x, a11, a12, a21, a22)
+        i = @index(Global)
+        if i == 1
+            @inbounds y[1] = a11*x[1] + a12*x[2]
+        else
+            @inbounds y[2] = a21*x[1] + a22*x[2]
+        end
+    end
+
+    function solve_toy_cuda(A, b; maxit=8, first_wrong=false)
+        n = length(b)
+        n == 2 || error("the CUDA toy fixture has two rows")
+        device_b = CUDA.CuArray(b)
+        z(dims...) = CUDA.zeros(Float64, dims...)
+        cw = (; N=n, restart=4, dx=z(n), T1=z(n), T2=z(n),
+              Wt=CUDA.CuArray([0.5, 2.0][1:n]), R=device_b,
+              Vb=z(n, 5), Zb=z(n, 4), H=zeros(5, 4),
+              g=zeros(5), cs=zeros(4), sn=zeros(4), Y=z(n))
+        cfg = (; backend=CUDA.CUDABackend(), cpl_eta=1e-10,
+               cpl_abs=1e-12, cpl_maxit=maxit, cpl_gs=:mgs)
+        calls = Ref(0)
+        function apply!(y, x, cw, w, m, bc, cfg)
+            calls[] += 1
+            if first_wrong && calls[] == 1
+                copyto!(y, x)
+            else
+                toy_apply_cuda!(cfg.backend, 2)(y, x, A[1,1], A[1,2], A[2,1], A[2,2]; ndrange=2)
+            end
+            y
+        end
+        r = PBCav._cpl_fgmres!(cw, nothing, nothing, nothing, cfg,
+                               apply!, identity_precond!, dotfn)
+        x = Array(cw.dx)
+        actual = norm(Array(cw.Wt) .* (b - A*x))
+        r, x, actual
+    end
+
+    @testset "PBCav coupled FGMRES verifies its residual on CUDA" begin
+        A = [4.0 1.0; 1.0 3.0]
+        r, x, actual = solve_toy_cuda(A, [1.0, 2.0])
+        @test r.converged
+        @test actual <= max(1e-10*r.r0, 1e-12)
+        @test r.rest ≈ actual atol=1e-12
+        @test x ≈ A \ [1.0, 2.0]
+
+        A = [1.0 0.0; 0.0 2.0]
+        r, _, actual = solve_toy_cuda(A, [1.0, 1.0]; first_wrong=true)
+        @test r.converged && r.iters > 1
+        @test r.rest ≈ actual atol=1e-12
+        r, _, actual = solve_toy_cuda(A, [1.0, 1.0]; first_wrong=true, maxit=1)
+        @test !r.converged && r.iters == 1
+        @test r.rest ≈ actual atol=1e-12
+        @test actual > 0.1
+
+        r, x, actual = solve_toy_cuda(zeros(2, 2), [1.0, 1.0])
+        @test !r.converged && isfinite(r.rest)
+        @test r.rest ≈ actual atol=1e-12
+        @test all(isfinite, x)
+    end
+end
+
 function solve_toy(A, b; maxit=8, weights=ones(length(b)), first_wrong=false)
     cw = toywork(b; weights)
     cfg = (; backend=CPU(), cpl_eta=1e-12, cpl_abs=1e-14, cpl_maxit=maxit, cpl_gs=:mgs)
