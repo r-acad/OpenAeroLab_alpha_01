@@ -4,10 +4,10 @@
 (() => {
   const $ = id => document.getElementById(id);
   const kinds = ['surface_vtk','surface_lbmp','volume_vtk','numeric_slices','slice_png','csv_history'];
-  const labels = {surface_vtk:'Surface VTK',surface_lbmp:'Native surface data (LBMP)',volume_vtk:'Volume / field VTK',
+  const labels = {surface_vtk:'Surface VTK (ParaView)',surface_lbmp:'Native surface data (LBMP)',volume_vtk:'Volume / field VTK',
     numeric_slices:'Numeric cut-plane data',slice_png:'Solver field PNG images',csv_history:'CSV histories and coefficients'};
   let endpoint = '/api/select-folder', capabilities = null, backends = [];
-  const defaults = {surface_vtk:true,surface_lbmp:false,volume_vtk:false,numeric_slices:true,slice_png:true,csv_history:true};
+  const defaults = {surface_vtk:true,surface_lbmp:document.body.dataset.workbench==='aero',volume_vtk:false,numeric_slices:true,slice_png:true,csv_history:true};
   function init() {
     const host = $('output-controls'); if (!host) return;
     endpoint = document.body.dataset.workbench === 'aero' ? '/api/aero/select-folder' : '/api/select-folder';

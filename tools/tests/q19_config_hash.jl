@@ -118,4 +118,35 @@ end
     @test replaced.config_sha!=legacy.config_sha
     @test replaced.levels[end].dx==.2
 end
+@testset "Old cavity-sealed mesh is never reused or overwritten" begin
+    sealed=load_text(replace(BASE,"seal_cavities: false"=>"seal_cavities: true"))
+    mesh=Q.build_only_case(sealed)
+    legacy_counts=copy(mesh.counts)
+    delete!(legacy_counts,"cavity_seal_policy_version")
+    legacy=Q.OctMesh(mesh.domain,mesh.offset,mesh.periodic,mesh.levels,
+        mesh.triangles,mesh.config_sha,mesh.stl_sha,legacy_counts)
+    path=joinpath(FIXTURE,"mesh.oct")
+    Q.write_mesh(path,legacy)
+    old_sha=bytes2hex(open(sha256,path))
+    err=try Q.case_mesh(sealed); nothing catch e; e end
+    @test err isa ErrorException
+    @test occursin("Create a new mesh",sprint(showerror,err))
+    @test bytes2hex(open(sha256,path))==old_sha
+    # A changed setup must not bypass the guard and overwrite the old file.
+    changed=load_text(replace(BASE,"seal_cavities: false"=>"seal_cavities: true",
+        "finest_dx_m: 0.25"=>"finest_dx_m: 0.2"))
+    @test_throws ErrorException Q.case_mesh(changed)
+    @test bytes2hex(open(sha256,path))==old_sha
+    for invalid in (true,"2",nothing,-1)
+        legacy_counts["cavity_seal_policy_version"]=invalid
+        @test_throws ErrorException Q._require_current_cavity_policy(sealed,legacy)
+    end
+    legacy_counts["cavity_seal_policy_version"]=2
+    @test Q._require_current_cavity_policy(sealed,legacy) === nothing
+end
+@testset "Unimplemented numerical options fail before a run" begin
+    @test Q._require_implemented_numerics((walls=(wall_function=false,),numerics=(temporal=:linear,))) === nothing
+    @test_throws ArgumentError Q._require_implemented_numerics((walls=(wall_function=true,),numerics=(temporal=:linear,)))
+    @test_throws ArgumentError Q._require_implemented_numerics((walls=(wall_function=false,),numerics=(temporal=:quadratic,)))
+end
 println("Fixture retained under disposable root: ",FIXTURE)

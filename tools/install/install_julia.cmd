@@ -102,14 +102,14 @@ echo Another Julia installation is active, or the runtime folder is not writable
 echo The lock is released automatically when its process exits; the remaining lock file is harmless. 1>&2
 exit /b 1
 :unwritable
-echo Cannot write the private installation folders. Choose an IT-approved writable LUDWIG_PRIVATE_ROOT. 1>&2
+echo Cannot write the private installation folders. Choose a writable LUDWIG_PRIVATE_ROOT. 1>&2
 exit /b 1
 :stage_collision
 echo A staging-name collision occurred. Rerun setup; existing files were preserved. 1>&2
 exit /b 1
 :missing_tools
 echo Windows tar.exe and certutil.exe are required; downloading also needs Windows curl.exe. 1>&2
-echo Ask IT to install Julia %OA_VERSION%, then set LUDWIG_JULIA to its executable and rerun setup. 1>&2
+echo Install Julia %OA_VERSION%, set LUDWIG_JULIA to its executable, and rerun setup. 1>&2
 exit /b 1
 :missing_record
 echo The pinned Windows Julia version or archive record is missing. Download a complete repository ZIP. 1>&2
@@ -123,26 +123,26 @@ echo Offline installation requires a verified cached ZIP or LUDWIG_JULIA_ARCHIVE
 goto diagnostics
 :checksum_failure
 echo Julia archive checksum mismatch. No runtime was executed or installed. 1>&2
-echo A network filter may have returned a login page. Ask IT for the official Windows ZIP. 1>&2
+echo Use the official Windows ZIP listed in tools/install/runtimes.tsv. 1>&2
 goto diagnostics
 :download_failure
-echo Julia download failed. Check HTTPS_PROXY or LUDWIG_PROXY and ask IT to allow julialang-s3.julialang.org. 1>&2
-echo Windows certificate trust is used; ask IT to install its inspection certificate if required. 1>&2
-echo You can use LUDWIG_JULIA_ARCHIVE for an approved ZIP, or LUDWIG_JULIA for an existing installation. 1>&2
+echo Julia download failed. Check the log and HTTPS_PROXY or LUDWIG_PROXY settings. 1>&2
+echo Windows certificate trust is used. You can provide the official ZIP through LUDWIG_JULIA_ARCHIVE, 1>&2
+echo or select an existing Julia installation with LUDWIG_JULIA. 1>&2
 goto diagnostics
 :cache_failure
 echo Could not retain the downloaded ZIP. Check folder permissions or security-software quarantine. 1>&2
 goto diagnostics
 :extraction_failure
 echo Julia ZIP extraction failed. Existing runtimes are unchanged; the verified ZIP is retained for retry. 1>&2
-echo Check the log, available disk space and Windows Security quarantine with IT. 1>&2
-echo If the path is restricted or too long, select a shorter approved LUDWIG_PRIVATE_ROOT. 1>&2
+echo Check the log and available disk space. If the path is too long, 1>&2
+echo select a shorter writable LUDWIG_PRIVATE_ROOT. 1>&2
 goto diagnostics
 :execution_failure
 if exist "%OA_STAGE%\version.txt" type "%OA_STAGE%\version.txt" >>"%OA_LOG%"
 echo Julia extracted but could not start. Existing runtimes are unchanged. 1>&2
-echo Ask IT to check AppLocker/WDAC, Windows Security quarantine and the Visual C++ runtime. 1>&2
-echo Keep protection enabled; an IT-approved Julia can be selected with LUDWIG_JULIA. 1>&2
+echo Inspect the log and verify the Visual C++ runtime is installed. 1>&2
+echo An existing Julia installation can be selected with LUDWIG_JULIA. 1>&2
 goto diagnostics
 :promotion_failure
 echo Julia could not be installed at its final location. The promotion log identifies any preserved previous runtime. 1>&2

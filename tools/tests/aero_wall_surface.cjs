@@ -30,6 +30,14 @@ function frame(hash,n=3){const bytes=new ArrayBuffer(128+4*n),v=new DataView(byt
   const c1=bundle.meshes[0]._userThinInstanceBuffersStorage.data.wallColor,c2=bundle.meshes[1]._userThinInstanceBuffersStorage.data.wallColor;
   equal(Array.from(c1),[1,0,0,1],'First value reaches its own GPU color buffer');equal(Array.from(c2),[0,0,1,1],'Second value on the same facet retains a different GPU color');
   check(bundle.material.backFaceCulling===false,'Samples remain readable on either triangle side');equal(bundle.material.getClassName(),'ShaderMaterial','Native sample GPU shader material was created');
+  const ray={origin:new B.Vector3(.1,1,0),direction:new B.Vector3(0,-1,0)};
+  const picked=W.pick(s,s.cp,ray);
+  equal(picked.sample,0,'A visible native patch is pickable without an original STL');
+  check(Math.abs(picked.point[0]-.1)<1e-6&&Math.abs(picked.point[1]-.002)<1e-6,'Picking returns the actual displayed patch intersection');
+  equal(W.pick(s,s.cp,ray,{visible:()=>false}),null,'A clipping plane can exclude an otherwise picked patch');
+  equal(W.pick(s,s.cp,{origin:new B.Vector3(.3,1,0),direction:new B.Vector3(0,-1,0)}),null,'Missing-valued patches are not pickable');
+  const groundRay={origin:new B.Vector3(.1,0,1),direction:new B.Vector3(0,0,-1)},groundPick=W.pick(s,s.cp,groundRay,{ground:true});
+  check(groundPick&&Math.abs(groundPick.point[2]-.002)<1e-6,'Picking uses the ground coordinate convention');
   bundle.material.alpha=.4;check(bundle.material.needAlphaBlending(),'Native samples support model opacity');
   const sections=W.section(s,s.cp,'x',.1);equal(sections.length,1,'A cut intersects only the local sample footprint');equal(sections[0].value,1,'Section curves retain local pressure rather than a facet mean');
   equal(W.section(s,s.cp,'x',1).length,0,'No curve is invented across an unsampled gap');

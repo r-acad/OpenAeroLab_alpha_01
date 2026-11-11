@@ -1,4 +1,10 @@
 # Windows setup after the native .cmd bootstrap has found Julia. No .ps1 is loaded.
+# Julia's first Pkg precompile itself creates a Git repository, so choose its
+# private scratch path before importing Pkg through setup.jl.
+if Sys.iswindows() && abspath(PROGRAM_FILE)==abspath(@__FILE__)
+    include(joinpath(@__DIR__,"scratch_path.jl"))
+    OpenAeroLabScratch.prepare_windows_scratch!()
+end
 using Downloads, UUIDs
 include(joinpath(@__DIR__, "setup.jl"))
 
@@ -23,7 +29,7 @@ function install_visual_cpp(; offline=false, installed=visual_cpp_installed,
     execute=command->run(command), private=OpenAeroLabSetup.private_root())
     installed() && return
     local_installer = get(ENV, "LUDWIG_VCREDIST_INSTALLER", "")
-    offline && isempty(local_installer) && error("The Microsoft Visual C++ x64 runtime is missing. Ask IT to install it, or set LUDWIG_VCREDIST_INSTALLER to the signed Microsoft x64 installer.")
+    offline && isempty(local_installer) && error("The Microsoft Visual C++ x64 runtime is missing. Install it, or set LUDWIG_VCREDIST_INSTALLER to the signed Microsoft x64 installer.")
     folder = joinpath(private, "TEMP_DELETEABLE", "setup")
     mkpath(folder)
     installer = isempty(local_installer) ? joinpath(folder, "vc_redist_$(uuid4()).exe") : abspath(local_installer)
@@ -38,12 +44,12 @@ function install_visual_cpp(; offline=false, installed=visual_cpp_installed,
                 end
             catch err
                 OpenAeroLabSetup.network_guidance(log)
-                error("Visual C++ download failed: $(OpenAeroLabSetup.safe_error(err)). See $logpath, or provide an IT-approved LUDWIG_VCREDIST_INSTALLER.")
+                error("Visual C++ download failed: $(OpenAeroLabSetup.safe_error(err)). See $logpath, or provide LUDWIG_VCREDIST_INSTALLER.")
             end
         end
     end
     isfile(installer) || error("LUDWIG_VCREDIST_INSTALLER does not point to an existing installer.")
-    verify(installer) || error("The Visual C++ installer's Microsoft signature could not be verified, so it was not run. If company policy blocks the Windows signature query, ask IT to install the Microsoft x64 runtime first; do not weaken security policy.")
+    verify(installer) || error("The Visual C++ installer's Microsoft signature could not be verified, so it was not run. Install the signed Microsoft x64 runtime separately, then rerun setup.")
     println("Installing the signed runtime. Windows may request administrator authorization.")
     command = Cmd(Cmd([installer, "/install", "/quiet", "/norestart"]); ignorestatus=true, windows_hide=true)
     process = execute(command)

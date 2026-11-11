@@ -99,6 +99,59 @@
       out.push({value:values[i],points:[centre.map((x,a)=>x-half*direction[a]/norm),centre.map((x,a)=>x+half*direction[a]/norm)]});
     }return out;
   }
-  root.LudwigAeroWallSurface={readFrame,readGeometry,verifyGeometry,load,render,section};
+  // Only used when the original STL is absent. Build a compact, lazy index of
+  // sample chunks; ordinary rendering and the usual STL picker pay no cost.
+  // Each AABB conservatively contains the whole square display patch.
+  const pickIndexes=new WeakMap(),pickChunkSize=1024;
+  function pickIndex(geometry,ground){
+    let cached=pickIndexes.get(geometry);if(!cached){cached=[null,null];pickIndexes.set(geometry,cached);}
+    const key=ground?1:0;if(cached[key])return cached[key];
+    const view=geometry.view,count=geometry.count,groups=Math.ceil(count/pickChunkSize),boxes=new Float32Array(groups*6);
+    for(let group=0;group<groups;group++){
+      let xmin=Infinity,ymin=Infinity,zmin=Infinity,xmax=-Infinity,ymax=-Infinity,zmax=-Infinity;
+      const end=Math.min(count,(group+1)*pickChunkSize);
+      for(let i=group*pickChunkSize;i<end;i++){
+        const k=24+36*i;if(!(view.getUint16(k+34,true)&1))continue;
+        const x=view.getFloat32(k,true),a=view.getFloat32(k+4,true),b=view.getFloat32(k+8,true),y=ground?a:b,z=ground?b:a,r=2*view.getFloat32(k+24,true);
+        xmin=Math.min(xmin,x-r);xmax=Math.max(xmax,x+r);ymin=Math.min(ymin,y-r);ymax=Math.max(ymax,y+r);zmin=Math.min(zmin,z-r);zmax=Math.max(zmax,z+r);
+      }
+      boxes.set([xmin,ymin,zmin,xmax,ymax,zmax],group*6);
+    }
+    return cached[key]={boxes,groups};
+  }
+  function pick(surface,values,ray,{ground=false,visible=null}={}){
+    const geometry=surface?.geometry;if(!geometry||!values||values.length<geometry.count||!ray?.origin||!ray?.direction)return null;
+    const {boxes,groups}=pickIndex(geometry,ground),view=geometry.view,o=ray.origin,d=ray.direction;
+    let best=Infinity,result=null;
+    for(let group=0;group<groups;group++){
+      let lo=0,hi=best;const base=6*group;
+      for(let axis=0;axis<3;axis++){
+        const origin=axis===0?o.x:axis===1?o.y:o.z,dir=axis===0?d.x:axis===1?d.y:d.z,min=boxes[base+axis],max=boxes[base+axis+3];
+        if(!Number.isFinite(min)){hi=-1;break;}
+        if(Math.abs(dir)<1e-14){if(origin<min||origin>max){hi=-1;break;}continue;}
+        let a=(min-origin)/dir,b=(max-origin)/dir;if(a>b)[a,b]=[b,a];lo=Math.max(lo,a);hi=Math.min(hi,b);if(lo>hi)break;
+      }
+      if(lo>hi)continue;
+      for(let i=group*pickChunkSize,end=Math.min(geometry.count,(group+1)*pickChunkSize);i<end;i++){
+        const k=24+36*i;if(!(view.getUint16(k+34,true)&1)||!finite(values[i]))continue;
+        const dx=view.getFloat32(k+24,true),x=view.getFloat32(k,true),a=view.getFloat32(k+4,true),b=view.getFloat32(k+8,true),
+          nx=view.getFloat32(k+12,true),na=view.getFloat32(k+16,true),nb=view.getFloat32(k+20,true),
+          y=ground?a:b,z=ground?b:a,ny=ground?na:nb,nz=ground?nb:na;
+        const denom=nx*d.x+ny*d.y+nz*d.z;if(Math.abs(denom)<1e-14)continue;
+        const px=x+nx*dx*.02,py=y+ny*dx*.02,pz=z+nz*dx*.02,
+          distance=((px-o.x)*nx+(py-o.y)*ny+(pz-o.z)*nz)/denom;
+        if(distance<0||distance>=best||!finite(distance))continue;
+        const hx=o.x+d.x*distance,hy=o.y+d.y*distance,hz=o.z+d.z*distance;
+        let tx,ty,tz;if(Math.abs(nz)<.9){tx=-ny;ty=nx;tz=0;}else{tx=0;ty=-nz;tz=ny;}
+        const length=Math.hypot(tx,ty,tz);if(length===0)continue;tx/=length;ty/=length;tz/=length;
+        const bx=ny*tz-nz*ty,by=nz*tx-nx*tz,bz=nx*ty-ny*tx,rx=hx-px,ry=hy-py,rz=hz-pz,r=footprintRadius(dx);
+        if(Math.abs(rx*tx+ry*ty+rz*tz)>r||Math.abs(rx*bx+ry*by+rz*bz)>r)continue;
+        if(visible&&!visible(hx,hy,hz))continue;
+        best=distance;result={distance,point:[hx,hy,hz],sample:i};
+      }
+    }
+    return result;
+  }
+  root.LudwigAeroWallSurface={readFrame,readGeometry,verifyGeometry,load,render,section,pick};
   if(typeof module==='object'&&module.exports)module.exports=root.LudwigAeroWallSurface;
 })(globalThis);

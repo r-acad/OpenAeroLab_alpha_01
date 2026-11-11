@@ -55,7 +55,7 @@ function promote(private_root, staging, version)
         end
         mv(prepared, runtime)
         version_ok(joinpath(runtime, "julia-$version", "bin", "julia.exe"), version) ||
-            error("Julia could not start in its final directory. Ask IT to approve this application path.")
+            error("Julia could not start in its final directory. Inspect the runtime and installation logs, then retry.")
     catch err
         # Preserve a failed new installation for diagnosis and restore the old
         # installation. No recursive deletes occur during recovery.

@@ -7,6 +7,10 @@ function _require_current_q19_mesh(case,actual)
             get(get(actual,"octree",Dict()),"symmetry_boundary_refinement",0)<1
         throw(ArgumentError("Create the mesh again before running: this saved D3Q19 mesh predates refinement at the symmetry plane. Its old RAM estimate cannot be used for the corrected mesh."))
     end
+    if _q19_case(case) && get(get(case,"octree",Dict()),"seal_cavities",false) &&
+            get(get(actual,"octree",Dict()),"cavity_seal_policy_version",0)<2
+        throw(ArgumentError("Create a new mesh before running: this saved D3Q19 mesh uses an older cavity-sealing policy that can mark distant fluid as solid. Existing results remain available for viewing."))
+    end
     nothing
 end
 _memory_lattice(case::AbstractDict) = _pond_case(case) ? "pond_thermal" : _q19_case(case) ? "q19_octree" : get(case,"lattice","d3q27")
@@ -50,7 +54,7 @@ function _q19_yaml_lines(case::AbstractDict)
      "    seal_cavities: $(get(o,"seal_cavities",false))",
      "    wake: {length: $(o["wake_length"]), level_offset: $(o["wake_level_offset"]), margin: 0.1}",
      "  numerics: {collision: rr, sgs: wale, u_lattice: $(get(o,"u_lattice",.08))}","  walls: {scheme: bouzidi}",
-     "  outputs: {surface_vtk: $(get(case,"outputs",OUTPUT_DEFAULTS)["surface_vtk"]), max_plane_samples: $(get(o,"max_plane_samples",4_000_000))}",
+     "  outputs: {surface_vtk: $(get(case,"outputs",OUTPUT_DEFAULTS)["surface_vtk"]), surface_lbmp: $(get(case,"outputs",OUTPUT_DEFAULTS)["surface_lbmp"]), max_plane_samples: $(get(o,"max_plane_samples",4_000_000))}",
      "  checkpoint: {every_minutes: 30, keep: $(get(o,"checkpoint_keep",2))}"]
 end
 

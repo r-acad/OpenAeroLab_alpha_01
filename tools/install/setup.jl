@@ -1,3 +1,7 @@
+if Sys.iswindows() && abspath(PROGRAM_FILE)==abspath(@__FILE__)
+    include(joinpath(@__DIR__,"scratch_path.jl"))
+    OpenAeroLabScratch.prepare_windows_scratch!()
+end
 module OpenAeroLabSetup
 using Pkg, TOML, Dates, SHA, UUIDs
 using FileWatching: Pidfile
@@ -54,9 +58,9 @@ function network_guidance(io; offline=false)
     if offline
         println(io,"Offline setup needs the matching Julia packages and artifacts already cached. Prepare the depot on an approved connected machine with the same OS/architecture, copy it, then set JULIA_DEPOT_PATH before setup.")
     else
-        println(io,"For company networks: use your approved HTTPS_PROXY / HTTP_PROXY and NO_PROXY settings. Julia package downloads also honor JULIA_PKG_SERVER; ask IT for an approved package mirror or allow access to pkg.julialang.org and the artifact hosts named in the log.")
-        println(io,"If your company inspects TLS, set JULIA_SSL_CA_ROOTS_PATH to its IT-approved PEM CA bundle before setup. Keep certificate and checksum verification enabled. A 407 response requires proxy authentication; a 403 response may require an IT allow-list change.")
-        println(io,"If downloads are prohibited, use an IT-provided populated Julia depot with JULIA_DEPOT_PATH and rerun setup --offline. Rerunning normal setup reuses completed downloads.")
+        println(io,"Check network access and any HTTPS_PROXY / HTTP_PROXY and NO_PROXY settings. Julia package downloads also honor JULIA_PKG_SERVER; the log identifies any unavailable package or artifact host.")
+        println(io,"If an explicit trusted certificate bundle is needed, set JULIA_SSL_CA_ROOTS_PATH to its PEM path. A 407 response indicates proxy authentication is required; a 403 response indicates access was denied.")
+        println(io,"For a prepared package depot, set JULIA_DEPOT_PATH and rerun setup --offline. Normal reruns reuse completed downloads.")
     end
 end
 
@@ -64,8 +68,34 @@ function failure_guidance(io, stage; offline=false)
     if stage=="download"
         network_guidance(io;offline)
     else
-        println(io,"Package downloads finished for this environment. Check the log for the compilation or import failure, and ensure Julia, its child processes and the package depot are permitted by company policy. --no-precompile --no-verify prepares downloads only; it does not repair a blocked runtime.")
+        println(io,"Setup stopped during $stage. Inspect the preceding error and the detailed log to identify the failing package or runtime check. Rerun setup after correcting it; --no-precompile --no-verify only prepares downloads and does not complete verification.")
     end
+end
+
+"Fail early when a package's local manifest entry disagrees with its Project.toml."
+function validate_manifest(project; root=ROOT)
+    directory=joinpath(root,project)
+    project_data=TOML.parsefile(joinpath(directory,"Project.toml"))
+    manifest=TOML.parsefile(joinpath(directory,"Manifest.toml"))
+    name=get(project_data,"name",nothing)
+    name===nothing && return nothing # Plain environments need not have a self-entry.
+    entries=get(get(manifest,"deps",Dict()),name,nothing)
+    entries===nothing && return nothing # A root project does not require a self-entry.
+    entries isa AbstractVector || throw(ArgumentError("Invalid manifest entries for $name in $project"))
+    expected_uuid=get(project_data,"uuid",nothing)
+    matching=filter(entry->get(entry,"uuid",nothing)==expected_uuid,entries)
+    length(matching)==1 || throw(ArgumentError("The manifest entry for $name in $project has an inconsistent project UUID."))
+    entry=only(matching)
+    dependencies=get(entry,"deps",String[])
+    names=dependencies isa AbstractDict ? keys(dependencies) : dependencies
+    names isa Union{AbstractVector,Base.KeySet} || throw(ArgumentError("Invalid dependency list for $name in $project"))
+    expected=Set(String.(keys(get(project_data,"deps",Dict()))))
+    actual=Set(String.(names))
+    if expected!=actual
+        missing=sort!(collect(setdiff(expected,actual)));extra=sort!(collect(setdiff(actual,expected)))
+        throw(ArgumentError("Manifest dependency list for $name in $project differs from Project.toml (missing: $(join(missing, ", ")); extra: $(join(extra, ", "))). Update the checked-in manifest and retry setup."))
+    end
+    nothing
 end
 
 function atomic_receipt(path, value)
@@ -108,9 +138,11 @@ function install_projects!(selected; opts=Set{String}(), root=ROOT, private=priv
             println(log,"OpenAeroLab installation started at ",progress["started_utc"]," UTC")
             try
                 for (index,p) in enumerate(selected)
-                    progress["current_project"]=p.path;progress["stage"]="download";save_progress()
+                    progress["current_project"]=p.path;progress["stage"]="metadata";save_progress()
                     println(console,"[$index/$(length(selected))] Installing $(p.name)…");flush(console)
                     println(log,"\n=== $(p.name) ===");flush(log)
+                    validate_manifest(p.path;root)
+                    progress["stage"]="download";save_progress()
                     activate(joinpath(root,p.path),log)
                     instantiate_with_retry(()->instantiate(log);offline="--offline" in opts,log,console,sleepfn)
                     if !("--no-precompile" in opts)
@@ -174,6 +206,9 @@ function main(args=ARGS)
     for (index,p) in enumerate(selected); println("  $index/$(length(selected)) $(p.name) [$(p.path)]"); end
     "--dry-run" in opts && return
     scratch=joinpath(private_root(),"TEMP_DELETEABLE","setup");mkpath(scratch)
+    if Sys.iswindows() && isdefined(Main,:OpenAeroLabScratch)
+        scratch=Main.OpenAeroLabScratch.choose_scratch_path(scratch).path
+    end
     withenv("JULIA_PKG_PRECOMPILE_AUTO"=>"0",
         "JULIA_NUM_PRECOMPILE_TASKS"=>get(ENV,"JULIA_NUM_PRECOMPILE_TASKS","2"),
         "TEMP"=>scratch,"TMP"=>scratch,"TMPDIR"=>scratch) do

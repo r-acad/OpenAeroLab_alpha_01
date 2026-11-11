@@ -1,6 +1,6 @@
 const EXPORT_ROOT = joinpath(PRIVATE_ROOT, "results", "exports")
 const OUTPUT_DEFAULTS = Dict{String,Any}(
-    "folder" => "", "surface_vtk" => true, "surface_lbmp" => false,
+    "folder" => "", "surface_vtk" => true, "surface_lbmp" => true,
     "volume_vtk" => false, "numeric_slices" => true, "slice_png" => true,
     "csv_history" => true, "report" => false, "charts" => false,
     "renders_3d" => false, "report_format" => "html", "chart_format" => "png",

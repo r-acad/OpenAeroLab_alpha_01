@@ -169,7 +169,26 @@
     const actual=state.job?.actual,openMode=$('geometry-handling')?.value==='two_sided_open';
     const qualityAllows=actual?.quality?.runnable!==false||(openMode&&actual?.run_blocked_by_geometry===true&&actual?.run_blocked_by_mesh_quality!==true);
     return Boolean(state.jobId&&!state.draftDirty&&!state.surfaceRefinementPending&&!modelTools?.isInteracting()&&validSettings()&&s==='mesh_ready'&&gpuFit(state.job)!==false&&
-      actual?.run_blocked_by_mesh_quality!==true&&qualityAllows);
+      actual?.run_blocked_by_mesh_quality!==true&&qualityAllows&&!state.outputStorageBlocked);
+  }
+  let outputEstimateTimer=null,outputEstimateKey='',outputEstimateSerial=0;
+  function scheduleOutputEstimate(){
+    const host=$('output-controls');if(!host)return;
+    let node=$('output-storage-estimate');if(!node){node=document.createElement('p');node.id='output-storage-estimate';node.className='hint';node.setAttribute('role','status');host.appendChild(node);}
+    if(state.job?.case?.solver!=='q19_octree'||!state.job?.actual||!state.jobId){node.textContent='For D3Q19, build a mesh to estimate output storage.';state.outputStorageBlocked=false;outputEstimateKey='';return;}
+    let outputs,every;try{outputs=window.LudwigOutputControls.read();every=window.LudwigOutputControls.displayEvery();}catch{node.textContent='Complete output options to estimate storage.';state.outputStorageBlocked=false;outputEstimateKey='';return;}
+    const id=state.jobId,key=JSON.stringify([id,outputs,every,state.job.actual?.octree?.reports?.wall_sample_count]);if(key===outputEstimateKey)return;
+    outputEstimateKey=key;state.outputStorageBlocked=false;const serial=++outputEstimateSerial;clearTimeout(outputEstimateTimer);
+    node.textContent='Checking estimated output storage…';
+    outputEstimateTimer=setTimeout(async()=>{try{
+      const data=await api(`/api/aero/jobs/${encodeURIComponent(id)}/output-estimate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({outputs,display_every:every})});
+      if(serial!==outputEstimateSerial||id!==state.jobId)return;
+      if(!data.available){node.textContent='Output storage cannot be estimated until the mesh is ready.';return;}
+      const gb=value=>`${(Number(value)/1e9).toFixed(2)} GB`;
+      state.outputStorageBlocked=Boolean(data.blocked);
+      node.textContent=`D3Q19 output: every ${data.every} iterations, approximately ${data.frames} frames; ${gb(data.vtk_bytes_per_frame)} ParaView and ${gb(data.native_bytes_per_frame)} native data per frame. ${data.sample_count_exact?'Measured wall-sample count.':'Wall-sample count estimated; disk sufficiency is not verified.'} Forecast ${gb(data.forecast_bytes)} including up to ${gb(data.checkpoint_peak_bytes)} checkpoints and a ${gb(data.reserve_bytes)} reserve; excludes cut planes, facet VTK, images and other files. ${data.checkpoint_size_exact?'':'Checkpoint size not verified. '}${data.volume_vtk?'Volume VTK is extra and can be very large. ':''}${data.available_bytes==null?'Free disk space not verified.':`${gb(data.available_bytes)} free now.`} ${data.blocked?'Not enough space for surface frames, the final checkpoint and reserve. Increase output interval or select another disk.':data.available_bytes!=null&&data.forecast_bytes>data.available_bytes?'Forecast exceeds free space; select another disk or reduce outputs.':''}`;
+      node.classList.toggle('warning',state.outputStorageBlocked||data.available_bytes!=null&&data.forecast_bytes>data.available_bytes);updateActions();
+    }catch(error){if(serial===outputEstimateSerial){node.textContent=`Output storage not verified: ${error.message}`;state.outputStorageBlocked=false;updateActions();}}},350);
   }
   function updateResultsAvailability(){
     const job=state.job,artifacts=job?.artifacts||{};
@@ -521,7 +540,34 @@
     for(const label of state.labels)if(label.node){const p=BABYLON.Vector3.Project(v3(...label.point),BABYLON.Matrix.IdentityReadOnly,transform,viewport);label.node.hidden=p.z<0||p.z>1||p.x<0||p.x>width||p.y<0||p.y>height;label.node.style.left=p.x+'px';label.node.style.top=p.y+'px';}
 
   }
+  function updateFilePaths(){
+    const parent=$('scene-info')?.parentElement;if(!parent)return;
+    let node=$('viewer-file-paths');
+    if(!node){node=document.createElement('pre');node.id='viewer-file-paths';node.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;max-height:18rem;overflow:auto;user-select:text;font:inherit';parent.appendChild(node);}
+    const job=state.job||{},artifacts=job.artifacts||{},lines=['Study and result file paths'];
+    lines.push(`Study: ${state.studySource?.path||'not saved to a local file'}`);
+    if(job.study_snapshot_path)lines.push(`Run study copy: ${job.study_snapshot_path}`);
+    if(job.export_directory)lines.push(`Run output folder: ${job.export_directory}`);
+    else if(job.case?.outputs?.folder)lines.push(`Selected output folder: ${job.case.outputs.folder} (no run started)`);
+    const meshDir=job.mesh_case_dir||job.inspection_mesh_directory,runDir=job.run_case_dir||job.inspection_run_directory;
+    if(meshDir)lines.push(`Mesh folder: ${meshDir}`);
+    if(runDir)lines.push(`Solver folder: ${runDir}`);
+    const seen=new Set();
+    function add(root,item,label){
+      const name=typeof item==='string'?item:item?.name;
+      if(!root||typeof name!=='string'||!name||name.startsWith('/')||name.startsWith('\\')||name.split(/[\\/]/).includes('..')||/^[A-Za-z]:/.test(name))return;
+      const sep=root.includes('\\')?'\\':'/',path=root.replace(/[\\/]+$/,'')+sep+name.replace(/[\\/]/g,sep);
+      if(!seen.has(path)){seen.add(path);lines.push(`${label}: ${path}`);}
+    }
+    for(const item of artifacts.files||[])add(item.phase==='run'?runDir:meshDir,item,'File');
+    for(const item of artifacts.in_progress_files||[])add(item.phase==='run'?runDir:meshDir,item,'Incomplete or being written');
+    for(const item of job.exports?.files||[])add(job.export_directory,item,'Export');
+    if(!seen.size)lines.push('No recorded result files are available yet.');
+    const text=lines.join('\n');if(node.textContent!==text)node.textContent=text;
+  }
+  window.LudwigAeroPathUI={refresh:updateFilePaths};
   function updateLabels() {
+    updateFilePaths();
     const node=$('scene-info');if(!node)return;
     const frame=state.frame||{},lines=['Boundary colours: inlet = translucent yellow; outlet = blue; lower face = green.'];
     if(state.viewNotice)lines.unshift(state.viewNotice);
@@ -781,7 +827,15 @@
     const pickDomain=point=>scene.pick(point.x,point.y,mesh=>mesh.isPickable&&mesh.metadata?.domainSurface,false,camera);
     const pickModel=point=>{
       const canonical=state.sceneObjects.find(mesh=>mesh.name==='model'&&mesh.isPickable&&!mesh.isDisposed?.());
-      if(!canonical)return scene.pick(point.x,point.y,isModel,false,camera);
+      if(!canonical){
+        const hit=scene.pick(point.x,point.y,isModel,false,camera);if(hit?.hit)return hit;
+        const cached=state.scalarMeshCache,surface=state.importedResults?state.importedSurface:state.surface;
+        if(!cached?.samples||!surface||cached.samples.material.alpha<=0)return hit;
+        const ray=scene.createPickingRay(point.x,point.y,BABYLON.Matrix.Identity(),camera),material=cached.samples.material;
+        const planes=[material.clipPlane,material.clipPlane2,scene.clipPlane,scene.clipPlane2].filter(Boolean);
+        const sample=window.LudwigAeroWallSurface.pick(surface,cached.values,ray,{ground:groundSolverFrame(),visible:(x,y,z)=>planes.every(p=>p.dotCoordinate(new BABYLON.Vector3(x,y,z))<=1e-7)});
+        return sample?{hit:true,distance:sample.distance,pickedPoint:new BABYLON.Vector3(...sample.point)}:hit;
+      }
       canonical.computeWorldMatrix(true);const world=canonical.getWorldMatrix(),material=canonical.material;
       return scene.pick(point.x,point.y,mesh=>mesh===canonical,false,camera,(a,b,c,ray)=>{
         const hit=ray.intersectsTriangle(a,b,c);if(!hit)return false;
@@ -879,9 +933,17 @@
     if(reuse){for(const object of cached.objects||[cached.mesh,cached.material])if(object)keep(object);drawnSurface=cached.mesh;}
     else if(wantsScalar&&range&&wallSamples){
       const start=state.sceneObjects.length;
-      // The native link patches are the entire field surface. Drawing the
-      // original STL beneath them makes the display look facet-averaged and
-      // can hide fine variation where the two surfaces intersect in depth.
+      // Gray is geometry without a sampled pressure, never an interpolated
+      // result. The pickable underlay also keeps click-to-focus available.
+      if(source?.length>=9){
+        drawnSurface=addTriangleSurface(source);
+        if(drawnSurface?.material){
+          drawnSurface.material.diffuseColor=new BABYLON.Color3(.42,.45,.48);
+          drawnSurface.material.emissiveColor=new BABYLON.Color3(.42,.45,.48);
+          drawnSurface.material.specularColor=BABYLON.Color3.Black();
+          drawnSurface.material.disableLighting=true;
+        }
+      }
       const samples=window.LudwigAeroWallSurface.render(surface,values,range,{B:BABYLON,scene:state.scene,keep,color:scalarColor,ground:groundSolverFrame(),opacity:Number($('model-opacity')?.value??100)/100});
       state.scalarMeshCache={scene:state.scene,mesh:drawnSurface,material:drawnSurface?.material,objects:state.sceneObjects.slice(start),samples,vertices:geometryIdentity,values,field,range,rangeMode,palette,offset:offset.slice(),ground:groundSolverFrame()};
     }
@@ -908,7 +970,7 @@
       legend.title=`Actual data minimum ${Number(range.actualLo).toPrecision(6)}, maximum ${Number(range.actualHi).toPrecision(6)}. ${range.mode==='manual'?'Manual colour limits; use Results > Field scale limits > Automatic to restore automatic limits.':range.mode==='full'?'All values use the full colour scale.':'Values outside the displayed limits use the end colours. Choose Full data range to include every value in the scale.'}`;
     }}
     const noSurface=state.mode==='surface'&&!range;
-    state.viewNotice=wallSamples&&range?`${surface.count.toLocaleString()} native wall-cell/facet samples displayed as ${state.scalarMeshCache?.samples?.patchTriangles?.toLocaleString()||'fine'} LBM link patch triangles. No original STL facets are drawn in this field view; no pressure averaging between cells or facets. Patches overlap at the local cell scale and are not physical integration areas. Missing samples leave gaps. ${surface.geometry.ambiguous?surface.geometry.ambiguous.toLocaleString()+' grazing/ambiguous sides are shown two-sided.':''}`:imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
+    state.viewNotice=wallSamples&&range?`${surface.count.toLocaleString()} native wall-cell/facet samples displayed as ${state.scalarMeshCache?.samples?.patchTriangles?.toLocaleString()||'fine'} LBM link patch triangles. Neutral gray shows geometry without a native pressure sample; gray is not a field value. Patches overlap at the local cell scale and are not physical integration areas. ${surface.geometry.ambiguous?surface.geometry.ambiguous.toLocaleString()+' grazing/ambiguous sides are shown two-sided.':''}`:imported?(noSurface?'Choose an available imported surface field or enable Section for volume fields.':''):!source?'Load a geometry file to place a model in this domain.':noSurface?(values&&!hasPlacement?'Surface field is waiting for the solver mesh placement.':'Surface pressure appears when the solver exports its first field.'):'';
     $('viewer-overlay').textContent='';$('viewer-overlay').hidden=true;
     $('viewer-note').textContent=state.amr?'Solver placement and snapped domain · drag to orbit · right drag to pan · wheel to zoom':
       'Domain preview · +X prescribed flow · build for the snapped lattice · drag to orbit';
@@ -1029,7 +1091,7 @@
   function syncSurfaceQuantities(surface){
     const select=$('surface-field');for(const option of select.options)option.disabled=!(surface?.fields?.[option.value]??surface?.[option.value]);
     if(select.selectedOptions[0]?.disabled)select.value=surface?.cp?'cp':'pressure';
-    const description=$('surface-sampling-note');if(description)description.textContent=surface?.representation==='wall_samples'?`Native LBM link patch mesh · ${surface.count.toLocaleString()} local samples, two display triangles each. Each colour is its own fluid-cell pressure. Original STL facets are hidden in this field view. Patches overlap within the local cell's circumradius; their areas are not physical integration weights. Missing samples leave gaps. Shear is available only in facet averages.`:'Facet averages use the original geometry faces. Choose native wall samples when the solver has exported them to see detail within each face.';
+    const description=$('surface-sampling-note');if(description)description.textContent=surface?.representation==='wall_samples'?`Native LBM link patch mesh · ${surface.count.toLocaleString()} local samples, two display triangles each. Each colour is its own fluid-cell pressure. Neutral gray is geometry without a sample, not an interpolated value. Patches overlap within the local cell's circumradius; their areas are not physical integration weights. Shear is available only in facet averages.`:'Facet averages use the original geometry faces. Choose native wall samples when the solver has exported them to see detail within each face.';
   }
   async function maybeLoadSurface(job,force=false) {
     if(!force&&(state.liveResults===false||state.surfaceFollowLive===false))return;
@@ -1145,6 +1207,7 @@
   }
   function renderJob(job) {
     state.job=job;const status=String(job.status||'unknown'),estimate=job.estimate||{},actual=job.actual||{},progressInfo=job.progress||{};
+    updateFilePaths();
     if(job.case)state.activeConfig=job.case;
     if(status==='mesh_ready'&&!state.draftDirty&&state.resolvedJob!==job.job_id){
       const resolved=job.case?.domain||{},editable=(resolved.sizing||'minimum')!=='fixed'?(job.case?.requested_domain||job.case?.domain_adjustment?.requested_domain||resolved):resolved;
@@ -1168,7 +1231,7 @@
     if(meshActive){if(finite(meshProgress.percent))$('job-progress').value=Number(meshProgress.percent);else $('job-progress').removeAttribute('value');if($('job-progress-label'))$('job-progress-label').textContent='Creating mesh…';}
     else{$('job-progress').value=status==='completed'?100:Number.isFinite(percent)?Math.max(0,Math.min(100,percent)):0;if($('job-progress-label'))$('job-progress-label').textContent='Solver progress';}
     window.LudwigOutputControls?.render(job);renderSolverProgress(job);resultBrowser?.render(job);updateVramTarget(job.estimate?.gpu);
-    renderMeshDetails(job);renderArtifacts(job);cutOptions(job);updateActions();updateBudgetGuard(job);
+    renderMeshDetails(job);renderArtifacts(job);cutOptions(job);scheduleOutputEstimate();updateActions();updateBudgetGuard(job);
   }
   async function attachStudyResults(id,{compatible=true}={}){
     if(!jobIdPattern.test(id))return;const modelId=state.modelId;
@@ -1557,8 +1620,8 @@
     $('target-vram').addEventListener('input',()=>{updateVramTarget(state.job?.estimate?.gpu);
       if($('mesh-sizing').value==='manual'){if(state.job)renderJob(state.job);else{updateBudgetGuard();updateActions();}}
       else{updateBudgetGuard();invalidateMesh();}});
-    $('output-controls')?.addEventListener('input',updateActions);
-    $('output-controls')?.addEventListener('change',updateActions);
+    $('output-controls')?.addEventListener('input',()=>{scheduleOutputEstimate();updateActions();});
+    $('output-controls')?.addEventListener('change',()=>{scheduleOutputEstimate();updateActions();});
     $('boundary').addEventListener('change',()=>{if($('boundary').value==='symmetry'){if(symmetryPlacement()==='none')retainCurrentSymmetryPosition();else $('move-y').value='0';}boundaryNote();renderCutRows();invalidateMesh();});
     $('symmetry-auto-center-y')?.addEventListener('change',()=>{if($('symmetry-placement'))$('symmetry-placement').value=$('symmetry-auto-center-y').checked?'center':'wall';applySymmetryPlacement();});
     $('model-projections')?.addEventListener('change',queueRender);

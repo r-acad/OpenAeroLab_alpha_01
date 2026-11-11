@@ -29,6 +29,7 @@ include(joinpath(@__DIR__, "aero", "case.jl"))
 include(joinpath(@__DIR__, "aero", "mesh_helpers.jl"))
 include(joinpath(@__DIR__, "aero", "artifacts.jl"))
 include(joinpath(@__DIR__, "aero", "jobs.jl"))
+include(joinpath(@__DIR__, "aero", "storage.jl"))
 include(joinpath(@__DIR__, "aero", "studies.jl"))
 include(joinpath(@__DIR__, "aero", "model_assets.jl"))
 include(joinpath(@__DIR__, "aero", "volume_cuts.jl"))
@@ -137,6 +138,9 @@ function handle(req::HTTP.Request, path::AbstractString)::HTTP.Response
         end
         if (m = match(r"^/api/aero/jobs/([^/]+)/run$", route)) !== nothing && method == "POST"
             return start_run(_id(m[1]),req)
+        end
+        if (m = match(r"^/api/aero/jobs/([^/]+)/output-estimate$", route)) !== nothing && method == "POST"
+            return output_storage_estimate(_id(m[1]),req)
         end
         if (m = match(r"^/api/aero/jobs/([^/]+)/cancel$", route)) !== nothing && method == "POST"
             return cancel_job(_id(m[1]),req)

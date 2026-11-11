@@ -22,6 +22,7 @@ include("stream.jl")
 include("coupling.jl")
 include("io_run.jl")
 include("io_wall_surface.jl")
+include("io_wall_vtp.jl")
 include("run.jl")
 
 end

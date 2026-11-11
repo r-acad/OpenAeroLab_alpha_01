@@ -6,6 +6,42 @@ const Setup=OpenAeroLabSetup
 const SCRATCH=joinpath(get(ENV,"LUDWIG_PRIVATE_ROOT",normpath(joinpath(REPOSITORY,"..","02_PRIVATE_PROJECT_DEVELOPMENT"))),"TEMP_DELETEABLE","installer_tests")
 mkpath(SCRATCH)
 
+@testset "Pinned manifests match their root package dependencies" begin
+    for project in Setup.PROJECTS
+        @test Setup.validate_manifest(project.path)===nothing
+    end
+    jx=TOML.parsefile(joinpath(REPOSITORY,"third_party","JXfoil","Manifest.toml"))
+    @test jx["julia_version"]==string(Setup.VERSION_REQUIRED)
+    @test "CairoMakie" in only(jx["deps"]["JXfoil"])["deps"]
+    mktempdir(SCRATCH) do repo
+        dir=joinpath(repo,"sample");mkpath(dir)
+        write(joinpath(dir,"Project.toml"),"name = \"Example\"\nuuid = \"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa\"\n[deps]\nLinearAlgebra = \"37e2e46d-f89d-539d-b4ee-838fcccc9c8e\"\n")
+        file=joinpath(dir,"Manifest.toml")
+        prefix="manifest_format = \"2.0\"\n[[deps.Example]]\nuuid = \"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa\"\npath = \".\"\n"
+        write(file,prefix*"deps = [\"LinearAlgebra\"]\n")
+        @test Setup.validate_manifest("sample";root=repo)===nothing
+        write(file,prefix*"deps = []\n")
+        err=try Setup.validate_manifest("sample";root=repo);nothing catch e;e end
+        @test err isa ArgumentError
+        @test occursin("missing: LinearAlgebra",sprint(showerror,err))
+        write(file,prefix*"deps = [\"LinearAlgebra\", \"Extra\"]\n")
+        @test_throws ArgumentError Setup.validate_manifest("sample";root=repo)
+        write(file,replace(prefix,"aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"=>"bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb")*"deps = [\"LinearAlgebra\"]\n")
+        @test_throws ArgumentError Setup.validate_manifest("sample";root=repo)
+        write(file,"manifest_format = \"2.0\"\n")
+        @test Setup.validate_manifest("sample";root=repo)===nothing
+    end
+end
+
+@testset "Failure guidance follows the actual setup stage" begin
+    for stage in ("metadata","precompile","verify","download")
+        io=IOBuffer();Setup.failure_guidance(io,stage)
+        guidance=String(take!(io))
+        @test !occursin(r"(?i)\b(?:company|corporate|policy)\b",guidance)
+        @test stage=="download" ? occursin("network",lowercase(guidance)) : occursin(stage,guidance)
+    end
+end
+
 @testset "Package transfer retry policy" begin
     for message in ("HTTP/2 503", "Error status 429", "Connection reset by peer", "Operation timed out", "Could not resolve host")
         @test Setup.transient_download_error(ErrorException(message))

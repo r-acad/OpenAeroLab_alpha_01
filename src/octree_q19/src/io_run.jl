@@ -28,14 +28,36 @@ end
 close_histories(h::Histories) = (close(h.conv); close(h.forces); close(h.resources))
 
 "Density and velocity extrema over the fluid leaves, and the relative mass."
-function state_extrema(st::State)
+function _state_extrema_chunk(Lv, S, chunk)
     rmin = Inf; rmax = -Inf; umax = 0.0
-    for (l, Lv) in enumerate(st.mesh.levels)
-        S = st.levels[l]
-        for o in S.real_octs, k in 1:8
+    @inbounds for oi in chunk
+        o = Int(S.real_octs[oi])
+        for k in 1:8
             Lv.kind[k, o] == K_FLUID || continue
             r = Float64(S.rho[k, o]); rmin = min(rmin, r); rmax = max(rmax, r)
             umax = max(umax, Float64(S.u[k, 1, o])^2 + Float64(S.u[k, 2, o])^2 + Float64(S.u[k, 3, o])^2)
+        end
+    end
+    rmin, rmax, umax
+end
+
+function state_extrema(st::State)
+    rmin = Inf; rmax = -Inf; umax = 0.0
+    for (l, Lv) in enumerate(st.mesh.levels)
+        S = st.levels[l]; chunks = S.chunks
+        if length(chunks)==1
+            mn,mx,um = _state_extrema_chunk(Lv,S,chunks[1])
+            rmin=min(rmin,mn);rmax=max(rmax,mx);umax=max(umax,um)
+            continue
+        end
+        # Independent min/max reductions preserve NaN/Inf detection and do not
+        # modify the every-step stability guard. Empty chunks are neutral.
+        partial=Vector{NTuple{3,Float64}}(undef,length(chunks))
+        @threads :static for t in eachindex(chunks)
+            partial[t]=_state_extrema_chunk(Lv,S,chunks[t])
+        end
+        for (mn,mx,um) in partial
+            rmin=min(rmin,mn);rmax=max(rmax,mx);umax=max(umax,um)
         end
     end
     rmin, rmax, sqrt(umax)

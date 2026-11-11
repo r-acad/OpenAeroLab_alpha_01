@@ -51,6 +51,24 @@ A._save_job(Dict("job_id"=>ID,"status"=>"cancelled","case"=>Dict("outputs"=>Dict
     @test length(catalog["surfaces"])==1 # static geometry is setup, not another field
     @test catalog["availability"]["surface"]["available"]
 end
+@testset "Active atomic wall and VTK files are not completed results" begin
+    inprogress=("surface_000016.lbmw.tmp.123.abcdef", "surface_wall_samples_000016.vtp.tmp.456.1f",
+                "checkpoint_000000016.bin.tmp", "render.png.123.partial")
+    for name in inprogress
+        path=joinpath(VTK,name);write(path,"unfinished payload")
+        @test A._artifact_in_progress(path)
+        @test !A._artifact_complete(path)
+    end
+    ordinary=joinpath(VTK,"notes.tmp.123.nothex");write(ordinary,"ordinary completed file")
+    @test !A._artifact_in_progress(ordinary) && A._artifact_complete(ordinary)
+    catalog=A.discover_artifacts(ID)
+    active=Set(entry["name"] for entry in catalog["in_progress_files"] if entry["phase"]=="run")
+    complete=Set(entry["name"] for entry in catalog["files"] if entry["phase"]=="run")
+    @test all(name->"RESULTS/VTK/"*name in active,inprogress)
+    @test all(name->!("RESULTS/VTK/"*name in complete),inprogress)
+    @test "RESULTS/VTK/notes.tmp.123.nothex" in complete
+    @test endswith(catalog["surface_latest"],"surface_000012.lbmw")
+end
 @testset "Native import remains binary, portable and explicit" begin
     options=Dict{String,Any}("coordinates"=>"auto")
     imported=A._store_result_sources([(basename(FRAME),FRAME,nothing)],options)

@@ -382,29 +382,36 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
     t0 = time()
     # ---- 4b. sealed cavities (spec.seal_cavities, off by default): every fluid slot whose centre lies inside the
     # body's bounding box (one coarse cell of margin) and inside the surface by parity is kept out of the fill, so the
-    # interiors of a leaky model (open panels, nested shells) stay solid instead of flooding, ringing at an impulsive
-    # start and cutting the skin's triangles from inside. The parity (majority of three axis rays) is fooled only by
-    # open shells; the count is reported as `sealed_cells`. (The C212 run of 3 Nov 2026, c212/README.md.)
+    # interiors of a leaky model stay solid instead of flooding. Far from real geometry, a majority of positive-axis
+    # rays alone can falsely classify the projection of open panels as a detached solid. Require opposite-direction
+    # parity evidence on two axes there; keep the old majority rule in the near-surface layer. See geometry.jl.
     sealed = [falses(8, levels[l].nocts) for l in 1:L]
-    nsealed = 0
+    nsealed = 0; nunbracketed = 0
     if spec.seal_cavities && !no_geometry
         mlo = vsub(blo, (dxs[1], dxs[1], dxs[1])); mhi = vadd(bhi, (dxs[1], dxs[1], dxs[1]))
         for l in 1:L
             Lv = levels[l]
             cand = [(o, k) for o in 1:Lv.nocts, k in 1:8 if Lv.kind[k, o] == K_FLUID && in_box(slot_centre(Lv, slot_id(k, o)), mlo, mhi)]
-            ranges = chunk_ranges(length(cand), nt); flags = falses(length(cand))
+            # Independent bytes avoid a concurrent BitVector word read-modify-write race at chunk boundaries.
+            ranges = chunk_ranges(length(cand), nt); flags = zeros(UInt8,length(cand))
             @threads :static for t in 1:nt
                 st = stacks[t]
                 for ci in ranges[t]
-                    o, k = cand[ci]; flags[ci] = is_inside(bvh, slot_centre(Lv, slot_id(k, o)), st)
+                    o, k = cand[ci]; flags[ci] = cavity_seal_decision(bvh, slot_centre(Lv, slot_id(k, o)), st, near[l][k, o])
                 end
             end
             for (ci, (o, k)) in enumerate(cand)
-                flags[ci] && (sealed[l][k, o] = true; nsealed += 1)
+                if flags[ci]==1
+                    sealed[l][k, o] = true; nsealed += 1
+                elseif flags[ci]==2
+                    nunbracketed += 1
+                end
             end
         end
     end
     reports["sealed_cells"] = nsealed
+    reports["cavity_unbracketed_parity_cells"] = nunbracketed
+    reports["cavity_seal_policy"] = "opposed-axis-parity-v2"
     fluid_reached = [falses(8, levels[l].nocts) for l in 1:L]
     queue = Tuple{Int,Int}[]                       # (level, slot id)
     inlet_axis, inlet_side = 1, 0                  # -x face
@@ -811,7 +818,7 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
     # ---- 6. counts
     counts = Dict{String,Any}("levels" => L, "dx" => dxs, "domain_m" => collect(domain), "requested_domain_m" => collect(spec.domain),
         "root_cells" => collect(n1), "triangles" => length(tri_orig), "triangles_with_periodic_copies" => length(tri), "band_fine" => spec.band_fine, "band" => spec.band,
-        "symmetry_boundary_refinement" => 1,
+        "symmetry_boundary_refinement" => 1, "cavity_seal_policy_version" => 2,
         "surface_level" => spec.surface_level, "wake_length" => spec.wake_length, "wake_level" => wake_level,
         "distance_queries" => sum(nquery), "timings_s" => timings, "reports" => reports, "seconds" => time() - t_start)
     per = Dict{String,Any}[]

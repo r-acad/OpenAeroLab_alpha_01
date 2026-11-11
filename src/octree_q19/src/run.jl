@@ -57,6 +57,8 @@ function case_mesh(cfg::CaseConfig)
         isfile(candidate) || continue
         m = try read_mesh(candidate) catch e; println("[Run] $(candidate): $(sprint(showerror, e)); rebuilding"); nothing end
         m === nothing && continue
+        # Fail before any cache mismatch triggers a rebuild of the user's mesh.
+        _require_current_cavity_policy(cfg,m)
         current_symmetry = !(:symmetry in cfg.mesh.faces) || get(m.counts,"symmetry_boundary_refinement",0)>=1
         if !current_symmetry
             println("[Run] mesh $(candidate) predates refinement at symmetry faces; rebuilding")
@@ -69,6 +71,22 @@ function case_mesh(cfg::CaseConfig)
         println("[Run] mesh $(candidate) belongs to another configuration; rebuilding")
     end
     build_only_case(cfg)
+end
+
+"Do not run or overwrite a cavity-sealed mesh produced by an obsolete classifier."
+function _require_current_cavity_policy(cfg,mesh)
+    version = get(mesh.counts,"cavity_seal_policy_version",0)
+    if cfg.mesh.seal_cavities && !(version isa Integer && !(version isa Bool) && version >= 2)
+        error("This cavity-sealed mesh predates the corrected open-geometry classification. Create a new mesh before running; the existing mesh and checkpoints were not changed.")
+    end
+    nothing
+end
+
+"Reject advertised numerical settings that do not yet change the D3Q19 algorithm."
+function _require_implemented_numerics(cfg)
+    cfg.walls.wall_function && throw(ArgumentError("D3Q19 wall functions are not implemented in the time step; disable wall_function before running. The available wall boundary is resolved Bouzidi or bounce-back."))
+    cfg.numerics.temporal == :linear || throw(ArgumentError("D3Q19 currently implements only linear AMR temporal interpolation; select linear before running."))
+    nothing
 end
 
 "Explicitly recorded collision override for an existing mesh/checkpoint; all physical scaling remains identical."
@@ -88,6 +106,7 @@ field planes, surface and volume outputs, periodic checkpoints, and a final summ
 latest checkpoint of RESULTS/checkpoints.
 """
 function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union{Nothing,Float64}=nothing)
+    _require_implemented_numerics(cfg)
     t_start = time()
     POSITIVITY_LIMITED_CELLS[] = 0
     out = joinpath(cfg.dir, "RESULTS"); mkpath(out)
@@ -157,9 +176,12 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
         end
         if step % o.slice_every == 0 || step == steps
             export_planes(mesh, cfg, sc, step, joinpath(out, "SLICES"); with_fields=true, sampler=sampler)
-            o.surface_lbmp && collect && write_surface!(st, out, step, st.tri_force .* tri_factor)
+            (o.surface_lbmp || o.surface_vtk) && collect && write_surface!(st, out, step, st.tri_force .* tri_factor)
             # Pressure sampling is independent of force collection and never inherits a facet average.
-            o.surface_lbmp && o.wall_samples && write_wall_surface!(st, out, step)
+            if o.wall_samples && (o.surface_lbmp || o.surface_vtk)
+                wall_frame=write_wall_surface!(st, out, step)
+                o.surface_vtk && write_wall_surface_vtp(wall_frame)
+            end
         end
         if (o.volume_vtk && step % o.output_every == 0) || (o.volume_vtk && step == steps)
             write_volume!(st, out, step)

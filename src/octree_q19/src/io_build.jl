@@ -108,6 +108,10 @@ function write_build_summary(path, cfg::CaseConfig, mesh::OctMesh, sc::LatticeSc
     end
     root = mesh.counts["root_cells"]
     steps = cfg.outputs.steps
+    # The exact number enables a realistic ParaView/disk estimate without
+    # retaining millions of sample objects or using a coarse STL facet count.
+    wall_count=foreach_wall_group((args...)->nothing,mesh)["samples"]
+    mesh.counts["reports"]["wall_sample_count"]=wall_count
     summary = Dict{String,Any}(
         "case" => cfg.name, "build_only" => true, "solver" => SOLVER_NAME, "mesh" => "octree",
         "written_utc" => Dates.format(Dates.now(Dates.UTC), "yyyy-mm-ddTHH:MM:SS") * "Z",
@@ -127,6 +131,7 @@ function write_build_summary(path, cfg::CaseConfig, mesh::OctMesh, sc::LatticeSc
         "geometry_triangles" => length(mesh.triangles),
         "octree" => Dict{String,Any}("mesh_file" => "mesh.oct", "mesh_sha256" => mesh_sha, "fluid_cells_total" => mesh.counts["fluid_total"],
             "symmetry_boundary_refinement"=>get(mesh.counts,"symmetry_boundary_refinement",0),
+            "cavity_seal_policy_version"=>get(mesh.counts,"cavity_seal_policy_version",0),
             "stored_slots" => mesh.counts["stored_slots"], "work_W" => mesh.counts["work_W"], "band_fine" => cfg.mesh.band_fine, "band" => cfg.mesh.band,
             "surface_level" => cfg.mesh.surface_level, "seal_cavities" => cfg.mesh.seal_cavities, "wake_length" => cfg.mesh.wake_length, "wake_level" => mesh.counts["wake_level"],
             "periodic" => collect(mesh.periodic), "faces" => [String(f) for f in cfg.mesh.faces], "precision" => string(cfg.precision),

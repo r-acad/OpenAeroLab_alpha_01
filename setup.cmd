@@ -69,6 +69,7 @@ if errorlevel 1 goto fail
 call "%~dp0tools\install\resolve_julia.cmd"
 if errorlevel 1 goto fail
 :run_setup
+echo Starting package setup. The first Julia startup with an empty depot can take a few minutes.
 "%OA_JULIA%" --startup-file=no "%~dp0tools\install\setup_windows.jl" %OA_SETUP_ARGS%
 set "SETUP_EXIT=%ERRORLEVEL%"
 goto finish
@@ -83,7 +84,7 @@ echo   --no-precompile     Skip explicit package precompilation
 echo   --no-verify         Skip runtime and application checks
 echo   LUDWIG_JULIA may point to an approved existing Julia executable.
 echo   LUDWIG_JULIA_ARCHIVE may point to the official Julia ZIP for offline installation.
-echo   HTTPS_PROXY or LUDWIG_PROXY may specify a company proxy; TLS remains verified.
+echo   HTTPS_PROXY or LUDWIG_PROXY may specify a proxy; TLS remains verified.
 set "SETUP_EXIT=0"
 goto finish
 :fail

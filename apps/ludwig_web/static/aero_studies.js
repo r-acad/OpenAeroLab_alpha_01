@@ -10,7 +10,7 @@
   function status(text,error=false){$('study-status').textContent=text;$('study-status').classList.toggle('warning',error);}
   function setBusy(value){busy=value;for(const id of ['study-save','study-save-menu','study-save-as','study-open'])if($(id))$(id).disabled=value;}
   function associate(target){
-    sourceTarget=target;ctx.state.studySource=target;
+    sourceTarget=target;ctx.state.studySource=target;window.LudwigAeroPathUI?.refresh();
     for(const id of ['study-folder','study-filename'])if($(id)){$(id).readOnly=Boolean(target);$(id).title=target?'Associated study destination. Use Save study as to choose another file.':'Choose a destination on Save study as.';}
     if($('study-browse')){$('study-browse').disabled=Boolean(target);$('study-browse').title=target?'Use Save study as to change the associated file.':'Choose a study folder.';}
   }

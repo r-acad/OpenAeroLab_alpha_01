@@ -204,7 +204,8 @@ end
 
 """
 First crossing of the segment a -> b with the surface: returns (q, triangle index) with q in (0, 1] the parametric
-position of the first hit, or (Inf, 0) when the segment does not cross. Hits exactly at a = 0 count as crossings
+position of the first hit, or (1.0, 0) when the segment does not cross. Check the triangle index to distinguish
+an endpoint hit from no hit. Hits exactly at a = 0 count as crossings
 at q = 0 only if `include_start` is set (used by the leak check); ordinary cut links use q > 0.
 """
 function first_crossing(bvh::BVH, a::V3, b::V3, stack::Vector{Int32}; include_start::Bool=false)
@@ -236,15 +237,16 @@ function first_crossing(bvh::BVH, a::V3, b::V3, stack::Vector{Int32}; include_st
     min(best, 1.0), Int(besttri)
 end
 
-"Number of surface crossings of the +axis ray from p."
-function ray_crossings(bvh::BVH, p::V3, axis::Int, stack::Vector{Int32})
+"Number of surface crossings of an axis ray from p."
+function ray_crossings(bvh::BVH, p::V3, axis::Int, stack::Vector{Int32}, ::Val{D}) where D
+    D in (-1,1) || throw(ArgumentError("ray direction must be -1 or +1"))
     n = 0; sp = 1; stack[1] = 1
     b1 = axis == 1 ? 2 : 1; b2 = axis == 3 ? 2 : 3
-    dir = axis == 1 ? (1.0, 0.0, 0.0) : axis == 2 ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0)
+    dir = axis == 1 ? (Float64(D), 0.0, 0.0) : axis == 2 ? (0.0, Float64(D), 0.0) : (0.0, 0.0, Float64(D))
     @inbounds while sp > 0
         id = stack[sp]; sp -= 1
         lo = bvh.lo[id]; hi = bvh.hi[id]
-        (hi[axis] < p[axis] || p[b1] < lo[b1] || p[b1] > hi[b1] || p[b2] < lo[b2] || p[b2] > hi[b2]) && continue
+        ((D==1 ? hi[axis] < p[axis] : lo[axis] > p[axis]) || p[b1] < lo[b1] || p[b1] > hi[b1] || p[b2] < lo[b2] || p[b2] > hi[b2]) && continue
         if bvh.left[id] == 0
             for k in bvh.first[id]:(bvh.first[id] + bvh.count[id] - 1)
                 t = bvh.tri[bvh.order[k]]
@@ -263,8 +265,31 @@ function ray_crossings(bvh::BVH, p::V3, axis::Int, stack::Vector{Int32})
     end
     n
 end
+ray_crossings(bvh::BVH,p::V3,axis::Int,stack::Vector{Int32}) = ray_crossings(bvh,p,axis,stack,Val(1))
 
 "Inside test by majority of the three axis-ray parities (robust to a single edge double count)."
 function is_inside(bvh::BVH, p::V3, stack::Vector{Int32})
     (isodd(ray_crossings(bvh, p, 1, stack)) + isodd(ray_crossings(bvh, p, 2, stack)) + isodd(ray_crossings(bvh, p, 3, stack))) >= 2
+end
+
+"""Conservative parity-based cavity sealing for open or nonmanifold surfaces.
+
+Return 1 for a sealing seed, 2 when a one-sided parity projection was rejected,
+or 0 for an exterior point. Near the actual surface retain the existing majority
+rule to seal small openings. Farther away require odd crossings in *both*
+directions on at least two axes. This avoids turning the long projection of an
+open panel into a detached solid. It does not make an open STL watertight.
+"""
+function cavity_seal_decision(bvh::BVH,p::V3,stack::Vector{Int32},near_surface::Bool)
+    positives=ntuple(axis->isodd(ray_crossings(bvh,p,axis,stack)),3)
+    count(identity,positives)>=2 || return UInt8(0)
+    near_surface && return UInt8(1)
+    pairs=0
+    for axis in 1:3
+        if positives[axis] && isodd(ray_crossings(bvh,p,axis,stack,Val(-1)))
+            pairs+=1
+            pairs>=2 && return UInt8(1)
+        end
+    end
+    UInt8(2)
 end

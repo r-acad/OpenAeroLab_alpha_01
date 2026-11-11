@@ -199,10 +199,17 @@ function _slice_header(path::AbstractString)
     end
 end
 
+"Temporary files from atomic result writers are incomplete until published."
+function _artifact_in_progress(path::AbstractString)
+    name=lowercase(basename(path))
+    ext=lowercase(splitext(name)[2])
+    ext in (".partial",".tmp") || occursin(r"\.tmp\.[0-9]+\.[0-9a-f]+$",name)
+end
+
 function _artifact_complete(path::AbstractString)
     isfile(path) && !islink(path) || return false
     name=lowercase(basename(path));ext=lowercase(splitext(name)[2])
-    ext in (".partial",".tmp") && return false
+    _artifact_in_progress(name) && return false
     filesize(path)>0 || return false
     try
         if ext==".lbmw"
@@ -289,7 +296,7 @@ function discover_artifacts(id::AbstractString)
     run = _case_dir(id, "run")
     result = Dict{String,Any}("model" => nothing, "amr" => nothing,
                               "summary" => nothing, "surface_latest" => nothing,
-                              "cuts" => Dict{String,Any}[],"surfaces"=>Any[],"volumes"=>Any[],"images"=>Any[],"files"=>Any[])
+                              "cuts" => Dict{String,Any}[],"surfaces"=>Any[],"volumes"=>Any[],"images"=>Any[],"files"=>Any[],"in_progress_files"=>Any[])
     for (kind, dir) in (("mesh", mesh), ("run", run))
         model = joinpath(dir, "model.stl")
         isfile(model) && result["model"] === nothing &&
@@ -301,6 +308,10 @@ function discover_artifacts(id::AbstractString)
                 filter!(name->!islink(joinpath(folder,name)),dirs)
                 for file in files
                     path=joinpath(folder,file)
+                    if isfile(path) && !islink(path) && _artifact_in_progress(file)
+                        push!(result["in_progress_files"],Dict("phase"=>kind,"name"=>replace(relpath(path,dir),'\\'=>'/')))
+                        continue
+                    end
                     _artifact_complete(path) || continue
                     entry=try _artifact_catalog_entry(id,kind,dir,path) catch;continue;end
                     push!(result["files"],entry)
