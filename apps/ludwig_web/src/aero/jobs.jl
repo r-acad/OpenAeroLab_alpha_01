@@ -183,8 +183,19 @@ function _solver_command(state::AbstractDict, kind::String; case_dir_override=no
     env = Dict{String,String}(k => v for (k, v) in ENV
         if !startswith(k, "LUDWIG_") && !(k in ("JULIA_PROJECT", "JULIA_LOAD_PATH", "JULIA_NUM_THREADS")))
     (kind == "mesh" || q19) && (env["CUDA_VISIBLE_DEVICES"] = "-1")
-    Cmd(`$julia --startup-file=no --project=$project -t $threads --check-bounds=no -O3 $main --case $case_dir`;
-        dir=RUNTIME_ROOT, env=env)
+    args=String[julia,"--startup-file=no","--project=$project","-t",string(threads),"--check-bounds=no","-O3",main,"--case",case_dir]
+    if kind=="run" && haskey(state,"refinement_source")
+        q19 || throw(ArgumentError("Refinement restart is available only for D3Q19"))
+        source=state["refinement_source"]
+        source isa AbstractDict && get(source,"accepted_nonconservative",false)===true || throw(ArgumentError("Refinement restart was not admitted"))
+        path=get(source,"source_case_dir",nothing)
+        path isa AbstractString && isabspath(path) && isdir(path) && !islink(path) || throw(ArgumentError("Refinement source directory is unavailable"))
+        checkpoint=get(source,"source_checkpoint",nothing);bytes=get(source,"source_checkpoint_bytes",nothing);mtime=get(source,"source_checkpoint_mtime",nothing)
+        checkpoint isa AbstractString && isabspath(checkpoint) && isfile(checkpoint) && bytes isa Integer && bytes>0 && mtime isa Real && isfinite(mtime) ||
+            throw(ArgumentError("Refinement checkpoint identity is incomplete"))
+        append!(args,["--from-case",String(path),"--from-checkpoint",String(checkpoint),"--source-checkpoint-bytes",string(bytes),"--source-checkpoint-mtime",string(mtime)])
+    end
+    Cmd(Cmd(args);dir=RUNTIME_ROOT, env=env)
 end
 
 "Run a build-only probe with a distinct case directory so the solver never overwrites an earlier result."
@@ -626,6 +637,8 @@ function start_run(id::String,req::Union{Nothing,HTTP.Request}=nothing)
         actual = build_summary(id; lattice=_memory_lattice(state["case"]),allow_incomplete=false)
         actual === nothing && throw(ArgumentError("Build-only summary is missing"))
         _require_current_q19_mesh(state["case"],actual)
+        refinement=_q19_refinement_source(id,state,actual,updates)
+        refinement===nothing || (state["refinement_source"]=refinement)
         if _q19_case(state["case"])
             storage=_q19_storage_for_job(id,state["case"],actual)
             storage["blocked"] && throw(ArgumentError("Not enough disk space for the requested surface frames, the final checkpoint and the 15 GB reserve. Increase the output interval, reduce the run length, or choose a larger output disk."))

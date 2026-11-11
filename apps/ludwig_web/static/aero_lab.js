@@ -1324,7 +1324,20 @@
   async function prepareReportView({jobId=state.jobId,step=null,sourceUrl=null,geometrySha256=null,frameSha256=null,field='cp',fit=false}={}){
     if(!['cp','pressure'].includes(field))throw new Error('Native wall reports support Cp or pressure only.');
     if(jobId!==state.jobId)throw new Error('The reporting view is attached to another study.');
-    if(sourceUrl){const record=(state.job?.artifacts?.surfaces||[]).find(item=>item.url===sourceUrl);if(!record||record.format!=='lbmw'||step!=null&&Number(record.step)!==Number(step)||geometrySha256&&record.geometry_sha256!==geometrySha256)throw new Error('The requested native wall snapshot is not in this study.');await viewSurfaceRecord(record);}
+    if(sourceUrl){
+      const findRecord=()=>(state.job?.artifacts?.surfaces||[]).find(item=>item.url===sourceUrl);
+      let record=findRecord();
+      // The reporting tab may have been opened while a mesh was ready and
+      // stopped polling before another client started the run. Refresh once
+      // before rejecting a newly written frame; retain all identity checks.
+      if(!record){
+        const current=await api(`/api/aero/jobs/${encodeURIComponent(jobId)}`);
+        if(state.jobId!==jobId)throw new Error('The reporting view changed to another study.');
+        renderJob(current);record=findRecord();
+      }
+      if(!record||record.format!=='lbmw'||step!=null&&Number(record.step)!==Number(step)||geometrySha256&&record.geometry_sha256!==geometrySha256)throw new Error('The requested native wall snapshot is not in this study.');
+      await viewSurfaceRecord(record);
+    }
     else{$('surface-representation').value='native';await loadLatestResults(true);}
     if(state.surface?.representation!=='wall_samples')throw new Error('No native wall samples are available for this report.');
     if(step!=null&&state.surface.step!==Number(step))throw new Error('The requested iteration is not loaded.');

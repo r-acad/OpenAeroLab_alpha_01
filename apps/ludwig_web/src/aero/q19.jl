@@ -30,7 +30,7 @@ function _q19_settings(raw::AbstractDict)
     seal isa Bool || throw(ArgumentError("octree.seal_cavities must be true or false"))
     ramp=get(input,"ramp_steps",nothing)
     ramp===nothing || (ramp=_integer(ramp,"octree.ramp_steps";lo=0,hi=_integer(get(raw,"steps",1_000_000),"steps";lo=8,hi=1_000_000)))
-    Dict{String,Any}(
+    settings=Dict{String,Any}(
         "seal_cavities"=>seal,
         "u_lattice"=>_number(get(input,"u_lattice",.08),"octree.u_lattice";lo=1e-5,hi=.12),
         "checkpoint_keep"=>_integer(get(input,"checkpoint_keep",2),"octree.checkpoint_keep";lo=1,hi=10),
@@ -41,6 +41,11 @@ function _q19_settings(raw::AbstractDict)
         "wake_length"=>_number(get(input,"wake_length",1.0),"octree.wake_length";lo=0,hi=20),
         "wake_level_offset"=>_integer(get(input,"wake_level_offset",1),"octree.wake_level_offset";lo=0,hi=4),
         "threads"=>_integer(get(input,"threads",0),"octree.threads";lo=0,hi=256))
+    # Preserve a source stage's dimensional reference (and sponge length)
+    # across separately built meshes. Ordinary studies retain old behavior.
+    reference=get(input,"stage_reference_length_m",nothing)
+    reference===nothing || (settings["stage_reference_length_m"]=_number(reference,"octree.stage_reference_length_m";lo=1e-8,hi=1e6))
+    settings
 end
 
 _q19_threads(case::AbstractDict) = (t=Int(get(get(case,"octree",Dict{String,Any}()),"threads",0)); t>0 ? t : max(1,Sys.CPU_THREADS÷2))

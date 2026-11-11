@@ -455,6 +455,12 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     reference_area=reference===nothing || get(reference,"area",nothing)===nothing ? max(e[2]*e[3],dx^2) : reference["area"]
     moment_setting=_reference_moment_setting(case,b,chord)
     mesh_reference = max(1, round(Int, mesh_chord/dx)) * dx
+    stage_reference=q19 ? get(get(case,"octree",Dict()),"stage_reference_length_m",nothing) : nothing
+    if stage_reference!==nothing
+        reference_value=_number(stage_reference,"octree.stage_reference_length_m";lo=1e-8,hi=1e6)
+        abs(reference_value-mesh_chord)<=max(.01mesh_chord,4dx) || throw(ArgumentError("The staged mesh reference is inconsistent with the model size"))
+        mesh_reference=reference_value
+    end
     chord_factor = max(mesh_reference, e[1]) / (mesh_reference * chord)
     every = min(case["steps"],get(case,"display_every",max(8,8*cld(cld(case["steps"],case["frames"]),8))))
     outputs = get(case,"outputs",OUTPUT_DEFAULTS)

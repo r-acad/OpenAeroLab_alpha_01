@@ -295,10 +295,12 @@ function _study_results(job_id, setup, canonical_bytes)
     destination isa AbstractString && isdir(destination) &&
         push!(locations,Dict("kind"=>"exports","path"=>destination,"available"=>true))
     planes_match=get(job_case,"cuts",Any[])==get(setup,"cuts",Any[])
-    Dict{String,Any}("source_job_id"=>id,"compatible"=>compatible,"recorded_planes_match"=>planes_match,"available"=>!isempty(locations),
+    refs=Dict{String,Any}("source_job_id"=>id,"compatible"=>compatible,"recorded_planes_match"=>planes_match,"available"=>!isempty(locations),
         "status"=>get(job,"status","unknown"),"updated_utc"=>get(job,"updated_utc",nothing),"locations"=>locations,
         "note"=>planes_match ? "Result locations are references; result files are not embedded in this study." :
             "Surface and recorded fields remain valid for this model and flow. The requested recording planes changed; use the available recorded planes, a saved volume field, or record the new planes in a future run.")
+    haskey(job,"refinement_source") && (refs["refinement_source"]=deepcopy(job["refinement_source"]))
+    refs
 end
 
 function _persist_study(document::AbstractDict)

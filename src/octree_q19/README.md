@@ -16,7 +16,15 @@ Native planes are limited to four million samples each by default; larger domain
 
 The displayed RAM allowance includes mesh storage, state and AMR transfer buffers, per-thread force arrays and export work with a reserve. Completed requested steps are explicitly reported separately from convergence. Symmetric cases report full-model loads. A pressure/viscous force decomposition is not available; legacy `_p`/`_v` history columns must not be interpreted as a measured split. Surface pressure sampling on thin, open or poorly resolved features still needs inspection.
 
-The wall-law functions in the source are research components and are not applied in the time step. A run explicitly requesting a wall function or quadratic AMR time interpolation is rejected rather than silently using another method. Coarse-to-fine staged startup is not yet implemented in production. Meshes made with the older cavity-sealing classifier must be rebuilt before a new cavity-sealed run; old result and mesh files remain readable.
+The wall-law functions in the source are research components and are not applied in the time step. A run explicitly requesting a wall function or quadratic AMR time interpolation is rejected rather than silently using another method. Meshes made with the older cavity-sealing classifier must be rebuilt before a new cavity-sealed run; old result and mesh files remain readable.
+
+An **experimental staged startup** can transfer a completed checkpoint to a separately built, finer mesh:
+
+```sh
+julia --project=src/octree_q19 -t auto src/octree_q19/main.jl --case /path/to/new-fine-case --from-case /path/to/completed-coarse-case
+```
+
+The target must have a prebuilt matching mesh, more levels and a larger total step limit. Geometry, physical conditions, boundaries, force references, coarse spacing and coarse time step must agree. Both states must fit in RAM with a reserve. The source files are read-only; physical time continues from the source checkpoint, and the target writes `RESULTS/refinement_start.toml`. The transfer is a startup approximation, not conservative dynamic AMR. Near-wall cells with no visible donor can be initialized at no-slip reference-density equilibrium only under a bounded, recorded fallback. Geometry voxelization changes, reconstructed stresses and unavailable half-time history can cause a transient. Review the receipt and early flow fields; this method does not establish solution accuracy or convergence.
 
 Numerical checks are in `tools/tests/q19_octree_*.jl`; run them with this project environment, except the Aero Lab API test, which uses `--project=third_party/JXfoil`.
 

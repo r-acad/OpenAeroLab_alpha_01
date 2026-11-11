@@ -23,6 +23,7 @@ include("coupling.jl")
 include("io_run.jl")
 include("io_wall_surface.jl")
 include("io_wall_vtp.jl")
+include("staged_start.jl")
 include("run.jl")
 
 end

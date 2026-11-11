@@ -289,24 +289,32 @@ function write_checkpoint!(st::State{T}, out::AbstractString, h::Histories; keep
     path
 end
 
-"Restore the latest checkpoint into `st` (same mesh and precision); returns the step, or nothing when none exists."
-function resume_checkpoint!(st::State{T}, out::AbstractString, h::Histories) where T
-    dir = joinpath(out, "checkpoints"); isdir(dir) || return nothing
-    files = sort(filter(f -> startswith(f, "checkpoint_") && endswith(f, ".bin"), readdir(dir)))
-    isempty(files) && return nothing
-    open(joinpath(dir, files[end]), "r") do io
+"Read one explicitly named checkpoint; its case and precision must match the state."
+function read_checkpoint!(st::State{T}, path::AbstractString, h::Union{Histories,Nothing}) where T
+    open(path, "r") do io
         String(read(io, length(CHECKPOINT_MAGIC))) == CHECKPOINT_MAGIC || error("not a checkpoint")
         read(io, Int64) == 1 || error("checkpoint format")
         read(io, Int64) == sizeof(T) || error("checkpoint precision differs from the run's")
         csha = String(read(io, 64)); ssha = String(read(io, 64))
         (strip(csha) == st.mesh.config_sha && strip(ssha) == st.mesh.stl_sha) || error("checkpoint belongs to another case (config or STL hash differs)")
-        st.step = Int(read(io, Int64)); st.u_inlet = T(read(io, Float64)); st.mass0 = read(io, Float64); h.n_avg = Int(read(io, Int64)); read!(io, h.sums)
+        st.step = Int(read(io, Int64)); st.u_inlet = T(read(io, Float64)); st.mass0 = read(io, Float64)
+        navg=Int(read(io,Int64));sums=Vector{Float64}(undef,9);read!(io,sums)
+        if h !== nothing; h.n_avg=navg;h.sums .= sums; end
         Int(read(io, Int64)) == nlevels(st.mesh) || error("checkpoint level count differs")
         for S in st.levels
             Int(read(io, Int64)) == size(S.f, 3) || error("checkpoint oct count differs")
             read!(io, S.f); read!(io, S.g); read!(io, S.u); read!(io, S.v); read!(io, S.rho); read!(io, S.rhob)
             n = Int(read(io, Int64)); n == length(S.tau_w) || error("checkpoint wall-model size differs"); read!(io, S.tau_w)
         end
+        eof(io) || error("checkpoint has unexpected trailing data")
     end
     st.step
+end
+
+"Restore the latest checkpoint into `st` (same mesh and precision); returns the step, or nothing when none exists."
+function resume_checkpoint!(st::State{T}, out::AbstractString, h::Histories) where T
+    dir = joinpath(out, "checkpoints"); isdir(dir) || return nothing
+    files = sort(filter(f -> startswith(f, "checkpoint_") && endswith(f, ".bin"), readdir(dir)))
+    isempty(files) && return nothing
+    read_checkpoint!(st,joinpath(dir,files[end]),h)
 end

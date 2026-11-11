@@ -1,5 +1,5 @@
 # Command line, case dispatch and the time loop.
-#   julia --project=src/octree_q19 src/octree_q19/main.jl --case <dir> [--build-only] [--resume] [--hrr-sigma <0..1>]
+#   julia --project=src/octree_q19 src/octree_q19/main.jl --case <dir> [--build-only] [--resume | --from-case <dir>] [--hrr-sigma <0..1>]
 # The case directory holds config.yaml and the STL; outputs go to <dir>/RESULTS as for the existing solver.
 
 "Advance the state by one coarse step: the recursive step over all levels; forces in coarse-lattice units when collected."
@@ -103,15 +103,33 @@ end
 """
 Run a case: the time loop over coarse steps with the inlet ramp, forces every `forces_every` steps, histories,
 field planes, surface and volume outputs, periodic checkpoints, and a final summary. `resume` restarts from the
-latest checkpoint of RESULTS/checkpoints.
+latest checkpoint of RESULTS/checkpoints. `from_case` starts on a separately
+built, finer mesh from another completed case's final checkpoint.
 """
-function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union{Nothing,Float64}=nothing)
+function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union{Nothing,Float64}=nothing, from_case::Union{Nothing,String}=nothing,
+                  expected_checkpoint::Union{Nothing,String}=nothing, expected_checkpoint_bytes::Union{Nothing,Int}=nothing,
+                  expected_checkpoint_mtime::Union{Nothing,Float64}=nothing)
     _require_implemented_numerics(cfg)
+    resume && from_case !== nothing && error("Choose either --resume or --from-case, not both")
+    hrr_sigma_override !== nothing && from_case !== nothing && error("A refinement restart cannot change collision settings")
+    identity_count=count(!isnothing,(expected_checkpoint,expected_checkpoint_bytes,expected_checkpoint_mtime))
+    identity_count in (0,3) || error("Checkpoint identity requires path, size and modification time together")
+    identity_count == 0 || from_case !== nothing || error("Checkpoint identity requires --from-case")
+    expected_checkpoint_bytes === nothing || expected_checkpoint_bytes >= 0 || error("Checkpoint size must be nonnegative")
+    expected_checkpoint_mtime === nothing || isfinite(expected_checkpoint_mtime) || error("Checkpoint modification time must be finite")
     t_start = time()
     POSITIVITY_LIMITED_CELLS[] = 0
-    out = joinpath(cfg.dir, "RESULTS"); mkpath(out)
+    out = joinpath(cfg.dir, "RESULTS")
+    if from_case !== nothing
+        isdir(from_case) || error("Refinement source directory does not exist")
+        realpath(from_case) != realpath(cfg.dir) || error("Refinement source and target must be different case directories")
+        (isdir(joinpath(out,"csv")) || isdir(joinpath(out,"checkpoints"))) && error("Refinement target already contains run data; choose a new target case")
+    end
+    mkpath(out)
     println("[Run] $(SOLVER_NAME): $(cfg.name), $(cfg.outputs.steps) coarse steps, precision $(cfg.precision), threads $(Threads.nthreads())")
-    mesh = case_mesh(cfg)
+    # A refinement restart must never trigger case_mesh's automatic rebuild,
+    # which could overwrite a user-supplied mesh before validation.
+    mesh = from_case === nothing ? case_mesh(cfg) : first(refinement_source_mesh(cfg; role="target"))
     source_collision = cfg.numerics.collision
     hrr_sigma_override === nothing || (cfg = runtime_hrr_case(cfg, hrr_sigma_override))
     sc = lattice_scaling(cfg)
@@ -120,9 +138,20 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
     println(@sprintf("[Run] %d levels, %d fluid cells, work %.4g cell updates per coarse step; dt_finest %.4g s, u_lattice %.3f, tau %s, Re %.4g",
             L, mesh.counts["fluid_total"], W, sc.dt_finest, sc.u_lattice, string(round.(sc.tau; digits=6)), sc.reynolds))
     flush(stdout)
-    st = State(mesh, cfg, cfg.precision)
-    at_rest = cfg.outputs.ramp_steps > 0
-    initialise_uniform!(st, 1.0, at_rest ? 0.0 : sc.u_lattice, 0.0, 0.0)
+    if from_case === nothing
+        st = State(mesh, cfg, cfg.precision)
+        at_rest = cfg.outputs.ramp_steps > 0
+        initialise_uniform!(st, 1.0, at_rest ? 0.0 : sc.u_lattice, 0.0, 0.0)
+    else
+        println("[Refinement] Loading the completed source stage and transferring its state; this startup is not exactly conservative.");flush(stdout)
+        st,transfer_report = refinement_start(cfg,mesh,from_case;
+            expected_checkpoint,expected_bytes=expected_checkpoint_bytes,expected_mtime=expected_checkpoint_mtime)
+        receipt=joinpath(out,"refinement_start.toml")
+        open(receipt*".tmp","w") do io; TOML.print(io,transfer_report); end
+        mv(receipt*".tmp",receipt;force=true)
+        println(@sprintf("[Refinement] Restored coarse step %d, %.6g s; %d visible fallback cells, max %.6g m; receipt %s",
+            st.step,transfer_report["source_physical_time_s"],transfer_report["visible_fallback_cells"],transfer_report["maximum_fallback_distance_m"],receipt));flush(stdout)
+    end
     h = open_histories(out; append=resume)
     if resume
         s = resume_checkpoint!(st, out, h)
@@ -212,7 +241,8 @@ function ramp_inlet!(st::State{T}) where T
 end
 
 function main(args::Vector{String})
-    case = ""; build_only = nothing; resume = false; hrr_sigma_override = nothing
+    case = ""; build_only = nothing; resume = false; hrr_sigma_override = nothing; from_case = nothing
+    expected_checkpoint=nothing;expected_checkpoint_bytes=nothing;expected_checkpoint_mtime=nothing
     i = 1
     while i <= length(args)
         a = args[i]
@@ -222,11 +252,19 @@ function main(args::Vector{String})
             build_only = true
         elseif a == "--resume"
             resume = true
+        elseif a == "--from-case"
+            i += 1; i <= length(args) || error("--from-case needs a completed source run directory"); from_case = args[i]
+        elseif a == "--from-checkpoint"
+            i += 1; i <= length(args) || error("--from-checkpoint needs a path"); expected_checkpoint = args[i]
+        elseif a == "--source-checkpoint-bytes"
+            i += 1; i <= length(args) || error("--source-checkpoint-bytes needs a value"); expected_checkpoint_bytes = parse(Int,args[i])
+        elseif a == "--source-checkpoint-mtime"
+            i += 1; i <= length(args) || error("--source-checkpoint-mtime needs a value"); expected_checkpoint_mtime = parse(Float64,args[i])
         elseif a == "--hrr-sigma"
             i += 1; i <= length(args) || error("--hrr-sigma needs a value")
             hrr_sigma_override = parse(Float64, args[i])
         elseif a == "--help" || a == "-h"
-            println("usage: main.jl --case <dir> [--build-only] [--resume] [--hrr-sigma <0..1>]"); return 0
+            println("usage: main.jl --case <dir> [--build-only] [--resume | --from-case <completed-source-dir>] [--hrr-sigma <0..1>]"); return 0
         else
             error("unknown argument $a")
         end
@@ -236,9 +274,10 @@ function main(args::Vector{String})
     isdir(case) || error("no such case directory: $case")
     cfg = load_case(case; build_only=build_only)
     if cfg.build_only
+        from_case === nothing || error("--from-case cannot be used with --build-only")
         build_only_case(cfg)
         return 0
     end
-    run_case(cfg; resume=resume, hrr_sigma_override)
+    run_case(cfg; resume=resume, hrr_sigma_override, from_case, expected_checkpoint, expected_checkpoint_bytes, expected_checkpoint_mtime)
     0
 end
