@@ -558,15 +558,20 @@ end
     cpl_fgmres!(cw, w, mesh, bc, cfg) -> NamedTuple
 
 Solve J dx = R (cw.R) into cw.dx: FGMRES(cfg.cpl_restart), right-preconditioned by `cpl_precond!`, on the row-scaled
-system W J (W = cw.Wt), from dx = 0; modified Gram-Schmidt, Givens rotations on the host. Stops when the estimated scaled
-2-norm falls to max(cpl_eta ||W R||, cpl_abs) or after cpl_maxit iterations (not converged). Returns the iterations, the
-convergence flag, the initial and the estimated final scaled norms.
+system W J (W = cw.Wt), from dx = 0; modified Gram-Schmidt, Givens rotations on the host. Stops when the explicitly
+recomputed scaled residual falls to max(cpl_eta ||W R||, cpl_abs) or after cpl_maxit iterations. Returns the iterations,
+the convergence flag, and the initial and final true scaled residual norms. The Arnoldi estimate triggers a check, but
+cannot itself declare convergence: rounding or an inexact operator can leave a residual gap.
 """
-function cpl_fgmres!(cw::CoupledWork, w, m::PBMesh, bc, cfg)
+cpl_fgmres!(cw::CoupledWork, w, m::PBMesh, bc, cfg) =
+    _cpl_fgmres!(cw, w, m, bc, cfg, cpl_apply!, cpl_precond!, cpl_dot)
+
+# Operator hooks allow the same iteration to be checked against small known systems.
+function _cpl_fgmres!(cw, w, m, bc, cfg, apply!, precond!, dotfn)
     be = cfg.backend; N = cw.N; rs = cw.restart
     fill!(cw.dx, 0.0)
     _launch!(_k_cpl_mul!, be, N, cw.T1, cw.Wt, cw.R); pb_sync(be)
-    beta0 = sqrt(cpl_dot(cw, cw.T1, cw.T1; backend=be))
+    beta0 = sqrt(dotfn(cw, cw.T1, cw.T1; backend=be))
     isfinite(beta0) || return (iters=0, converged=false, r0=beta0, rest=beta0)
     goal = max(cfg.cpl_eta*beta0, cfg.cpl_abs)
     beta0 <= goal && return (iters=0, converged=true, r0=beta0, rest=beta0)
@@ -578,8 +583,8 @@ function cpl_fgmres!(cw::CoupledWork, w, m::PBMesh, bc, cfg)
             jl = j; its += 1
             Vj = view(cw.Vb, :, j); Zj = view(cw.Zb, :, j); Vn = view(cw.Vb, :, j + 1)
             _launch!(_k_cpl_div_by!, be, N, cw.T2, Vj, cw.Wt)
-            cpl_precond!(Zj, cw.T2, cw, w, m, bc, cfg)
-            cpl_apply!(cw.Y, Zj, cw, w, m, bc, cfg)
+            precond!(Zj, cw.T2, cw, w, m, bc, cfg)
+            apply!(cw.Y, Zj, cw, w, m, bc, cfg)
             _launch!(_k_cpl_mul!, be, N, Vn, cw.Wt, cw.Y)
             if cfg.cpl_gs === :cgs2            # W7 (opt-in): classical Gram-Schmidt twice, 9 launches and one read per iteration
                 hs = _cpl_cgs2!(cw, Vn, j, be)
@@ -598,32 +603,37 @@ function cpl_fgmres!(cw::CoupledWork, w, m::PBMesh, bc, cfg)
                 hn = sqrt(hs[j+1]); cw.H[j+1, j] = hn
             else
                 for i in 1:j
-                    hij = cpl_dot(cw, Vn, view(cw.Vb, :, i); backend=be); cw.H[i, j] = hij
+                    hij = dotfn(cw, Vn, view(cw.Vb, :, i); backend=be); cw.H[i, j] = hij
                     _launch!(_k_cpl_axpy!, be, N, Vn, -hij, view(cw.Vb, :, i))
                 end
-                hn = sqrt(cpl_dot(cw, Vn, Vn; backend=be)); cw.H[j+1, j] = hn
+                hn = sqrt(dotfn(cw, Vn, Vn; backend=be)); cw.H[j+1, j] = hn
                 hn > 0 && _launch!(_k_cpl_scale!, be, N, Vn, 1/hn)
             end
             for i in 1:j-1
                 t = cw.cs[i]*cw.H[i, j] + cw.sn[i]*cw.H[i+1, j]
                 cw.H[i+1, j] = -cw.sn[i]*cw.H[i, j] + cw.cs[i]*cw.H[i+1, j]; cw.H[i, j] = t
             end
-            den = hypot(cw.H[j, j], cw.H[j+1, j]); cw.cs[j] = cw.H[j, j]/den; cw.sn[j] = cw.H[j+1, j]/den
+            den = hypot(cw.H[j, j], cw.H[j+1, j])
+            # A null or invalid Arnoldi column cannot form a valid rotation or solution.
+            # The last verified residual is retained instead of reporting NaN or success.
+            (isfinite(den) && den > 0) || return (iters=its, converged=false, r0=beta0, rest=beta)
+            cw.cs[j] = cw.H[j, j]/den; cw.sn[j] = cw.H[j+1, j]/den
             cw.H[j, j] = den; cw.H[j+1, j] = 0.0; cw.g[j+1] = -cw.sn[j]*cw.g[j]; cw.g[j] = cw.cs[j]*cw.g[j]
             est = abs(cw.g[j+1])
             isfinite(est) || break
-            est <= goal && (conv = true; break)
+            est <= goal && break
             its >= cfg.cpl_maxit && break
         end
-        isfinite(est) || return (iters=its, converged=false, r0=beta0, rest=est)
+        isfinite(est) || return (iters=its, converged=false, r0=beta0, rest=beta)
         y = UpperTriangular(cw.H[1:jl, 1:jl]) \ cw.g[1:jl]
         for i in 1:jl; _launch!(_k_cpl_axpy!, be, N, cw.dx, y[i], view(cw.Zb, :, i)); end
         pb_sync(be)
-        (conv || its >= cfg.cpl_maxit) && break
-        cpl_apply!(cw.Y, cw.dx, cw, w, m, bc, cfg)                      # restart from the true residual
+        apply!(cw.Y, cw.dx, cw, w, m, bc, cfg)                         # verify and restart from the true residual
         _launch!(_k_cpl_wres!, be, N, cw.T1, cw.Wt, cw.R, cw.Y); pb_sync(be)
-        beta = sqrt(cpl_dot(cw, cw.T1, cw.T1; backend=be)); est = beta
+        beta = sqrt(dotfn(cw, cw.T1, cw.T1; backend=be)); est = beta
+        isfinite(beta) || return (iters=its, converged=false, r0=beta0, rest=beta)
         beta <= goal && (conv = true; break)
+        its >= cfg.cpl_maxit && break
     end
     (iters=its, converged=conv, r0=beta0, rest=est)
 end

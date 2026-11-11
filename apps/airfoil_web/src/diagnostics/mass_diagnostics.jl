@@ -99,6 +99,18 @@ function assess_mass_balance(dc::AbstractMatrix, vol::AbstractMatrix,
     boundary_normalized = Dict(label=>value/flux_scale for (label,value) in boundary)
     total_boundary = sum(values(boundary))
     total_cell = sum(Float64,dc)
+    # Sum face by face: opposing inflow and outflow on the same boundary
+    # must not cancel before the throughput denominator is calculated.
+    outer_faces = Iterators.flatten(((-Float64(v) for v in view(fi,1,:)),
+                                     (Float64(v) for v in view(fi,ni+1,:)),
+                                     (Float64(v) for v in view(fj,:,nj+1))))
+    outer_incoming = 0.0
+    outer_outgoing = 0.0
+    for flux in outer_faces
+        outer_incoming += max(-flux,0.0)
+        outer_outgoing += max(flux,0.0)
+    end
+    outer_net = boundary["left"] + boundary["right"] + boundary["outer"]
     Dict{String,Any}(
         "scope"=>"final continuity residual; mutually exclusive near-wall/outer/core cells",
         "nearwall_rows"=>near_rows,"outer_ring_rows"=>near_rows,
@@ -111,6 +123,11 @@ function assess_mass_balance(dc::AbstractMatrix, vol::AbstractMatrix,
                      "linf_volume_scaled"=>peak[1]),
         "boundary_signed_flux_over_freestream_flux"=>boundary_normalized,
         "boundary_total_over_freestream_flux"=>total_boundary/flux_scale,
+        "outer_boundary_numerical_flux_incoming"=>outer_incoming,
+        "outer_boundary_numerical_flux_outgoing"=>outer_outgoing,
+        "outer_boundary_net_over_incoming_flux"=>outer_incoming > 0 ? outer_net/outer_incoming : nothing,
+        "outer_boundary_net_over_absolute_flux"=>outer_incoming + outer_outgoing > 0 ? outer_net/(outer_incoming + outer_outgoing) : nothing,
+        "outer_boundary_flux_note"=>"Numerical outer-face fluxes; ratios depend on domain size and do not replace the chord-scaled convergence criterion.",
         "cell_divergence_total_over_freestream_flux"=>total_cell/flux_scale,
         "telescoping_error_over_freestream_flux"=>(total_cell-total_boundary)/flux_scale)
 end

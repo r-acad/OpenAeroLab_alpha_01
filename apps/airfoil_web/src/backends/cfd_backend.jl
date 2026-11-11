@@ -1678,6 +1678,10 @@ function _transonic_worker(cfg_path::AbstractString)
                 mass_balance["boundary_signed_flux_over_freestream_flux"]["inner_wake_lower"]+
                 mass_balance["boundary_signed_flux_over_freestream_flux"]["inner_wake_upper"],
                 mass_balance["telescoping_error_over_freestream_flux"])
+        incoming_ratio = mass_balance["outer_boundary_net_over_incoming_flux"]
+        if !isnothing(incoming_ratio)
+            @printf("CMESH2D numerical outer-face net / incoming flux = %.3e (domain-size dependent; chord-scaled convergence check unchanged)\n", incoming_ratio)
+        end
         flush(stdout)
     end
     g = s.g; ni = met.NI; nj = met.NJ

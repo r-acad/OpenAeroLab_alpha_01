@@ -7,6 +7,22 @@ include(joinpath(@__DIR__,"..","..","src","cmesh","cmesh_metrics.jl"))
 include(joinpath(@__DIR__,"..","..","src","compressible","cmesh_solver_ka.jl"))
 const M=CMeshSolverKA
 
+@testset "oriented outer mass flux budget" begin
+    # Inward flux has opposite signs on the i-min and i-max/j-max faces.
+    fi=Float32[2 0; 0 0; 4 0]
+    fi[:,2]=Float32[-3,0,-5]
+    fj=zeros(Float32,2,3);fj[:,3]=Float32[6,-7]
+    budget=M._airfoil_outer_mass_fluxes(fi,fj)
+    @test budget.net == -1
+    @test budget.throughput == 27
+    @test budget.incoming == 14
+    zero_budget=M._airfoil_outer_mass_fluxes(zero(fi),zero(fj))
+    @test zero_budget.net == zero_budget.throughput == zero_budget.incoming == 0
+    # Do not lose a small imbalance when cancelling large Float32 fluxes.
+    large=Float32[1e8 1; 1e8 0]
+    @test M._airfoil_outer_mass_fluxes(large,zeros(Float32,1,2)).net == -1
+end
+
 @testset "CPU Newton-Krylov inner products avoid mesh-sized temporaries" begin
     a=ntuple(k->fill(Float32(.1k),512,512),4)
     b=ntuple(k->fill(Float32(.2k),512,512),4)
@@ -412,6 +428,14 @@ function airfoil_recovery_and_diagnostics(backend)
     report=M.steady_airfoil_diagnostics_ka(s)
     @test all(isfinite,report.flow_l2) && all(>=(0),report.flow_l2)
     @test isfinite(report.normalized_mass_imbalance)
+    @test isfinite(report.mass_outer_net)
+    @test report.mass_outer_abs_flux >= abs(report.mass_outer_net)
+    @test isfinite(report.mass_outer_net_fraction)
+    @test isfinite(report.mass_outer_net_incoming_fraction)
+    residual_sum=sum(Float64,Array(s.dc_r))
+    inner_sum=sum(Float64,Array(@view s.Fj_r[:,1]))
+    @test isapprox(residual_sum,report.mass_outer_net-inner_sum;
+                   atol=1e-5*max(1,report.mass_outer_abs_flux))
     @test isfinite(report.turb_k_update_defect) && isfinite(report.turb_omega_update_defect)
     @test !report.all_six_equation_residuals_available
     for (name,copy) in zip(names,saved)

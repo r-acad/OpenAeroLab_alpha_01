@@ -1,14 +1,15 @@
 # App orchestration of the "lowspeed" backend: version 2's pressure-based incompressible solver (PBCav) in free air.
 # Included inside CFDBackend. The HTTP process loads no PBCav code: each point runs lowspeed_worker.jl in a separate
-# Julia process, on the CPU only, from a pinned read-only snapshot worktree of branch pbcav.
-# 30 Oct 2026 (Julia 1.13.2): both sharp and C+H cases use S1030_FLAPREF at a43013d1. PB_BAFFLE_REFINE adds tip and
+# Julia process from a manifest-verified vendored PBCav snapshot, or a historical worktree.
+# S1030_FLAPREF is based on a43013d1 with the local changes recorded in its manifest. PB_BAFFLE_REFINE adds tip and
 # flap-height wake rows and thins the finite-TE H block only when requested with a Gurney baffle. S1028_APPBAF at af9beda1
 # and S1024_A2_JL113 at b7a7b29b remain available for historical tests.
 
 isdefined(@__MODULE__, :RANSConvergence) ||
     include(joinpath(@__DIR__, "..", "backends", "rans_convergence.jl"))
 
-"The pinned PBCav snapshots (a detached worktree each; never edited) and their commits, with the manifest of each. The pin
+"The PBCav snapshots and their upstream base commits, with the manifest of each. The vendored snapshot also has separately
+recorded local changes. The pin
 in force is AIRFOIL_LOWSPEED_PIN (default s1030). AIRFOIL_LOWSPEED_SNAPSHOT overrides the path of the snapshot for a test (no
 manifest check); the commit is then read from that worktree and recorded."
 const LOWSPEED_VENDOR_SNAPSHOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "solvers", "pbcav_s1030"))
@@ -91,13 +92,23 @@ function lowspeed_configuration(flow::AbstractDict)
 end
 
 lowspeed_capabilities() = Dict{String,Any}("label"=>"Low-speed CFD (pressure-based, new)",
-    "solver"=>"PBCav (version 2, in development, not yet validated)", "commit"=>lowspeed_pin().commit,
+    "solver"=>"PBCav (version 2, in development, not yet validated)",
+    "commit"=>haskey(ENV, "AIRFOIL_LOWSPEED_SNAPSHOT") ? "external snapshot" : lowspeed_pin().commit,
+    "revision"=>haskey(ENV, "AIRFOIL_LOWSPEED_SNAPSHOT") ? "external snapshot; content is not fingerprint-checked" :
+        lowspeed_snapshot() == LOWSPEED_VENDOR_SNAPSHOT ?
+            get(TOML.parsefile(joinpath(@__DIR__, "..", "..", "manifests", lowspeed_pin().manifest)), "revision", lowspeed_pin().commit) : lowspeed_pin().commit,
     "snapshot"=>lowspeed_snapshot(), "available"=>isfile(joinpath(lowspeed_snapshot(), "src", "pbcav", "PBCav.jl")),
     "turbulence"=>"fully turbulent k-omega SST (SST-2003m)", "threads"=>LOWSPEED_THREADS, "gpu"=>false,
     "gpu_option"=>Dict{String,Any}("request_key"=>"lowspeed_gpu", "default"=>false, "knobs"=>Dict(LOWSPEED_GPU_KNOBS),
         "lock"=>AirfoilGPULock.LOCK_DIR, "note"=>"opt-in; the worker waits for the shared GPU lock and never breaks it"),
     "mach"=>"ignored (incompressible)", "resolutions"=>Dict(k=>v.label for (k, v) in LOWSPEED_MESHES),
     "defaults"=>LOWSPEED_DEFAULTS)
+
+function _lowspeed_snapshot_mismatches(snap::AbstractString, manifest::AbstractDict; vendored::Bool)
+    [f for (f, h) in manifest["sha256"] if !(vendored &&
+        (startswith(f, "src/pbcav/test/") || startswith(basename(f), "test_"))) &&
+        (!isfile(joinpath(snap, f)) || bytes2hex(open(sha256, joinpath(snap, f))) != h)]
+end
 
 """The snapshot's HEAD (full hash) and, unless the path was overridden for a test, the checks of the pin: HEAD at the pinned
 commit and every solver file of the pin's manifest (sha256) unmodified. `override` is true when the path came from an
@@ -118,17 +129,19 @@ function _lowspeed_snapshot_verify(snap::AbstractString, override::Bool, what::A
     else
         strip(read(`git -C $snap rev-parse HEAD`, String))
     end
+    revision = String(head)
     if !override
         startswith(head, pin.commit) || throw(ArgumentError("the $what snapshot $snap is at $head, not the pinned $(pin.commit)"))
         # every solver file must still have the content recorded when the snapshot was pinned (the pin's manifest)
         m = TOML.parsefile(joinpath(@__DIR__, "..", "..", "manifests", pin.manifest))
         m["commit"] == head || throw(ArgumentError("the snapshot manifest $(pin.manifest) is for $(m["commit"]), the snapshot is at $head"))
-        changed = [f for (f, h) in m["sha256"] if !(vendored &&
-            (startswith(f, "src/pbcav/test/") || startswith(basename(f), "test_"))) &&
-            (!isfile(joinpath(snap, f)) || bytes2hex(open(sha256, joinpath(snap, f))) != h)]
+        changed = _lowspeed_snapshot_mismatches(snap, m; vendored)
         isempty(changed) || throw(ArgumentError("the $what snapshot $snap has modified solver files ($(join(sort(changed), ", "))); refusing to run"))
+        # The vendored tree contains documented changes on top of the original
+        # upstream commit. Preserve both in saved run provenance.
+        vendored && (revision = String(get(m, "revision", head)))
     end
-    snap, String(head)
+    snap, revision
 end
 "The snapshot's commit (full hash) and whether its tracked files are unmodified; refuses a snapshot whose HEAD is not the pin."
 _lowspeed_snapshot_check() = _lowspeed_snapshot_verify(lowspeed_snapshot(), haskey(ENV, "AIRFOIL_LOWSPEED_SNAPSHOT"), "low-speed solver")
