@@ -102,6 +102,19 @@ function _av_scale!(dst,a::Float64)
     dst
 end
 function _av_dot(a,b)
+    # Fused CPU traversal avoids a mesh-sized broadcast temporary per
+    # Arnoldi product. Accumulate in Float64: four separate Float32 BLAS dots
+    # were faster but lost significant precision on uniform-field probes.
+    # Keep the existing backend reduction for GPU arrays.
+    if a[1] isa StridedArray && b[1] isa StridedArray
+        x1,x2,x3,x4=a;y1,y2,y3,y4=b
+        total=0.0
+        @inbounds @simd for i in eachindex(x1,y1,x2,y2,x3,y3,x4,y4)
+            total+=Float64(x1[i])*y1[i]+Float64(x2[i])*y2[i]+
+                   Float64(x3[i])*y3[i]+Float64(x4[i])*y4[i]
+        end
+        return total
+    end
     Float64(sum(a[1].*b[1] .+ a[2].*b[2] .+
                 a[3].*b[3] .+ a[4].*b[4]))
 end
@@ -181,8 +194,15 @@ function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
     inv_r=Float32(1/r)
     inv_m=Float32(1/(r*u))
     inv_e=Float32(1/E)
-    max_scaled=maximum(@. max(abs(v[1])*inv_r,abs(v[2])*inv_m,
-                            abs(v[3])*inv_m,abs(v[4])*inv_e))
+    max_scaled=if v[1] isa StridedArray
+        # Four cache-friendly CPU reductions avoid a mesh-sized broadcast
+        # temporary at every matrix-free Jacobian action.
+        max(maximum(abs,v[1])*inv_r,maximum(abs,v[2])*inv_m,
+            maximum(abs,v[3])*inv_m,maximum(abs,v[4])*inv_e)
+    else
+        maximum(@. max(abs(v[1])*inv_r,abs(v[2])*inv_m,
+                    abs(v[3])*inv_m,abs(v[4])*inv_e))
+    end
     max_scaled>0 && (h=min(h,local_cap/max_scaled))
     isfinite(h) && h>0 || throw(ArgumentError("invalid matrix-free perturbation"))
     h

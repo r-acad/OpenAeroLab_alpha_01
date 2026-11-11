@@ -7,6 +7,16 @@ include(joinpath(@__DIR__,"..","..","src","cmesh","cmesh_metrics.jl"))
 include(joinpath(@__DIR__,"..","..","src","compressible","cmesh_solver_ka.jl"))
 const M=CMeshSolverKA
 
+@testset "CPU Newton-Krylov inner products avoid mesh-sized temporaries" begin
+    a=ntuple(k->fill(Float32(.1k),512,512),4)
+    b=ntuple(k->fill(Float32(.2k),512,512),4)
+    expected=sum(sum(Float64.(a[k]).*Float64.(b[k])) for k in 1:4)
+    @test isapprox(M._av_dot(a,b),expected;rtol=1e-9)
+    bytes()=@allocated M._av_dot(a,b)
+    bytes(); bytes()
+    @test bytes()<1024
+end
+
 @testset "implicit physical-state reduction" begin
     rho=ones(Float32,2,2);ux=zeros(Float32,2,2)
     uy=zeros(Float32,2,2);T=ones(Float32,2,2)
@@ -25,6 +35,9 @@ end
     h=M._airfoil_fd_step(v,1.0,10_000,1.0,0.2,1.0,1.0f0)
     @test h<=1.0f-3
     @test h>0
+    fd_bytes()=@allocated M._airfoil_fd_step(v,1.0,10_000,1.0,0.2,1.0,1.0f0)
+    fd_bytes();fd_bytes()
+    @test fd_bytes()<1024
 end
 
 function reference_flow_merit(s)
