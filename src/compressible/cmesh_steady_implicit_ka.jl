@@ -203,6 +203,19 @@ end
     end
 end
 
+function _implicit_merit_cpu(raw,vr,inv_r::Float32,inv_m::Float32,inv_e::Float32)
+    dr,dmx,dmy,de=raw
+    total=0.0
+    @inbounds @simd for i in eachindex(vr,dr,dmx,dmy,de)
+        r=Float64(dr[i]/vr[i])*inv_r
+        mx=Float64(dmx[i]/vr[i])*inv_m
+        my=Float64(dmy[i]/vr[i])*inv_m
+        e=Float64(de[i]/vr[i])*inv_e
+        total+=r*r+mx*mx+my*my+e*e
+    end
+    sqrt(total/length(vr))
+end
+
 function _implicit_merit(s::KSol)
     vr=s.vol
     r=max(Float64(s.rho_inf),1e-12)
@@ -212,6 +225,10 @@ function _implicit_merit(s::KSol)
     inv_r=Float32(1/r)
     inv_m=Float32(1/(r*u))
     inv_e=Float32(1/(r*e))
+    if vr isa StridedArray && s.dc_r isa StridedArray
+        return _implicit_merit_cpu((s.dc_r,s.dc_mx,s.dc_my,s.dc_e),
+                                   vr,inv_r,inv_m,inv_e)
+    end
     # One fused GPU reduction replaces four volume-division temporaries and
     # four synchronizing reductions in every nonlinear line-search trial.
     total=sum(@. ((s.dc_r/vr)*inv_r)^2 +

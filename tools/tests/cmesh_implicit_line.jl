@@ -17,6 +17,19 @@ const M=CMeshSolverKA
     @test bytes()<1024
 end
 
+@testset "CPU implicit merit avoids line-search temporaries" begin
+    vol=[Float32(1+.01i+.02j) for i in 1:64,j in 1:32]
+    raw=ntuple(k->[Float32(.03k+.001i-.002j) for i in 1:64,j in 1:32],4)
+    scales=(.5f0,.25f0,.25f0,.1f0)
+    expected=sqrt(sum(sum((Float64(raw[k][i]/vol[i])*scales[k])^2
+                          for k in 1:4) for i in eachindex(vol))/length(vol))
+    merit=M._implicit_merit_cpu(raw,vol,scales[1],scales[2],scales[4])
+    @test isapprox(merit,expected;rtol=1e-10)
+    bytes()=@allocated M._implicit_merit_cpu(raw,vol,scales[1],scales[2],scales[4])
+    bytes();bytes()
+    @test bytes()<1024
+end
+
 @testset "implicit physical-state reduction" begin
     rho=ones(Float32,2,2);ux=zeros(Float32,2,2)
     uy=zeros(Float32,2,2);T=ones(Float32,2,2)
