@@ -21,6 +21,10 @@ try
     @eval using Plots
 catch
 end
+if isdefined(@__MODULE__, :Plots)
+    isdefined(@__MODULE__, :configure_gr_windows_path!) || include(joinpath(@__DIR__,"..","..","..","tools","install","gr_runtime.jl"))
+    configure_gr_windows_path!(Plots)
+end
 
 function _pondcfg(keys...; default)
     safe_get(CFG, "advanced", "numerics", "pond", keys...; default=default)

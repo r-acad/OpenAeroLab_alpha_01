@@ -54,7 +54,10 @@ include(joinpath(ROOT, "tools", "cmesh_te_base.jl")); using .CMeshTEBase
 include(joinpath(ROOT, "tools", "cmesh_mesh_quality_receipt.jl")); using .CMeshMeshQualityReceipt
 include(joinpath(ROOT, "tools", "physical_clock.jl")); using .PhysicalTimeAccounting
 include(joinpath(ROOT, "tools", "cmesh_raster.jl"))
-using KernelAbstractions, Printf, Plots, SHA; gr()
+using KernelAbstractions, Printf, Plots, SHA
+isdefined(@__MODULE__, :configure_gr_windows_path!) || include(joinpath(@__DIR__,"install","gr_runtime.jl"))
+configure_gr_windows_path!(Plots)
+gr()
 import CUDA
 # Makie field renders (density / Mach / Cp / vorticity / transported alpha / u_x) on the physical
 # C-mesh, every MAKIE_EVERY frames, from the live state (standing directive 2026-07-18: every solver

@@ -10,6 +10,8 @@ using Base.Threads
 using YAML
 using Atomix
 using Plots
+isdefined(@__MODULE__, :configure_gr_windows_path!) || include(joinpath(@__DIR__,"..","..","..","tools","install","gr_runtime.jl"))
+configure_gr_windows_path!(Plots)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GLOBAL PRECISION SELECTION (compile-time)

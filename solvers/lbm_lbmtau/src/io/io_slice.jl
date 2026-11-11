@@ -1,5 +1,7 @@
 ﻿using Printf
 using Plots
+isdefined(@__MODULE__, :configure_gr_windows_path!) || include(joinpath(@__DIR__,"..","..","..","..","tools","install","gr_runtime.jl"))
+configure_gr_windows_path!(Plots)
 
 @inline function _coord_to_cell_index(coord_phys::Float64, dx::Float64, n_cells::Int)
     # Clamp only at the domain edge. A previous `coord - 0.01*dx` bias nudged
