@@ -15,7 +15,8 @@ environments actually used by each isolated OpenAeroLab worker:
 | `tools/postprocess` | CairoMakie charts, reports and renders | Windows, Linux, Mac |
 
 `Pkg.instantiate` uses each checked-in manifest; setup does not run `Pkg.update`
-or replace solver sources. Package precompilation is automatic. Verification
+or replace solver sources. Package precompilation is strict: a compile failure
+stops setup in that environment and records the failed stage. Verification
 loads the applications and runtime imports, renders a small Makie figure, and
 checks a small GPU operation when CUDA is available. No simulation is started.
 There is no requirement for a machine-specific sysimage. First installation may
@@ -61,6 +62,9 @@ when launching. Paths containing spaces are supported.
   Deleting a downloaded runtime requires running setup again before launch.
 - `<private>/runtime/install_logs/`: persistent bootstrap and package installation logs,
   including progress from failed attempts. Keep these when reporting a problem.
+- `<private>/runtime/installation_attempt.toml`: the latest package setup status,
+  failed stage, and exact `log` path. Read this path instead of choosing the newest
+  file in `install_logs`, which can be a separate Julia bootstrap log.
 - `<private>/runtime/launch_logs/`: persistent Windows startup/server logs, including
   missing dependencies and import failures before the web server opens.
 - `<private>/TEMP_DELETEABLE/setup/`: reusable downloads and extraction staging.

@@ -21,6 +21,8 @@ lowspeed_ch_snapshot() = normpath(get(ENV, "AIRFOIL_LOWSPEED_CH_SNAPSHOT", lowsp
 const LOWSPEED_CH_MESHES = Dict(
     "demo"=>(mesh="192,72,3e-5,1.20,80,64", dn1=3e-5,
              label="Demo (fast) C+H: 192 foil x 72 normal cells + 2 x 64 wake legs, H block 64 stations x (2 x base cells), first wall spacing 3e-5 c, column remap with the graded strip"),
+    "fine"=>(mesh="192,72,3e-5,1.20,80,64", dn1=3e-5,
+             label="Refined C+H: demo topology subdivided once (PB_MESH_LEVEL=1), including the base and wake; four times as many cells"),
     "smoke"=>(mesh="64,40,1e-3,1.30,40,16", dn1=1e-3,
               label="Smoke test only (C+H): 64 foil x 40 normal cells + 2 x 16 wake, first wall spacing 1e-3 c"))
 """The Gurney flap's start (PB_START=ramp, PB_START_RAMP): the far field is accelerated from r0 U to U over t = T c/U, because the
@@ -41,7 +43,7 @@ function lowspeed_ch_configuration(flow::AbstractDict)
     topo in ("sharp", "ch_native") || throw(ArgumentError("lowspeed_topology must be sharp or ch_native"))
     gurney_enabled(flow) && topo == "ch_native" && throw(ArgumentError("lowspeed_topology=ch_native is the native-base control: remove the Gurney flap or the key"))
     res = String(_get(flow, "lowspeed_resolution", LOWSPEED_DEFAULTS["lowspeed_resolution"]))
-    haskey(LOWSPEED_CH_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be demo (or smoke for tests)"))
+    haskey(LOWSPEED_CH_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be demo or fine (or smoke for tests)"))
     _number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05) > 0 && throw(ArgumentError(gurney_enabled(flow) ?
         "The Gurney flap and the CFD trailing-edge thickness override both set the trailing edge: clear the CFD trailing-edge thickness (the flap is a baffle on the section's own finite trailing edge, which it keeps)." :
         "the low-speed CFD's C+H path takes the native trailing edge: clear the CFD trailing-edge thickness override"))
@@ -58,6 +60,8 @@ function lowspeed_ch_configuration(flow::AbstractDict)
         "reynolds"=>_number(flow, "reynolds", 3e6; lo=1e4, hi=1e8),
         "tu"=>_number(flow, "lowspeed_tu", LOWSPEED_DEFAULTS["lowspeed_tu"]; lo=1e-6, hi=0.19),
         "mut_ratio"=>_number(flow, "lowspeed_mut_ratio", LOWSPEED_DEFAULTS["lowspeed_mut_ratio"]; lo=1e-4, hi=1e4),
+        "steady_tol"=>_number(flow, "lowspeed_steady_tol", LOWSPEED_DEFAULTS["lowspeed_steady_tol"]; lo=1e-9, hi=1e-3),
+        "turb_steady_tol"=>_number(flow, "lowspeed_turb_steady_tol", LOWSPEED_DEFAULTS["lowspeed_turb_steady_tol"]; lo=1e-9, hi=1e-3),
         "wall_cap"=>_number(flow, "lowspeed_wall_cap_s", 7200.0; lo=30.0, hi=14400.0),
         "max_steps"=>_integer(flow, "lowspeed_max_steps", LOWSPEED_DEFAULTS["lowspeed_max_steps"]; lo=1, hi=20000),
         "live_every"=>0, "gpu"=>lowspeed_gpu(flow), "start"=>start, "mut_base"=>mutb,
@@ -127,13 +131,15 @@ function _lowspeed_ch_knobs(ls::AbstractDict, gap::Real)
         "PB_MESH_TE_DS"=>@sprintf("%.6e", 1.5gap/(2nb)), "PB_MESH_TE_TOPOLOGY"=>"strip",
         "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_STRIP"=>"graded",
         "PB_TURBULENCE"=>"sst", "PB_SST_TU_INF"=>string(ls["tu"]), "PB_SST_MUT_RATIO"=>string(ls["mut_ratio"]),
-        "PB_DT"=>string(ls["pseudo_dt"]), "PB_STEADY_TOL"=>"1e-6", "PB_TURB_STEADY_TOL"=>"1e-7", "PB_MAX_STEPS"=>string(ls["max_steps"]),
+        "PB_DT"=>string(ls["pseudo_dt"]), "PB_STEADY_TOL"=>string(ls["steady_tol"]), "PB_TURB_STEADY_TOL"=>string(ls["turb_steady_tol"]), "PB_MAX_STEPS"=>string(ls["max_steps"]),
         "PB_WALL_CAP"=>string(ls["wall_cap"]), "PB_N_OUTER_MAX"=>"40", "PB_VORTEX"=>"point", "PB_VORTEX_EVERY"=>"10",
         "PB_VORTEX_RELAX"=>"0.5",
         # W6b's settings, named explicitly (their values are the defaults of d62a577f and of b7a7b29b alike; the sharp path
         # names the same three, LOWSPEED_W6B_KNOBS): the coupled step's SIMPLEC alpha_u (0.8), the coupled Jacobian with its
         # viscous non-orthogonal part, and the omega non-orthogonal bound.
-        "PB_CPL_AU"=>"0.8", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2")
+        "PB_CPL_AU"=>"0.8", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2",
+        "PB_CPU_LAUNCH"=>"balanced")
+    ls["resolution"] == "fine" && (kn["PB_MESH_LEVEL"] = "1")
     # the ramp start (the Gurney flap's; the control only when asked) and the mu_t base (named whenever it is not the default,
     # and always with a flap, so that a point's receipt shows it)
     get(ls, "start", "projection") == "ramp" && merge!(kn, Dict{String,String}("PB_START"=>"ramp", "PB_START_RAMP"=>LOWSPEED_CH_RAMP))
@@ -274,7 +280,7 @@ end
 URANS development point validation/gurney_urans_20261027/README.md, run on the EARLIER reshaped-mesh plate, so it is a statement
 about the physics of this flap, not about this mesh)."""
 const GURNEY_UNSTEADY_CAVEAT = "Steady RANS caveat: a Gurney flap sheds (the trailing-edge wake behind a bluff plate is unsteady, St about 0.15 on the plate height), and this steady pseudo-time march suppresses the shedding: the plate's back-face suction is a bound, not a time average, and the plate's drag increment is a lower bound in that sense. Development evidence (apps/airfoil_web/validation/gurney_urans_20261027/README.md, a 2 %c flap on NACA 0012 at Re 3e6, alpha 4, run time-accurately at small dt on the earlier reshaped-mesh plate): the wake sheds, and the time-mean C_D rose to 22 % above the steady value (a lower bound on the saturated shedding). Development, not validated."
-const GURNEY_RUN_CAVEATS = "One mesh: grid independence is not established; before quoting a Gurney C_D, run one finer mesh level (PB_MESH_LEVEL=1, the plate re-placed by the same rule) to the steady stop. Near stall, steady branches can depend on the start: run one high-alpha point from both starts (the ramp and the projection) and compare."
+const GURNEY_RUN_CAVEATS = "One mesh: grid independence is not established; before quoting a Gurney C_D, select Fine in the app (PB_MESH_LEVEL=1, the plate re-placed by the same rule) and run to the steady stop. Near stall, steady branches can depend on the start: run one high-alpha point from both starts (the ramp and the projection) and compare."
 
 """The ramp start's record from the loads history (dt column) and the result: the first and smallest dt, the steps below the base
 dt, and the rejections; and, for a flap, the statement that the loads before t = T are not meaningful. Stated limitation of the

@@ -133,6 +133,16 @@ end
         @test occursin("proxy authentication",read(attempt["log"],String))
         @test attempts[]==2
         @test !ispath(joinpath(private,"runtime","setup.lock"))
+        verified=Ref(false)
+        @test_throws ErrorException Setup.install_projects!(selected;root=repo,private,console=IOBuffer(),activate,
+            instantiate=log->nothing,precompile=log->error("synthetic JXfoil compile failure"),
+            verify=(p,log)->(verified[]=true))
+        attempt=TOML.parsefile(joinpath(private,"runtime","installation_attempt.toml"))
+        @test attempt["status"]=="failed"
+        @test attempt["stage"]=="precompile"
+        @test occursin("Setup failed in precompile",read(attempt["log"],String))
+        @test !verified[]
+        @test read(receipt)==successful
         empty!(stages)
         opts=Set(["--offline","--no-precompile","--no-verify"])
         Setup.install_projects!(selected;opts,root=repo,private,console=IOBuffer(),activate,
@@ -142,7 +152,7 @@ end
         @test offline["verified"]===false
         @test stages==["activate:first","instantiate","activate:second","instantiate"]
         @test [Setup.fingerprint(p.path;root=repo) for p in selected]==fingerprints
-        @test length(readdir(joinpath(private,"runtime","install_logs")))==3
+        @test length(readdir(joinpath(private,"runtime","install_logs")))==4
         @test all(isfile(joinpath(dir,"progress.toml")) for dir in readdir(joinpath(private,"runtime","install_logs");join=true))
         @test all(!endswith(file,".tmp") for (dir,_,files) in walkdir(private) for file in files)
     end

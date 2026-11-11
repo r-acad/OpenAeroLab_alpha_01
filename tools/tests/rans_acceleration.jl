@@ -17,9 +17,37 @@ using .CFDBackend
     base = Dict{String,Any}("reynolds"=>3e6)
     faster = merge(copy(base), Dict{String,Any}("rans_acceleration"=>true))
     sharp = CFDBackend.lowspeed_configuration(faster)
-    @test CFDBackend._lowspeed_input("snapshot", "commit", "foil.dat", sharp, 0.0, @__DIR__)["dt"] == 0.5
+    sharp_input = CFDBackend._lowspeed_input("snapshot", "commit", "foil.dat", sharp, 0.0, @__DIR__)
+    @test sharp_input["dt"] == 0.5
+    @test sharp_input["knobs"]["PB_CPU_LAUNCH"] == "balanced"
+    @test sharp_input["steady_tol"] == 1e-6
+    @test sharp_input["turb_steady_tol"] == 1e-7
     ch = CFDBackend.lowspeed_ch_configuration(faster)
-    @test CFDBackend._lowspeed_ch_knobs(ch, 0.002)["PB_DT"] == "0.5"
+    ch_knobs = CFDBackend._lowspeed_ch_knobs(ch, 0.002)
+    @test ch_knobs["PB_DT"] == "0.5"
+    @test ch_knobs["PB_CPU_LAUNCH"] == "balanced"
+    @test parse(Float64,ch_knobs["PB_STEADY_TOL"]) == 1e-6
+    @test parse(Float64,ch_knobs["PB_TURB_STEADY_TOL"]) == 1e-7
+    relaxed=merge(copy(base),Dict{String,Any}("lowspeed_steady_tol"=>1e-4,"lowspeed_turb_steady_tol"=>1e-4))
+    relaxed_sharp=CFDBackend.lowspeed_configuration(relaxed)
+    @test CFDBackend._lowspeed_input("snapshot", "commit", "foil.dat", relaxed_sharp, 0.0, @__DIR__)["steady_tol"] == 1e-4
+    relaxed_ch=CFDBackend.lowspeed_ch_configuration(merge(copy(relaxed),Dict{String,Any}("lowspeed_topology"=>"ch_native")))
+    @test parse(Float64,CFDBackend._lowspeed_ch_knobs(relaxed_ch,0.002)["PB_TURB_STEADY_TOL"]) == 1e-4
+    @test_throws ArgumentError CFDBackend.lowspeed_configuration(merge(copy(base),Dict{String,Any}("lowspeed_steady_tol"=>1e-2)))
+    gpu = merge(copy(faster), Dict{String,Any}("lowspeed_gpu"=>true))
+    @test CFDBackend._lowspeed_input("snapshot", "commit", "foil.dat", CFDBackend.lowspeed_configuration(gpu), 0.0, @__DIR__)["knobs"]["PB_CPU_LAUNCH"] == "fixed"
+    @test CFDBackend._lowspeed_ch_knobs(CFDBackend.lowspeed_ch_configuration(gpu), 0.002)["PB_CPU_LAUNCH"] == "fixed"
+    baseline = merge(copy(base), Dict{String,Any}("lowspeed_topology"=>"ch_native", "lowspeed_start"=>"ramp", "lowspeed_turb_mut_base"=>"committed"))
+    control = CFDBackend.lowspeed_configuration(baseline)
+    @test control["ch_source"] == "native"
+    @test CFDBackend._lowspeed_ch_knobs(control, 0.002)["PB_START"] == "ramp"
+    @test CFDBackend._lowspeed_ch_knobs(control, 0.002)["PB_TURB_MUT_BASE"] == "committed"
+    refined = CFDBackend.lowspeed_configuration(merge(copy(baseline), Dict{String,Any}("lowspeed_resolution"=>"fine")))
+    @test CFDBackend._lowspeed_ch_knobs(refined, 0.002)["PB_MESH_LEVEL"] == "1"
+    @test !haskey(CFDBackend._lowspeed_ch_knobs(control, 0.002), "PB_MESH_LEVEL")
+    message=CFDBackend._lowspeed_convergence_message(Dict("outcome"=>"INCOMPLETE", "steps"=>200),
+        Dict("status"=>"loads_stable_flow_unsettled", "reason"=>"equation residual limits have not passed", "converged"=>false))
+    @test occursin("Recent load stability does not establish the final CL/CD",message)
 
     case = Dict{String,Any}("airfoil"=>Dict{String,Any}("kind"=>"naca4", "id"=>"0012"))
     gas = Dict{String,Any}("rans_acceleration"=>true, "cfd_mesh"=>"aplus_nested_refined")

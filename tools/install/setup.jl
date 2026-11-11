@@ -118,7 +118,7 @@ end
 function install_projects!(selected; opts=Set{String}(), root=ROOT, private=private_root(), console=stdout,
     activate=(path,log)->Pkg.activate(path;io=log),
     instantiate=log->Pkg.instantiate(;verbose=true,allow_autoprecomp=false,io=log),
-    precompile=log->Pkg.precompile(;io=log), verify=(project,log)->verify_project(project,log;root), sleepfn=sleep)
+    precompile=log->Pkg.precompile(;io=log,strict=true), verify=(project,log)->verify_project(project,log;root), sleepfn=sleep)
     # Logs and progress are useful diagnostics, so they must survive clearing scratch data.
     runtime=joinpath(private,"runtime");mkpath(runtime)
     logs=joinpath(runtime,"install_logs");mkpath(logs)
@@ -149,10 +149,12 @@ function install_projects!(selected; opts=Set{String}(), root=ROOT, private=priv
                         progress["stage"]="precompile";save_progress()
                         println(console,"  Precompiling; this can take several minutes. Details: $logpath");flush(console)
                         precompile(log)
+                        flush(log)
                     end
                     if !("--no-verify" in opts)
                         progress["stage"]="verify";save_progress()
                         println(console,"  Checking package imports and runtime…");flush(console)
+                        flush(log) # Parent output must precede the child process in setup.log.
                         verify(p,log)
                     end
                     push!(progress["projects"],Dict("name"=>p.name,"project"=>p.path,"fingerprint"=>fingerprint(p.path;root)))

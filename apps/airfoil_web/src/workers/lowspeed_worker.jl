@@ -62,7 +62,7 @@ println(PBCav.knob_receipt(KNOBS, KNOB_SOURCE, ENVK))
 # published first; the GPU lock (gpu_lock.jl) is taken only before the march, never in Create mesh (mesh_only).
 const GPU_REQUESTED = KNOBS["PB_BACKEND"] === :cuda
 const SPEED_AUTO = GPU_REQUESTED ? PBCav.apply_speed_auto!(KNOBS, KNOB_SOURCE) : String[]
-GPU_REQUESTED && PBCav.pb_cpu_launch!(KNOBS["PB_CPU_LAUNCH"])
+PBCav.pb_cpu_launch!(KNOBS["PB_CPU_LAUNCH"])
 GPU_REQUESTED && KNOBS["PB_SPEED"] === :auto &&
     println("PB SPEED: auto, cuda freeair: ", isempty(SPEED_AUTO) ? "nothing changed" : join(SPEED_AUTO, " "))
 

@@ -13,3 +13,14 @@ const ROOT=normpath(joinpath(@__DIR__,"../.."))
         end
     end
 end
+
+@testset "Low-speed C+H baseline control is wired into the form" begin
+    html=read(joinpath(ROOT,"apps/airfoil_web/static/index.html"),String)
+    script=read(joinpath(ROOT,"apps/airfoil_web/static/scripts/app.js"),String)
+    @test occursin("id=\"lowspeed-ch-baseline\"",html)
+    @test occursin("lowspeed_topology:\"ch_native\"",script)
+    @test occursin("lowspeed_start:\"ramp\"",script)
+    @test occursin("lowspeed_turb_mut_base:\"committed\"",script)
+    @test occursin("id=\"lowspeed-steady-tol\"",html)
+    @test occursin("id=\"lowspeed-turb-steady-tol\"",html)
+end

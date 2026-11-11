@@ -30,17 +30,16 @@ function lowspeed_pin()
 end
 const LOWSPEED_SNAPSHOT_DEFAULT = LOWSPEED_PINS["s1030"].snapshot
 const LOWSPEED_COMMIT_PINNED = LOWSPEED_PINS["s1030"].commit
-"""The merged head's W6b settings, named explicitly in every low-speed point (sharp and C+H) so that a later change of
-PBCav's defaults cannot change the app silently: the coupled step's SIMPLEC alpha_u, the coupled Jacobian with its viscous
-non-orthogonal part, and the omega non-orthogonal bound (their values are b7a7b29b's defaults)."""
-const LOWSPEED_W6B_KNOBS = ("PB_CPL_AU"=>"0.8", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2")
+"""The merged head's W6b settings and the measured CPU launch mode, named explicitly in every low-speed point.
+The GPU override keeps its registered fixed launch mode."""
+const LOWSPEED_W6B_KNOBS = ("PB_CPL_AU"=>"0.8", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2", "PB_CPU_LAUNCH"=>"balanced")
 lowspeed_snapshot() = normpath(get(ENV, "AIRFOIL_LOWSPEED_SNAPSHOT", lowspeed_pin().snapshot))
 """The GPU option (opt-in request key lowspeed_gpu, 24 Oct 2026; the CPU stays the default): the snapshot's CUDA backend with
 W7's adopted speed settings for CUDA free air (PB_SPEED=auto: PB_SYNC=reads, PB_GRAPHS=on, PB_CPL_GS=cgs2,
 PB_LINE_SOLVER=pcr, PB_DOT=tree, PB_CPU_LAUNCH=fixed; the preconditioner and k-omega stay Float64 -- the Float32 forms are
 gated by the snapshot, knobs.jl SPEED_GATED_F32). The worker takes the shared GPU lock (gpu_lock.jl,
 the private GPU lock) before the march and waits while another owner holds it."""
-const LOWSPEED_GPU_KNOBS = ("PB_BACKEND"=>"cuda", "PB_SPEED"=>"auto")
+const LOWSPEED_GPU_KNOBS = ("PB_BACKEND"=>"cuda", "PB_SPEED"=>"auto", "PB_CPU_LAUNCH"=>"fixed")
 "The request's GPU choice: lowspeed_gpu must be a boolean when present (absent: the CPU)."
 function lowspeed_gpu(flow::AbstractDict)
     haskey(flow, "lowspeed_gpu") || return false
@@ -63,7 +62,8 @@ const LOWSPEED_MESHES = Dict(
                label="Smoke test only: 64 foil x 40 normal cells + 2 x 16 wake, 3,840 cells, first wall spacing 1e-3 c"))
 const LOWSPEED_THREADS = parse(Int, get(ENV, "AIRFOIL_LOWSPEED_THREADS", "8"))   # 8; a lower value only on request (shared machine)
 const LOWSPEED_DEFAULTS = Dict{String,Any}("lowspeed_resolution"=>"demo", "lowspeed_tu"=>0.01, "lowspeed_mut_ratio"=>10.0,
-    "lowspeed_wall_cap_s"=>3600.0, "lowspeed_max_steps"=>2000, "lowspeed_live_every"=>25)
+    "lowspeed_wall_cap_s"=>3600.0, "lowspeed_max_steps"=>2000, "lowspeed_live_every"=>25,
+    "lowspeed_steady_tol"=>1e-6, "lowspeed_turb_steady_tol"=>1e-7)
 
 """Validated low-speed settings from a request's flow map (ArgumentError on a bad value). Mach is not an input.
 A Gurney flap (gurney_height) or the hidden key lowspeed_topology = "ch_native" selects the C+H path
@@ -78,6 +78,8 @@ function lowspeed_configuration(flow::AbstractDict)
     re = _number(flow, "reynolds", 3e6; lo=1e4, hi=1e8)
     tu = _number(flow, "lowspeed_tu", LOWSPEED_DEFAULTS["lowspeed_tu"]; lo=1e-6, hi=0.19)
     mr = _number(flow, "lowspeed_mut_ratio", LOWSPEED_DEFAULTS["lowspeed_mut_ratio"]; lo=1e-4, hi=1e4)
+    steady_tol = _number(flow, "lowspeed_steady_tol", LOWSPEED_DEFAULTS["lowspeed_steady_tol"]; lo=1e-9, hi=1e-3)
+    turb_steady_tol = _number(flow, "lowspeed_turb_steady_tol", LOWSPEED_DEFAULTS["lowspeed_turb_steady_tol"]; lo=1e-9, hi=1e-3)
     cap = _number(flow, "lowspeed_wall_cap_s", LOWSPEED_DEFAULTS["lowspeed_wall_cap_s"]; lo=30.0, hi=7200.0)
     ms = _integer(flow, "lowspeed_max_steps", LOWSPEED_DEFAULTS["lowspeed_max_steps"]; lo=1, hi=20000)
     _number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05) > 0 && throw(ArgumentError(
@@ -87,7 +89,8 @@ function lowspeed_configuration(flow::AbstractDict)
     Dict{String,Any}("resolution"=>res, "mesh"=>LOWSPEED_MESHES[res].mesh, "le_ds"=>LOWSPEED_MESHES[res].le_ds,
         "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "mesh_label"=>LOWSPEED_MESHES[res].label,
-        "reynolds"=>re, "tu"=>tu, "mut_ratio"=>mr, "wall_cap"=>cap, "max_steps"=>ms, "live_every"=>live, "gpu"=>lowspeed_gpu(flow),
+        "reynolds"=>re, "tu"=>tu, "mut_ratio"=>mr, "steady_tol"=>steady_tol, "turb_steady_tol"=>turb_steady_tol,
+        "wall_cap"=>cap, "max_steps"=>ms, "live_every"=>live, "gpu"=>lowspeed_gpu(flow),
         "rans_acceleration"=>accel.enabled, "rans_acceleration_method"=>accel.method, "pseudo_dt"=>accel.pseudo_dt)
 end
 
@@ -233,7 +236,7 @@ end
 function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false, warm_start=nothing)
     cfg = Dict{String,Any}("snapshot"=>snap, "commit"=>head, "foil"=>replace(String(foil), '\\'=>'/'),
         "mesh"=>ls["mesh"], "le_ds"=>ls["le_ds"], "resolution"=>ls["resolution"], "tu"=>ls["tu"], "mut_ratio"=>ls["mut_ratio"],
-        "dt"=>ls["pseudo_dt"], "steady_tol"=>1e-6, "turb_steady_tol"=>1e-7, "max_steps"=>ls["max_steps"], "wall_cap"=>ls["wall_cap"],
+        "dt"=>ls["pseudo_dt"], "steady_tol"=>ls["steady_tol"], "turb_steady_tol"=>ls["turb_steady_tol"], "max_steps"=>ls["max_steps"], "wall_cap"=>ls["wall_cap"],
         "rans_acceleration"=>ls["rans_acceleration"], "rans_acceleration_method"=>ls["rans_acceleration_method"],
         "n_outer_max"=>40, "vortex_every"=>10, "vortex_relax"=>0.5, "reynolds"=>ls["reynolds"], "alpha"=>Float64(alpha),
         "outdir"=>replace(String(dir), '\\'=>'/'), "live_every"=>ls["live_every"],
@@ -348,13 +351,15 @@ function _lowspeed_convergence_assessment(meta, raw; ramp_time=0.)
 end
 
 function _lowspeed_convergence_message(meta, assessment)
-    titles=Dict("converged"=>"Converged", "loads_stable_flow_unsettled"=>"Loads stable; flow not yet converged",
+    titles=Dict("converged"=>"Converged", "loads_stable_flow_unsettled"=>"Loads changed little in the recent window; flow not yet converged",
         "incomplete"=>"Analysis incomplete", "failed"=>"Analysis failed")
     outcome=String(get(meta,"outcome","UNKNOWN")); steps=get(meta,"steps",0)
     ending=outcome=="INCOMPLETE" ? "Wall-time limit reached at step $steps." :
         outcome=="REACHED" ? "Requested iteration/time limit reached at step $steps." : "Solver outcome $outcome at step $steps."
     refusal=String(get(meta,"refusal",""));isempty(refusal) || (ending*=" "*refusal)
-    "$(titles[assessment["status"]]). $(assessment["reason"]). $ending " *
+    stability_caveat=assessment["status"]=="loads_stable_flow_unsettled" ?
+        " Recent load stability does not establish the final CL/CD or mesh independence." : ""
+    "$(titles[assessment["status"]]). $(assessment["reason"]). $ending$stability_caveat " *
         (assessment["converged"] ? "Mesh independence and experimental validation are separate." :
          "Saved fields and coefficients remain available for inspection.")
 end

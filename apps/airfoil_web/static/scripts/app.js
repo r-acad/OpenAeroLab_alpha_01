@@ -200,7 +200,7 @@ const el = Object.fromEntries([
   "server-state", "transport", "theme-mode", "source-kind", "naca-picker", "naca-code", "uiuc-picker", "dat-picker", "dat-file", "dat-status", "airfoil-search", "airfoil-select", "catalog-status", "airfoil-meta", "airfoil-name", "airfoil-description", "airfoil-link", "show-reference", "curvature-mapping-field", "curvature-mapping-help", "cfd-te-topology",
   "mach", "reynolds", "alpha", "ncrit", "transition-mode", "trip-controls", "trip-upper", "trip-lower", "sigma", "sigma-field", "flow-hint", "backend", "backend-note", "advanced-cfd", "advanced-air", "advanced-cav", "cfd-steps", "cfd-gpu", "cfd-rk", "cfd-rk-field", "gas-physics-fields", "cfd-auto-stop", "cfd-mass-ceiling", "gas-mesh-field", "cfd-mesh", "cfd-resolution", "base-faces-field", "cfd-n-base", "cfd-sfd-storage", "cfd-viscosity-model", "cfd-temperature-field", "cfd-temperature", "cav-warm-steps", "cav-duration", "cav-frames", "cav-channel", "cav-channel-field", "cav-fluid", "cav-domain", "cav-domain-note", "cav-depth", "cav-depth-field", "cav-air-mode", "cav-air-mode-field", "operation-feedback", "operation-label", "curvature-scale", "curvature-scale-field",
   "cav-reference-picker", "cav-reference-select", "cav-reference-meta", "cav-reference-status", "cav-reference-note", "cav-reference-link", "run-status", "job-progress", "gas-mesh-label", "sweep-enabled", "sweep-controls", "alpha-start", "alpha-stop", "alpha-step", "sweep-count", "run-button", "form-error", "job-title", "job-message", "job-percent", "progress-bar", "job-id", "log-state", "log-count", "log-follow", "log-download", "log-view", "log-empty", "log-warning",
-  "lowspeed-controls", "lowspeed-resolution", "lowspeed-tu", "lowspeed-mut-ratio", "lowspeed-note", "lowspeed-gpu", "lowspeed-gpu-note", "recent-select", "recent-open", "recent-refresh", "recent-status",
+  "lowspeed-controls", "lowspeed-resolution", "lowspeed-tu", "lowspeed-mut-ratio", "lowspeed-steady-tol", "lowspeed-turb-steady-tol", "lowspeed-note", "lowspeed-ch-baseline", "lowspeed-gpu", "lowspeed-gpu-note", "recent-select", "recent-open", "recent-refresh", "recent-status",
   "gurney-group", "gurney-enabled", "gurney-controls", "gurney-height", "gurney-mode", "gurney-refine", "gurney-note", "gurney-range",
   "streamline-align", "streamline-controls", "streamline-mode", "streamline-admission", "streamline-fallback", "streamline-note", "geometry-streamlines", "field-streamlines",
   "result-backend", "result-alpha", "download-result", "geometry-chart", "geometry-title", "geometry-status", "geometry-display", "native-result-geometry", "curvature-chart", "preview-resolution", "create-mesh", "refine-mesh", "trailing-edge-thickness", "cp-chart", "reference-note", "field-kind", "field-renderer", "field-grid", "field-mesh-overlay", "field-view", "babylon-view", "field-legend", "polar-cl", "polar-cd", "polar-cm", "polar-note", "points-body", "result-notes", "convergence-panel", "convergence-state", "history-residual", "history-cl", "history-cd"
@@ -272,7 +272,7 @@ function updateStreamlineSetup(backends=selectedBackends(el.backend.value)){
   const on=streamlineEnabled();
   el["streamline-controls"].classList.toggle("hidden",!on);el["streamline-note"].classList.toggle("hidden",!on);
   if(!on)return;
-  const refusal=streamlineRefusal({cfd_streamline_align:true,gurney_height:gurneyEnabled()?Number(el["gurney-height"].value):undefined,cfd_te_topology:el["cfd-te-topology"].value,lowspeed_topology:state.savedLowspeedTopology||undefined},backends)||
+  const refusal=streamlineRefusal({cfd_streamline_align:true,gurney_height:gurneyEnabled()?Number(el["gurney-height"].value):undefined,cfd_te_topology:el["cfd-te-topology"].value,lowspeed_topology:el["lowspeed-ch-baseline"].checked?"ch_native":undefined},backends)||
     (backends.includes("transonic")&&!backends.includes("lowspeed")&&!coupledChForControls()?"Streamline alignment runs on the C+H mesh of a finite trailing edge; this section's trailing edge is sharp, so its CFD mesh is not C+H.":"");
   el["streamline-note"].textContent="DEVELOPMENT, NOT VALIDATED. "+(gurneyEnabled()?
     "Before meshing, JXfoil solves the CLEAN section at the analysis angle (it cannot model the Gurney plate); the CFD mesh lines are then moved onto its wake path (from the native base's midpoint) and its stagnation streamline, and the Gurney baffle is cut AFTER the alignment, on the aligned mesh (it never moves the wall row, so the aligned wake cut stays). ":
@@ -715,6 +715,10 @@ function updateGurneySetup(backends=selectedBackends(el.backend.value),underwate
 function updateLowspeedSetup(backends=selectedBackends(el.backend.value)) {
   const lowspeed=backends.includes("lowspeed"),alone=lowspeed&&backends.length===1;
   el["lowspeed-controls"].classList.toggle("hidden",!lowspeed);
+  el["lowspeed-ch-baseline"].disabled=gurneyEnabled();
+  el["lowspeed-note"].textContent=el["lowspeed-resolution"].value==="fine"&&(gurneyEnabled()||el["lowspeed-ch-baseline"].checked)?
+    "Fine C+H subdivides the demo mesh once, with about four times as many cells. On NACA 0012, the refined mesh still misses several quality gates; inspect Create mesh and treat coefficients as development results.":
+    "Defaults: Tu 1%, μt/μ 10. Looser steady limits may stop earlier; inspect mesh quality, residuals and loads before interpreting coefficients.";
   el["lowspeed-gpu-note"].classList.toggle("hidden",!(lowspeed&&el["lowspeed-gpu"].checked));
   el.mach.title=alone?"Ignored: the low-speed CFD is incompressible.":lowspeed?"XFOIL uses this Mach (0 = incompressible); the low-speed CFD ignores it.":"";
   if(!lowspeed)return;
@@ -725,6 +729,11 @@ function updateLowspeedSetup(backends=selectedBackends(el.backend.value)) {
     el["backend-note"].textContent=(alone?"Low-speed CFD":"XFOIL + low-speed CFD: XFOIL runs first, on the clean section (no-flap reference: XFOIL cannot model the plate); then the low-speed CFD")+
       " on PBCav's C+H free-air mesh (conforming C block + H block behind the finite base) with the Gurney plate as a baffle (snapshot S1030_FLAPREF). The selected flap-tip mesh refinement also redistributes rows across the flap-height wake; Off uses the section's own mesh. Fully turbulent SST, ramp start, "+(gpu?where:"about 15-60 minutes per angle "+where)+". The solver refuses a plate height outside the mesh's admitted range, and says which.";
     el["flow-hint"].textContent=alone?"Reynolds and angle set the low-speed CFD case. Mach, Ncrit and trips are not used: the CFD is incompressible and fully turbulent.":"Ncrit and the prescribed trips apply to XFOIL only; the low-speed CFD is fully turbulent and ignores Mach.";
+    return;
+  }
+  if(el["lowspeed-ch-baseline"].checked){
+    el["backend-note"].textContent="Low-speed CFD no-flap baseline: the section's native finite trailing edge on the same C+H mesh as the Gurney case, with the same ramp start and committed base turbulence setting. Fully turbulent SST, "+where+". Keep Reynolds, angle, Tu and μt/μ the same when comparing cases.";
+    el["flow-hint"].textContent="The no-flap C+H baseline uses the same solver path and mesh as the flap case. Mach, Ncrit and trips are not used by the low-speed CFD.";
     return;
   }
   el["backend-note"].textContent=alone ?
@@ -864,6 +873,9 @@ function collectCase() {
     flow.lowspeed_resolution = el["lowspeed-resolution"].value || "demo";
     flow.lowspeed_tu = inputNumber("lowspeed-tu", "freestream turbulence intensity (%)", 0.0001, 19) / 100;
     flow.lowspeed_mut_ratio = inputNumber("lowspeed-mut-ratio", "freestream eddy-viscosity ratio", 0.0001, 10000);
+    flow.lowspeed_steady_tol = inputNumber("lowspeed-steady-tol", "momentum steady limit", 1e-9, 1e-3);
+    flow.lowspeed_turb_steady_tol = inputNumber("lowspeed-turb-steady-tol", "SST steady limit", 1e-9, 1e-3);
+    if(el["lowspeed-ch-baseline"].checked&&!gurneyEnabled())Object.assign(flow,{lowspeed_topology:"ch_native",lowspeed_start:"ramp",lowspeed_turb_mut_base:"committed"});
     if (el["lowspeed-gpu"].checked) { const gpuRefusal=lowspeedGpuRefusal(); if(gpuRefusal)throw new Error(gpuRefusal); flow.lowspeed_gpu = true; }
     if (backends.length === 1) flow.mach = 0;
   }
@@ -925,7 +937,10 @@ function previewCase(mesh) {
   const flow = { ...(preset?.flow||{}), mach: valueOr("mach", 0.3), reynolds: valueOr("reynolds", 300000), alpha_deg: valueOr("alpha", 0),
     cfd_mesh: el["cfd-mesh"].value, cfd_resolution: el["preview-resolution"].value, cfd_te_topology:el["cfd-te-topology"].value||"auto",
     cfd_n_base: valueOr("cfd-n-base", 4) };
-  if(selectedBackends(el.backend.value).includes("lowspeed"))flow.lowspeed_resolution=el["lowspeed-resolution"].value||"demo";
+  if(selectedBackends(el.backend.value).includes("lowspeed")){
+    flow.lowspeed_resolution=el["lowspeed-resolution"].value||"demo";
+    if(el["lowspeed-ch-baseline"].checked&&!gurneyEnabled())Object.assign(flow,{lowspeed_topology:"ch_native",lowspeed_start:"ramp",lowspeed_turb_mut_base:"committed"});
+  }
   if(selectedBackends(el.backend.value).includes("lbm")){const keys=window.AirfoilLBM?.flowKeys(flow,false);if(!keys)return null;Object.assign(flow,keys);}
   if(selectedBackends(el.backend.value).includes("cavitation")){
     flow.cav_fluid=el["cav-fluid"].value||"water";flow.cav_domain=el["cav-domain"].value||"tunnel";
@@ -2824,7 +2839,10 @@ function applySavedRequestToForm(saved) {
   for(const [key,id] of [["mach","mach"],["reynolds","reynolds"],["alpha_deg","alpha"],["ncrit","ncrit"]])if(finite(Number(flow[key])))el[id].value=String(flow[key]);
   if(finite(Number(flow.lowspeed_tu)))el["lowspeed-tu"].value=String(Number((100*flow.lowspeed_tu).toPrecision(6)));
   if(finite(Number(flow.lowspeed_mut_ratio)))el["lowspeed-mut-ratio"].value=String(flow.lowspeed_mut_ratio);
+  if(finite(Number(flow.lowspeed_steady_tol)))el["lowspeed-steady-tol"].value=String(flow.lowspeed_steady_tol);
+  if(finite(Number(flow.lowspeed_turb_steady_tol)))el["lowspeed-turb-steady-tol"].value=String(flow.lowspeed_turb_steady_tol);
   el["lowspeed-gpu"].checked=flow.lowspeed_gpu===true;
+  el["lowspeed-ch-baseline"].checked=flow.lowspeed_topology==="ch_native";
   el["rans-acceleration"].checked=flow.rans_acceleration===true;
   el["rans-method"].value=flow.rans_method||(flow.rans_acceleration===true||flow.cfd_irsj===true?"irsj":"standard");
   for(const [key,id,fallback] of [["cfd_implicit_warmup_steps","implicit-warmup",1000],["cfd_implicit_cfl","implicit-cfl",1],["cfd_implicit_basis","implicit-basis",16],["cfd_implicit_sst_substeps","implicit-sst-substeps",10],["cfd_implicit_nonmonotone_window","implicit-nonmonotone",8],["cfd_implicit_preconditioner","implicit-preconditioner","line"],["cfd_implicit_recovery_steps","implicit-recovery",0]])el[id].value=String(flow[key]??fallback);
@@ -2840,8 +2858,6 @@ function applySavedRequestToForm(saved) {
     el["gurney-refine"].value=gurneyRules.refineLevels.includes(flow.gurney_refine)?flow.gurney_refine:"off";   // a case saved before the option had none
   }
   el["streamline-align"].checked=flow.cfd_streamline_align===true;
-  // a saved native-base C+H control (an API option the form cannot set): its alignment note must not read as a refusal
-  state.savedLowspeedTopology=flow.lowspeed_topology==="ch_native"?"ch_native":null;
   if(el["streamline-align"].checked){el["streamline-mode"].value=flow.cfd_streamline_mode==="inviscid"?"inviscid":"viscous";el["streamline-admission"].value=flow.cfd_streamline_admission==="strict"?"strict":"demo";el["streamline-fallback"].checked=flow.cfd_streamline_fallback===true;}
   window.AirfoilLBM?.applySaved(flow);
   for(const [key,id] of [["cfd_te_topology","cfd-te-topology"],["cfd_mesh","cfd-mesh"],["cfd_resolution","cfd-resolution"],["cfd_time_mode","cfd-time-mode"],["cfd_viscosity_model","cfd-viscosity-model"],["cfd_freestream_temperature_k","cfd-temperature"],["cfd_steps","cfd-steps"]])if(flow[key]!=null)el[id].value=String(flow[key]);
@@ -2930,12 +2946,14 @@ el["airfoil-search"].addEventListener("input", renderAirfoils);
 el["airfoil-select"].addEventListener("change", () => { updateAirfoilMeta(); scheduleGeometryPreview(); });
 el["naca-code"].addEventListener("input", () => {updateSetup();scheduleGeometryPreview();});
 el["trailing-edge-thickness"].addEventListener("input", () => {updateSetup();scheduleGeometryPreview();});
-el["gurney-enabled"].addEventListener("change", () => {updateSetup();scheduleGeometryPreview();});
+el["gurney-enabled"].addEventListener("change", () => {if(gurneyEnabled())el["lowspeed-ch-baseline"].checked=false;updateSetup();scheduleGeometryPreview();});
 ["gurney-height"].forEach(id=>el[id].addEventListener("input", () => {updateSetup();scheduleGeometryPreview();}));
 el["gurney-mode"].addEventListener("change", () => {updateSetup();scheduleGeometryPreview();});
 el["gurney-refine"].addEventListener("change", () => {updateSetup();});
 ["streamline-align","streamline-mode","streamline-admission","streamline-fallback"].forEach(id=>el[id].addEventListener("change", () => {updateSetup();invalidatePreviewMesh();}));
 el["lowspeed-gpu"].addEventListener("change",()=>updateSetup());
+el["lowspeed-resolution"].addEventListener("change",()=>{updateSetup();invalidatePreviewMesh();});
+el["lowspeed-ch-baseline"].addEventListener("change",()=>{updateSetup();invalidatePreviewMesh();});
 el["rans-acceleration"].addEventListener("change",()=>updateSetup());
 el["rans-method"].addEventListener("change",()=>{
   if(["line_implicit","jfnk_native","jfnk_krylov"].includes(el["rans-method"].value)&&Number(el["cfd-steps"].value)>20000)el["cfd-steps"].value="5000";
@@ -3019,7 +3037,7 @@ setTheme(el["theme-mode"].value); updateSetup(); loadHealth(); scheduleGeometryP
 loadRecentResults();
 
 window.AirfoilManagedFlowKeys=["alpha_deg", "cav_air_mode", "cav_channel_height", "cav_depth_chords", "cav_domain", "cav_duration_ctu", "cav_fluid", "cav_frames", "cav_trip_x", "cav_warm_steps", "cfd_auto_stop", "cfd_block_ctu", "cfd_burnin_ctu", "cfd_duration_ctu", "cfd_freestream_temperature_k", "cfd_gpu", "cfd_mass_ceiling", "cfd_mesh", "cfd_n_base", "cfd_resolution", "cfd_rk_weight_closure", "cfd_sfd_enabled", "cfd_sfd_storage", "cfd_steps", "cfd_streamline_admission", "cfd_streamline_align", "cfd_streamline_fallback", "cfd_streamline_mode", "cfd_te_thickness", "cfd_te_topology", "cfd_time_mode", "cfd_transition_model", "cfd_viscosity_model", "display_every", "gurney_height", "lowspeed_gpu", "lowspeed_mut_ratio", "lowspeed_resolution", "lowspeed_topology", "lowspeed_tu", "mach", "ncrit", "rans_acceleration", "rans_method", "cfd_implicit_warmup_steps", "cfd_implicit_cfl", "cfd_implicit_basis", "cfd_implicit_sst_substeps", "cfd_implicit_nonmonotone_window", "cfd_implicit_preconditioner", "reynolds", "sigma", "trip_lower", "trip_upper"];
-window.AirfoilManagedFlowKeys.push("cfd_implicit_recovery_steps");
+window.AirfoilManagedFlowKeys.push("cfd_implicit_recovery_steps", "lowspeed_start", "lowspeed_turb_mut_base", "lowspeed_steady_tol", "lowspeed_turb_steady_tol");
 
 window.WingLegends?.configure({getPalette:()=>window.LudwigPalettes.get(),
   setPalette:name=>window.LudwigPalettes.set(name),
