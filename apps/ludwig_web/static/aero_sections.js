@@ -135,7 +135,8 @@
       }
       const oit=faces.length?renderFaces(faces,mode==='translucent_voxels',opacity):false;
       const octree=mesh.isOctree(amr());
-      $('amr-render-note').textContent=total?(mode==='blocks'?`${displayed.toLocaleString()} ${octree?'leaf-box':'block'} outlines · GPU instances.`:`${displayed.toLocaleString()} boundary cells from ${total.toLocaleString()} ${octree?'fluid':'allocated'} cells · exposed-cell envelope${truncated?' (truncated at 400,000 faces per level; hide coarse levels to see more)':', no cell decimation'} · GPU instances.${mode==='translucent_voxels'?` ${oit?'Order-independent depth peeling.':'Depth-sorted transparent faces.'}`:''} Interior cell edges appear in the section.`):'No visible AMR levels.';
+      $('amr-render').title=octree?'For D3Q19, block outlines group adjacent cubic cells. Select Cell outlines or use a mesh section to inspect individual cells.':'Choose how the domain mesh is displayed.';
+      $('amr-render-note').textContent=total?(mode==='blocks'?(octree?`${displayed.toLocaleString()} grouped outlines. Each groups adjacent cubic solver cells; the long outlines are not stretched cells. Choose Cell outlines or use a mesh section to inspect individual cells.`:`${displayed.toLocaleString()} block outlines · GPU instances.`):`${displayed.toLocaleString()} boundary cells from ${total.toLocaleString()} ${octree?'fluid':'allocated'} cells · exposed-cell envelope${truncated?' (truncated at 400,000 faces per level; hide coarse levels to see more)':', no cell decimation'} · GPU instances.${mode==='translucent_voxels'?` ${oit?'Order-independent depth peeling.':'Depth-sorted transparent faces.'}`:''} Interior cell edges appear in the section.`):'No visible AMR levels.';
     }
     function planePoints(frame,axis,position){
       const n=axes.indexOf(axis),a=[0,1,2].filter(i=>i!==n),lo=frame.domain.min,hi=frame.domain.max;
