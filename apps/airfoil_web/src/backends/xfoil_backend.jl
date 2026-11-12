@@ -1,6 +1,10 @@
 module AirfoilXfoilBackend
 
 using SHA,UUIDs,Printf,TOML
+if !isdefined(parentmodule(@__MODULE__), :AirfoilJobControl)
+    Base.include(parentmodule(@__MODULE__), joinpath(@__DIR__, "..", "job_control.jl"))
+end
+using ..AirfoilJobControl
 using ..AirfoilJXBackend
 
 const ROOT=normpath(joinpath(@__DIR__,"..","..","..",".."))
@@ -21,16 +25,18 @@ function _value(flow,key,default;lo=-Inf,hi=Inf)
 end
 
 function _bounded_process(command::Cmd,input::String,logpath::String;timeout=45.0,max_log_bytes=16_000_000,heartbeat=_->nothing)
+    AirfoilJobControl.check_cancelled()
     began=time();stop_reason="";last_notice=began;process=nothing
     open(logpath,"w") do io
-        process=run(pipeline(ignorestatus(command),stdin=input,stdout=io,stderr=io);wait=false)
+        process=run(pipeline(ignorestatus(AirfoilJobControl.process_command(command)),stdin=input,stdout=io,stderr=io);wait=false)
+        owned=AirfoilJobControl.track!(process)
         try
             while process_running(process)
                 elapsed=time()-began
                 if elapsed>=timeout
-                    stop_reason="wall_time_limit";kill(process);break
+                    stop_reason="wall_time_limit";AirfoilJobControl.finish!(owned);break
                 elseif filesize(logpath)>max_log_bytes
-                    stop_reason="numerical_output_limit";kill(process);break
+                    stop_reason="numerical_output_limit";AirfoilJobControl.finish!(owned);break
                 end
                 if time()-last_notice>=2
                     heartbeat(round(elapsed;digits=1));last_notice=time()
@@ -39,9 +45,11 @@ function _bounded_process(command::Cmd,input::String,logpath::String;timeout=45.
             end
             wait(process)
         finally
-            process_running(process) && (kill(process);wait(process))
+            AirfoilJobControl.finish!(owned)
+            wait(process)
         end
     end
+    AirfoilJobControl.check_cancelled()
     # Keep both ends of a numerical print loop without leaving a giant file.
     bytes=filesize(logpath)
     if bytes>2_000_000
@@ -122,11 +130,13 @@ function run_case(case,foil,outdir;log=_->nothing,progress=_->nothing,timeout=45
     exe_sha=bytes2hex(sha256(read(exe)));points=Any[]
     root=joinpath(outdir,"xfoil");mkpath(root)
     for (index,alpha) in enumerate(case["alphas"])
+        AirfoilJobControl.check_cancelled()
         directory=joinpath(root,@sprintf("point_%03d_%+.6f_%s",index,Float64(alpha),string(uuid4())[1:8]));mkpath(directory)
         progress(Dict("event"=>"started","alpha_deg"=>alpha,"point_index"=>index))
         log("Actual XFOIL executable: point $index/$(length(case["alphas"])), alpha=$alpha deg; Mach=$(flow["mach"]), Re=$(flow["reynolds"])")
         attempts=Any[];chosen=nothing;cp=Dict("upper"=>Any[],"lower"=>Any[]);selected_dir=directory
         for (attempt,continuation) in enumerate((false,true))
+            AirfoilJobControl.check_cancelled()
             continuation && abs(alpha)<1e-8 && break
             work=joinpath(directory,continuation ? "continuation_retry" : "direct");mkpath(work)
             source=joinpath(work,"geometry.dat")

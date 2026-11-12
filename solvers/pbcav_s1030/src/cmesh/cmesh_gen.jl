@@ -193,13 +193,23 @@ function _arclen(x, y)
     for k in 2:length(x); s[k] = s[k-1] + hypot(x[k]-x[k-1], y[k]-y[k-1]); end
     s
 end
-function _cr_eval(px, py, s, squery)         # Catmull-Rom sample at arc-length squery (s must be increasing)
-    n = length(px)
-    k = clamp(searchsortedlast(s, squery), 1, n-1)
-    t = (squery - s[k]) / max(s[k+1]-s[k], 1e-30)
-    i0 = max(k-1,1); i3 = min(k+2,n)
-    b(u0,u1,u2,u3) = 0.5*((2u1) + (-u0+u2)*t + (2u0-5u1+4u2-u3)*t^2 + (-u0+3u1-3u2+u3)*t^3)
-    (b(px[i0],px[k],px[k+1],px[i3]), b(py[i0],py[k],py[k+1],py[i3]))
+function _cr_eval(px, py, s, squery)         # C1 cubic on the actual (usually nonuniform) arc-length knots.
+    n=length(px);k=clamp(searchsortedlast(s,squery),1,n-1)
+    h=s[k+1]-s[k];h>0 || throw(ArgumentError("Airfoil support has repeated arc-length knots"))
+    t=(squery-s[k])/h
+    # Uniform Catmull-Rom coefficients are valid only for equally spaced knots.
+    # XFOIL cosine-spaced files need derivatives with respect to s, including
+    # full one-sided endpoint tangents; otherwise prescribed TE intervals can
+    # oscillate as a resampling point crosses an input knot.
+    function tangent(v,i)
+        i==1 && return (v[2]-v[1])/(s[2]-s[1])
+        i==n && return (v[n]-v[n-1])/(s[n]-s[n-1])
+        hl=s[i]-s[i-1];hr=s[i+1]-s[i]
+        (hr*(v[i]-v[i-1])/hl+hl*(v[i+1]-v[i])/hr)/(hl+hr)
+    end
+    h00=(1+2t)*(1-t)^2;h10=t*(1-t)^2;h01=t^2*(3-2t);h11=t^2*(t-1)
+    sample(v)=h00*v[k]+h10*h*tangent(v,k)+h01*v[k+1]+h11*h*tangent(v,k+1)
+    sample(px),sample(py)
 end
 
 # double-sided cosine clustering blended with uniform: xi in [0,1] -> t in [0,1], clustering both ends

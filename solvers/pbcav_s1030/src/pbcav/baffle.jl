@@ -271,6 +271,34 @@ function baffle_plan(b::CBlocks, spec::BaffleSpec)
         push!(plates, (plate=p, side=lab, column=i0, faces=K - 1, tip_row=K, h=hp, h_grid=H[K], s_grid=s[K], dev_grid=devg,
                        straightened=straight, snapped=snapped, disp_max=dmax, window=L, window_columns=nwin, nx=nx, ny=ny))
     end
+    # Match neighbouring row heights at the plate. A column-only straightening
+    # leaves the neighbouring centroids offset along a cambered foil's plate;
+    # as TE cells become thin this creates large boundary non-orthogonality.
+    # Moving interior nodes only along the plate normal aligns the adjacent
+    # row lines, with a smooth compact window. The section, base interfaces,
+    # plate line, exact tip, outer boundary and wall spacings remain checked.
+    if spec.snap === :exact
+        for q in plates
+            i0=q.column;K=q.tip_row;nx=q.nx;ny=q.ny
+            width=max(3q.h,0.02)
+            d=zeros(NI+1)
+            for i in i0-1:-1:1;d[i]=d[i+1]+hypot(X0[i+1,1]-X0[i,1],Y0[i+1,1]-Y0[i,1]);end
+            for i in i0+1:NI+1;d[i]=d[i-1]+hypot(X0[i,1]-X0[i-1,1],Y0[i,1]-Y0[i-1,1]);end
+            xroot=X0[i0,1];yroot=Y0[i0,1]
+            for j in 2:NJ
+                height=(X0[i0,j]+DX[i0,j]-xroot)*nx+(Y0[i0,j]+DY[i0,j]-yroot)*ny
+                fade=(height<=q.h ? 1.0 : 1-_smoothstep((height-q.h)/max(q.h,0.01)))*_smoothstep((j-2)/4)
+                fade>0 || continue
+                for i in 2:NI
+                    (i==i0 || d[i]>=width) && continue
+                    weight=0.5*(1+cos(pi*d[i]/width))*fade
+                    here=(X0[i,j]+DX[i,j]-X0[i,1])*nx+(Y0[i,j]+DY[i,j]-Y0[i,1])*ny
+                    delta=weight*(height-here)
+                    DX[i,j]+=delta*nx;DY[i,j]+=delta*ny
+                end
+            end
+        end
+    end
     moved = count(k -> DX[k] != 0 || DY[k] != 0, eachindex(DX))
     fcc = 0.0
     if moved == 0
@@ -404,7 +432,7 @@ RECEIPT and PB MESH REMAP).
 function baffle_receipt_line(plan::BafflePlan)
     s = plan.spec; c = plan.chord
     io = IOBuffer()
-    @printf(io, "PB BAFFLE: version=PBBaffleGurneyV2 spec=%s chord_le=%.9g,%.9g chord_dir=%.9g,%.9g plates=%d", spec_string(s),
+    @printf(io, "PB BAFFLE: version=PBBaffleGurneyV3 spec=%s chord_le=%.9g,%.9g chord_dir=%.9g,%.9g plates=%d", spec_string(s),
             c[1], c[2], c[3], c[4], length(plan.plates))
     for q in plan.plates
         @printf(io, " | plate%d=%s column=%d faces=%d h=%.9g h_grid=%.9g h_real=%.9g dev_grid_max=%.4f dev_real_max=%.3e straightened=%s snapped=%s disp_max=%.4e window=%.4e window_columns=%d tip=%.9g,%.9g theta_b_max=%.3f theta_b_row=%d d1=%.4e..%.4e tip_fraction=%.4f growth_kink=%.4f",

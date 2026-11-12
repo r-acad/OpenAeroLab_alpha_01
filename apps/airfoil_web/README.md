@@ -5,11 +5,23 @@ Run the [root setup](../../README.md#install-and-launch) first. Launch with
 The app uses the repository's solver `src/` and bundled `solvers/` sources. Output
 goes to the sibling private development directory (or `LUDWIG_PRIVATE_ROOT`).
 
-Project, Model, Mesh, Analysis, Results and Display use the shared Boxer-style
-menus. Menu choices select the parameter pane without changing the current result.
-Help explains the workflow; Display provides five contour palettes for numeric
-fields. Mac supports JXfoil and result viewing; CUDA backends require Windows
-or Linux with compatible NVIDIA hardware.
+The initial **Setup** pane keeps the main workflow together: open an XFOIL
+`.dat` airfoil, enter Reynolds number and angle of attack, optionally add a
+Gurney flap, then **Run analysis**. Low-speed 2D CFD is the default. Mesh,
+starting flow, turbulence and numerical settings use the recommended automatic
+configuration, with matching clean/flap settings. Explicit comparisons and
+other solvers are under **Setup → Solver and numerical settings**.
+
+The menus follow Project, Setup, Mesh, Results, Display, Validation and Help.
+Project manages studies; Mesh opens inspection; results actions share one saved
+job list. **Create mesh** is the optional preview in Geometry, while Run creates
+the mesh automatically. Resolution is selected once in Advanced setup for
+low-speed runs.
+
+The small **i** buttons open contextual help using the mouse or keyboard;
+controls also have hover tooltips. Help provides a low-speed quick start.
+Display controls contour palettes. Mac supports JXfoil and result viewing;
+CUDA backends require Windows or Linux with compatible NVIDIA hardware.
 
 The app includes JXfoil, compressible C and C+H meshes, the conservative
 Species path, low speed pressure based CFD, and LBM 3D. XFOIL executable runs
@@ -18,7 +30,7 @@ are bundled; they work offline in a fresh installation.
 
 ## Studies
 
-Choose **Model → Airfoil source → XFOIL coordinate file (.dat)** to open a local
+Choose **Setup → Airfoil and flow conditions → XFOIL coordinate file (.dat)** to open a local
 coordinate file with the system file picker. Plain or titled XFOIL contours and
 the two-surface count format are supported. Points are ordered from the trailing
 edge around the leading edge and back. Import normalizes the chord to one and
@@ -26,11 +38,40 @@ places the leading edge at the origin. Invalid rows are reported with their line
 number. Save the study to embed the coordinates; reopening needs no original
 file or network connection.
 
+Automatic topology retains the imported section: a finite trailing-edge gap
+uses native C+H and a closed edge uses sharp C. A low-speed Gurney flap requires
+finite trailing-edge coordinates. A closed-edge flap case is refused; provide
+the measured finite-edge section rather than adding an artificial gap.
+
+**Cancel run** requests a stop for the active job. The status stays Cancelling
+while the current operation finishes and saved fields are written, then becomes
+Cancelled. Completed points, recorded fields, checkpoints and logs remain
+available. Reopening a running or cancelling job reattaches its progress. The
+HTTP equivalent is `POST /api/jobs/{id}/cancel`; polling the normal job endpoint
+continues until `cancelled`.
+
+API clients may set `flow.lowspeed_initial_job_id` to a terminal low-speed job's
+UUID to offer its saved flow as a **checked initial guess** for the first angle.
+The server chooses the closest compatible saved point within 2.5 degrees and
+checks source geometry, mesh/baffle settings, Reynolds number, freestream
+turbulence and solver source. Only checkpoints confined to that job's generated
+results are accepted. Missing or incompatible states are refused; a worker's
+cold fallback is not accepted. Results record the source job and checkpoint hash.
+Pseudo-time and step count reset under the ordinary warm-start policy. This is
+separate from exact native `.pbrestart` continuation in the command-line driver.
+API revision 25 advertises this capability as `lowspeed_initial_flow.checked_job_seed`.
+
 Use **Project → New study / Open study / Save study / Save study as**. Open
 offers recent Airfoil studies and a native system file picker. Save reuses the
 opened filename; Save As chooses a different folder or name. Ctrl+S, Ctrl+Shift+S
 and Ctrl+O provide the corresponding shortcuts. Unsaved changes are marked `*`;
 the app offers Save, Discard or Cancel before replacing the current setup.
+
+API-only settings from a saved study are retained and listed as saved request
+overrides in Advanced setup. **Clear saved overrides** returns only these
+additional settings to automatic defaults for the next request. It keeps the
+current airfoil, visible flow conditions and flap controls, marks the study as
+changed, and leaves any running job untouched.
 
 An Airfoil `.ludwig-study` file contains the source coordinates, complete solver
 request, editable controls, current results tab and literature selection. UIUC
@@ -44,15 +85,52 @@ private `results/airfoil_runs`, outside disposable storage. Keep those folders
 and selected export directories to retain results.
 
 Outputs provides **Save field snapshots every, minutes** for the compressible
-solver and sharp-mesh pressure solver. Default: 10 real-time minutes; 0: disabled.
+solver and both sharp-C and C+H low-speed solvers. Default: 10 real-time minutes;
+0: disabled.
 This is independent of iteration history and does not change final-field saving.
 In **Results → Flow field**, use **Saved snapshot** to reopen any recorded frame.
-The fields are visualization snapshots, not restart files. Writes report their
+The recorded frames are visualization snapshots. Writes report their
 duration and reject insufficient disk space without announcing an empty file.
+
+Both low-speed workers also save final **VTU volume fields** (`flow_fields.vtu`)
+and a native **restart checkpoint** (`state_checkpoint.pbrestart`). Download
+them from **Flow field → Saved solver files** for the selected operating point.
+The native driver supports continuing a compatible
+checkpoint with `PB_RESTART`; it verifies source, mesh, physics and numerical
+settings before restoring the state. See the [native free-air driver guide](../../solvers/pbcav_s1030/tools/README_FREEAIR.md).
 
 ## Steady RANS acceleration
 
-The Solver panel offers **Steady solution method** for compressible CFD and
+The automatic low-speed steady path damps each nonlinear SST update with a
+factor of 0.5. This removes a diagnosed alternating turbulence iteration while
+retaining the same steady fixed point. Momentum and SST stopping limits remain
+1e-6 and 1e-7; nearly constant force coefficients alone do not pass the stop.
+The native reference driver retains its historical setting unless
+`PB_TURB_STEP_RELAX=0.5` is selected explicitly for a steady run.
+
+C+H runs use SIMPLEC preconditioner factor 0.95. A matched GPU continuation
+from the same NACA4412 state reduced linear work and rejected steps compared
+with 0.8 while preserving matched-time coefficients to roundoff. This is a
+measured convergence setting, not an aerodynamic validation. The advanced
+API key `lowspeed_cpl_au` permits controlled comparisons.
+
+Automatic clean and Gurney C+H runs use FGMRES restart 60 with at most 300
+iterations per linear solve. App sharp C and the native reference driver retain
+restart 30 and maximum 300. Matched frozen-system CPU and one-step GPU
+comparisons support the larger C+H subspace; each airfoil run still requires
+its own convergence assessment. The linear true-residual target, outer checks
+and strict steady limits remain unchanged. The restart uses more memory: at
+about 175,000 cells, the two Krylov basis arrays alone use about 485 MiB instead
+of 244 MiB.
+
+Advanced API keys `lowspeed_cpl_restart` (integer 1–120) and
+`lowspeed_cpl_maxit` (integer 1–10000) override these defaults. They are recorded
+in `input.toml` and the actual solver receipt, and retained as saved request
+overrides. API revision 26 advertises their bounds and per-route defaults in
+`lowspeed.krylov`; the current web client requires that revision for new runs.
+Exact native continuation requires matching settings and solver source.
+
+The Advanced setup pane offers **Steady solution method** for compressible CFD and
 **Try steady RANS acceleration (experimental)** for pressure/Species cases.
 Acceleration is off by default and does not appear for physical-time,
 phase-change water, panel, or LBM runs. The legacy case flow key is
@@ -111,19 +189,24 @@ Outputs and reports selects applicable VTK/native fields, images and CSV files,
 an export destination, HTML reports, Makie PNG/SVG/PDF charts, and LBM 3D PNG
 renders. A unique job folder preserves existing files. The display interval
 controls solver output in iterations. LBM follows the exact requested cadence;
-the pinned low-speed C+H path exposes its final field while history respects the
-interval. JXfoil and XFOIL publish results per completed operating point. The GUI
+both low-speed paths save periodic full fields by elapsed wall time and final
+fields when they stop, while history respects its own interval. JXfoil and
+XFOIL publish results per completed operating point. The GUI
 explains the selected backend's capabilities. Makie uses its own environment in
 `tools/postprocess`.
 
 The default C+H Standard mesh uses curvature aware leading edge spacing. Mesh
 quality and solver convergence are reported with each result.
 The sharp C mesh also concentrates surface columns near the leading edge in
-Standard, Fine, and Very Fine. A separate low speed `fine` study profile uses
-384 surface cells, 128 wall-normal cells, and a 7e-6 chord first wall spacing.
-It passes the PBCav reference mesh gates for NACA 0012; the app still reports
-the audit for every generated section. Grid independence and stall accuracy
-are not established by a mesh-quality pass.
+Standard, Fine, and Very Fine. The low-speed sharp Standard profile uses 384
+surface cells, 128 remapped wall-normal cells, and a 7e-6 chord first wall
+spacing. Automatic uses the recommended profile for the detected trailing
+edge. The low-speed native C+H Standard profile has about 175,000 cells for NACA
+0012/4412; Fine subdivides it once more, with four times as many cells. The
+native C+H route retains the same host mesh with and without a flap;
+flap-tip refinement is an explicit Advanced comparison. The app reports the
+audit for every generated section. A quality pass does not establish grid
+independence or stall accuracy.
 The pressure worker writes `rejection_history.csv` with the accepted step,
 time step, and cumulative rejection counts by reason. A checked warm start
 that changes incidence by at least 1.5 degrees begins at a small time step;

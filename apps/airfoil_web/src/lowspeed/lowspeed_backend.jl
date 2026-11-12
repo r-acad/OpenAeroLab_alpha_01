@@ -32,7 +32,7 @@ const LOWSPEED_SNAPSHOT_DEFAULT = LOWSPEED_PINS["s1030"].snapshot
 const LOWSPEED_COMMIT_PINNED = LOWSPEED_PINS["s1030"].commit
 """The merged head's W6b settings and the measured CPU launch mode, named explicitly in every low-speed point.
 The GPU override keeps its registered fixed launch mode."""
-const LOWSPEED_W6B_KNOBS = ("PB_CPL_AU"=>"0.8", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2", "PB_CPU_LAUNCH"=>"balanced")
+const LOWSPEED_W6B_KNOBS = ("PB_CPL_AU"=>"0.8", "PB_CPL_RESTART"=>"30", "PB_CPL_MAXIT"=>"300", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2", "PB_CPU_LAUNCH"=>"balanced", "PB_TURB_STEP_RELAX"=>"0.5")
 lowspeed_snapshot() = normpath(get(ENV, "AIRFOIL_LOWSPEED_SNAPSHOT", lowspeed_pin().snapshot))
 """The GPU option (opt-in request key lowspeed_gpu, 24 Oct 2026; the CPU stays the default): the snapshot's CUDA backend with
 W7's adopted speed settings for CUDA free air (PB_SPEED=auto: PB_SYNC=reads, PB_GRAPHS=on, PB_CPL_GS=cgs2,
@@ -46,6 +46,27 @@ function lowspeed_gpu(flow::AbstractDict)
     flow["lowspeed_gpu"] isa Bool || throw(ArgumentError("lowspeed_gpu must be boolean"))
     flow["lowspeed_gpu"]
 end
+
+"Advanced preconditioner and nonlinear SST controls, recorded explicitly when a study overrides them."
+function lowspeed_iteration_controls(flow::AbstractDict)
+    controls=Dict{String,String}()
+    for (request,knob,lo,hi) in (("lowspeed_turb_step_tol","PB_TURB_STEP_TOL",1e-12,1e-2),
+                               ("lowspeed_turb_step_relax","PB_TURB_STEP_RELAX",0.05,1.),
+                               ("lowspeed_cpl_au","PB_CPL_AU",0.05,1.))
+        haskey(flow,request) || continue
+        controls[knob]=string(_number(flow,request,0.;lo,hi))
+    end
+    haskey(flow,"lowspeed_turb_step_maxit") && (controls["PB_TURB_STEP_MAXIT"]=string(_integer(flow,"lowspeed_turb_step_maxit",20;lo=1,hi=500)))
+    for (request,knob,default,hi) in (("lowspeed_cpl_restart","PB_CPL_RESTART",30,120),
+                                      ("lowspeed_cpl_maxit","PB_CPL_MAXIT",300,10000))
+        haskey(flow,request) || continue
+        raw=flow[request]
+        (raw isa Bool || !(raw isa Real || raw isa AbstractString)) &&
+            throw(ArgumentError("$request must be an integer"))
+        controls[knob]=string(_integer(flow,request,default;lo=1,hi))
+    end
+    controls
+end
 "The hardware line of a point's log: the CPU threads, or the GPU after its lock."
 lowspeed_hardware(ls) = get(ls, "gpu", false) ?
     @sprintf("on the GPU (CUDA; PB_SPEED=auto, W7's adopted CUDA free-air settings; it queues for the shared GPU lock), %d CPU threads", LOWSPEED_THREADS) :
@@ -53,6 +74,8 @@ lowspeed_hardware(ls) = get(ls, "gpu", false) ?
 
 "Mesh presets: PB_MESH = n_foil,n_normal,dn1,growth,smooth,n_wake (sharp-edged free-air C-mesh, version 1's generator)."
 const LOWSPEED_MESHES = Dict(
+    "standard"=>(mesh="384,128,7e-6,1.18,80,96", le_ds=2e-4,
+              label="Standard: 384 foil cells, 128 remapped normal cells, 96 cells per wake leg; first wall spacing 7e-6 c"),
     "demo"=>(mesh="192,72,3e-5,1.20,80,64", le_ds=0.0,
               label="Demo (fast): 192 foil x 72 normal cells + 2 x 64 wake, 23,040 cells, first wall spacing 3e-5 c"),
     "fine"=>(mesh="384,128,7e-6,1.18,80,96", le_ds=2e-4,
@@ -60,8 +83,9 @@ const LOWSPEED_MESHES = Dict(
     # API-only smoke mesh for the app's own tests; coarse wall (y+ >> 1 at high Re): not a result mesh.
     "smoke"=>(mesh="64,40,1e-3,1.30,40,16", le_ds=0.0,
                label="Smoke test only: 64 foil x 40 normal cells + 2 x 16 wake, 3,840 cells, first wall spacing 1e-3 c"))
-const LOWSPEED_THREADS = parse(Int, get(ENV, "AIRFOIL_LOWSPEED_THREADS", "8"))   # 8; a lower value only on request (shared machine)
-const LOWSPEED_DEFAULTS = Dict{String,Any}("lowspeed_resolution"=>"demo", "lowspeed_tu"=>0.01, "lowspeed_mut_ratio"=>10.0,
+const LOWSPEED_THREADS = parse(Int, get(ENV, "AIRFOIL_LOWSPEED_THREADS", string(max(1,min(6,Sys.CPU_THREADS)))))
+LOWSPEED_THREADS>=1 || throw(ArgumentError("AIRFOIL_LOWSPEED_THREADS must be positive"))
+const LOWSPEED_DEFAULTS = Dict{String,Any}("lowspeed_resolution"=>"standard", "lowspeed_tu"=>0.01, "lowspeed_mut_ratio"=>10.0,
     "lowspeed_wall_cap_s"=>3600.0, "lowspeed_max_steps"=>2000, "lowspeed_live_every"=>25,
     "lowspeed_steady_tol"=>1e-6, "lowspeed_turb_steady_tol"=>1e-7)
 
@@ -74,7 +98,7 @@ function lowspeed_configuration(flow::AbstractDict)
         haskey(flow, key) && throw(ArgumentError("$key applies to the low-speed CFD's C+H path only (a Gurney flap, or lowspeed_topology = ch_native)"))
     end
     res = String(_get(flow, "lowspeed_resolution", LOWSPEED_DEFAULTS["lowspeed_resolution"]))
-    haskey(LOWSPEED_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be demo or fine (or smoke for tests)"))
+    haskey(LOWSPEED_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be standard, fine or demo (or smoke for tests)"))
     re = _number(flow, "reynolds", 3e6; lo=1e4, hi=1e8)
     tu = _number(flow, "lowspeed_tu", LOWSPEED_DEFAULTS["lowspeed_tu"]; lo=1e-6, hi=0.19)
     mr = _number(flow, "lowspeed_mut_ratio", LOWSPEED_DEFAULTS["lowspeed_mut_ratio"]; lo=1e-4, hi=1e4)
@@ -91,6 +115,7 @@ function lowspeed_configuration(flow::AbstractDict)
         "mesh_label"=>LOWSPEED_MESHES[res].label,
         "reynolds"=>re, "tu"=>tu, "mut_ratio"=>mr, "steady_tol"=>steady_tol, "turb_steady_tol"=>turb_steady_tol,
         "wall_cap"=>cap, "max_steps"=>ms, "live_every"=>live, "gpu"=>lowspeed_gpu(flow),
+        "iteration_controls"=>lowspeed_iteration_controls(flow),
         "rans_acceleration"=>accel.enabled, "rans_acceleration_method"=>accel.method, "pseudo_dt"=>accel.pseudo_dt)
 end
 
@@ -105,6 +130,10 @@ lowspeed_capabilities() = Dict{String,Any}("label"=>"Low-speed CFD (pressure-bas
     "gpu_option"=>Dict{String,Any}("request_key"=>"lowspeed_gpu", "default"=>false, "knobs"=>Dict(LOWSPEED_GPU_KNOBS),
         "lock"=>AirfoilGPULock.LOCK_DIR, "note"=>"opt-in; the worker waits for the shared GPU lock and never breaks it"),
     "mach"=>"ignored (incompressible)", "resolutions"=>Dict(k=>v.label for (k, v) in LOWSPEED_MESHES),
+    "krylov"=>Dict{String,Any}("request_keys"=>["lowspeed_cpl_restart","lowspeed_cpl_maxit"],
+        "restart_bounds"=>[1,120], "maxit_bounds"=>[1,10000], "true_residual_required"=>true,
+        "defaults"=>Dict(route=>Dict("restart"=>restart,"maxit"=>300) for (route,restart) in
+            (("native",30),("sharp",30),("ch_native",60)))),
     "defaults"=>LOWSPEED_DEFAULTS)
 
 function _lowspeed_snapshot_mismatches(snap::AbstractString, manifest::AbstractDict; vendored::Bool)
@@ -243,7 +272,8 @@ function _lowspeed_input(snap, head, foil, ls, alpha, dir; mesh_only::Bool=false
         "snapshot_interval_seconds"=>get(ls,"snapshot_interval_seconds",600.),
         "knobs"=>Dict{String,Any}(k=>v for (k, v) in LOWSPEED_W6B_KNOBS))
     get(ls, "gpu", false) && merge!(cfg["knobs"], Dict{String,Any}(LOWSPEED_GPU_KNOBS))   # the GPU (opt-in); absent: unchanged
-    if ls["resolution"] == "fine"
+    merge!(cfg["knobs"],get(ls,"iteration_controls",Dict{String,String}()))
+    if ls["resolution"] in ("standard","fine")
         merge!(cfg["knobs"], Dict{String,Any}(
             "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_LAW"=>"128,1.12,5"))
     end
@@ -259,6 +289,7 @@ _lowspeed_cmd(snap, cfg_path) = Cmd(`$(joinpath(Sys.BINDIR, Base.julia_exename()
 """Create mesh for the low-speed backend: the worker builds the run's own mesh (PBCav's generator call and audit) and stops
 before marching; about a minute (Julia start and mesh generation). Returns (mesh, metadata) like preview_mesh."""
 function preview_lowspeed_mesh(path::AbstractString, flow::AbstractDict, outdir::AbstractString; source::AbstractDict=Dict())
+    flow=_lowspeed_resolve_flow(source,path,flow)
     _lowspeed_ch_selected(flow) && return preview_lowspeed_ch_mesh(path, flow, outdir; source)   # Gurney flap / native base: C+H
     snap, head = _lowspeed_snapshot_check()
     ls = lowspeed_configuration(flow)
@@ -280,15 +311,18 @@ function preview_lowspeed_mesh(path::AbstractString, flow::AbstractDict, outdir:
     (mesh=mesh, metadata=metadata)
 end
 
-function _lowspeed_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing)
-    _lowspeed_ch_selected(flow) && return _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir)   # C+H path
+function _lowspeed_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing; warm_required::Bool=false)
+    flow=_lowspeed_resolve_flow(_get(case,"airfoil",Dict()),path,flow)
+    _lowspeed_ch_selected(flow) && return _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir; warm_required)   # C+H path
     snap, head = _lowspeed_snapshot_check()
     ls = lowspeed_configuration(flow)
     foil, geometry = _lowspeed_geometry(case, path, dir, snap)
     isempty(geometry["change"]) || _deliver_log(log, geometry["change"] * ".")
     warm = warmdir === nothing ? nothing : joinpath(warmdir, "state_checkpoint.jls")
+    warm_required && (warm===nothing || !isfile(warm)) && throw(ArgumentError("The required saved initial-flow checkpoint is missing"))
     cfg = _lowspeed_input(snap, head, foil, ls, alpha, dir;
                           warm_start=warm !== nothing && isfile(warm) ? warm : nothing)
+    warm_required && (cfg["require_warm_start"]=true)
     cfg_path = joinpath(dir, "input.toml")
     open(io -> TOML.print(io, cfg), cfg_path, "w")
     _deliver_log(log, @sprintf("Starting low-speed CFD (PBCav %s, pressure-based incompressible, fully turbulent SST, Tu %.3g%%, mu_t/mu %.3g) %s; %s; wall cap %.0f s.",
@@ -331,7 +365,7 @@ function _lowspeed_convergence_assessment(meta, raw; ramp_time=0.)
         config=RANSConvergence.Config(drag_min=-1e-5,drag_max=20.,lift_max=20.),
         solver_steady_passed=outcome=="STEADY" && isempty(missing_limits),
         physical_state_valid=all(key->isfinite(number(get(meta,key,NaN))),("cl","cd","cm")),
-        failed=!(outcome in ("STEADY","REACHED","INCOMPLETE")),
+        failed=!(outcome in ("STEADY","REACHED","INCOMPLETE","STOPPED")),
         scope=(laminar ? "PBCav momentum steady residual" : "PBCav momentum and SST steady residuals") *
             ", circulation defect and signed mass balance; mesh independence and experimental validation are separate")
     report["solver_outcome"]=outcome
@@ -354,7 +388,8 @@ function _lowspeed_convergence_message(meta, assessment)
     titles=Dict("converged"=>"Converged", "loads_stable_flow_unsettled"=>"Loads changed little in the recent window; flow not yet converged",
         "incomplete"=>"Analysis incomplete", "failed"=>"Analysis failed")
     outcome=String(get(meta,"outcome","UNKNOWN")); steps=get(meta,"steps",0)
-    ending=outcome=="INCOMPLETE" ? "Wall-time limit reached at step $steps." :
+    ending=outcome=="STOPPED" ? "Stopped on request at step $steps; saved fields and checkpoint are retained." :
+        outcome=="INCOMPLETE" ? "Wall-time limit reached at step $steps." :
         outcome=="REACHED" ? "Requested iteration/time limit reached at step $steps." : "Solver outcome $outcome at step $steps."
     refusal=String(get(meta,"refusal",""));isempty(refusal) || (ending*=" "*refusal)
     stability_caveat=assessment["status"]=="loads_stable_flow_unsettled" ?
@@ -417,12 +452,16 @@ function _collect_lowspeed_output(dir, alpha, geometry, ls, elapsed)
         "geometry"=>geometry, "mesh"=>mesh, "cl"=>fnum(meta["cl"]), "cd"=>fnum(meta["cd"]), "cm"=>fnum(meta["cm"]),
         "iteration_history"=>history, "cp"=>cp, "fields"=>fields, "notes"=>notes,
         "artifacts"=>Dict("cp_csv"=>joinpath(dir, "surface_cp.csv"), "surface_csv"=>joinpath(dir, "surface.csv"),
+            "native_checkpoint"=>isfile(joinpath(dir,"state_checkpoint.pbrestart")) ? joinpath(dir,"state_checkpoint.pbrestart") : nothing,
+            "vtk_fields"=>isfile(joinpath(dir,"flow_fields.vtu")) ? joinpath(dir,"flow_fields.vtu") : nothing,
+            "rejection_history_csv"=>joinpath(dir,"rejection_history.csv"),
             "loads_history_csv"=>joinpath(dir, "loads_history.csv"), "mesh_full"=>joinpath(dir, "mesh_full.msgpack"),
             "mesh_preview"=>joinpath(dir, "mesh_preview.msgpack"), "field_csv"=>joinpath(dir, "field_samples.csv"),
             "field_full"=>joinpath(dir, "field_full.msgpack"), "result_toml"=>joinpath(dir, "result.toml"),
             "state_checkpoint"=>isfile(joinpath(dir,"state_checkpoint.jls")) ? joinpath(dir,"state_checkpoint.jls") : nothing,
             "input_toml"=>joinpath(dir, "input.toml"), "log"=>joinpath(dir, "solver.log")),
         "diagnostics"=>Dict{String,Any}("solver"=>meta["solver"], "commit"=>meta["commit"], "snapshot"=>meta["snapshot"],
+            "source_sha256"=>get(meta,"source_sha256",""),
             "solver_outcome"=>outcome, "steps"=>meta["steps"], "max_steps"=>meta["max_steps"], "wall_cap_s"=>fnum(meta["wall_cap"]),
             "warm_start_source"=>get(meta,"warm_start_source",""),
             "march_wall_seconds"=>fnum(meta["march_wall_seconds"]), "point_wall_seconds"=>elapsed, "threads"=>meta["threads"],

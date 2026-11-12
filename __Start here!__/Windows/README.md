@@ -38,7 +38,7 @@ disposable. If endpoint protection blocks execution, ask IT for an approved Juli
 installation rather than disabling protection. The advanced guide includes a
 direct Julia setup command for machines where PowerShell scripts are restricted.
 
-A 64-bit NVIDIA driver compatible with CUDA 13.0 and the
+A 64-bit NVIDIA driver compatible with CUDA 12.9 and the
 [Microsoft Visual C++ x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe)
 are needed for GPU solves. Setup installs the signed Microsoft runtime when missing
 (Windows may ask for administrator authorization); install the NVIDIA driver

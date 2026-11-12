@@ -120,7 +120,7 @@ end
 "The condition kinds that are no-slip walls for the turbulence model (k = 0, omega = omega_wall, mu_t = 0)."
 @inline is_wall_bc(k::UInt8) = k == UInt8(BC_NOSLIP) || k == UInt8(BC_MOVING_WALL)
 "The velocity kinds whose inflow carries the inflow turbulence (inlet, far field)."
-@inline is_inflow_bc(k::UInt8) = k == UInt8(BC_INLET) || k == UInt8(BC_FARFIELD)
+@inline is_inflow_bc(k::UInt8) = k == UInt8(BC_INLET) || k == UInt8(BC_FARFIELD) || k == UInt8(BC_FREESTREAM_OUTLET)
 
 @kernel function _k_turb_wallomega!(wwall, d1b, bkind, bSx, bSy, bSmag, bdx, bdy, nu::Float64, mode::Int32)
     b = @index(Global)
@@ -599,7 +599,8 @@ once past its first budget when it misses its goal, counted in w.turb.retries; `
 w.turb: cells and the added rho_l x V, per step), and rk = rho_l k, rw = rho_l omega written to level 1. Returns `converged`,
 `finite`, the sweeps and final relative residuals, this solve's floored cells and `retried` (k, omega).
 """
-function komega_solve!(w, m::PBMesh, st::PBState, bc, cfg; assemble::Bool=true)
+function komega_solve!(w, m::PBMesh, st::PBState, bc, cfg; assemble::Bool=true, relax::Real=1.0)
+    0 < relax <= 1 || throw(ArgumentError("komega_solve!: relaxation must lie in (0,1]"))
     be = cfg.backend; T = w.turb; rho = cfg.rho_l
     assemble && assemble_komega!(w, m, st, bc, cfg)
     sk, ck, rk, qk = _kw_line_solve!(T.k, T.ksys, T.fjk, T.fik, m, T, T.kin, cfg)
@@ -608,6 +609,10 @@ function komega_solve!(w, m::PBMesh, st::PBState, bc, cfg; assemble::Bool=true)
     fin = isfinite(pb_maxabs(T.k; backend=be)) && isfinite(pb_maxabs(T.w; backend=be))
     nk = 0; nw = 0
     if fin
+        if relax < 1
+            _launch!(_k_kw_relax!,be,m.nc,T.k,T.w,lev(st.rk,1),lev(st.rw,1),rho,Float64(relax))
+            pb_sync(be)
+        end
         for (x, xmin, isk) in ((T.k, T.kmin, true), (T.w, T.wmin, false))
             _launch!(_k_floor!, be, m.nc, x, T.fl, xmin, rho, m.vol)
             add = pb_sum(T.fl; backend=be)
@@ -623,6 +628,14 @@ function komega_solve!(w, m::PBMesh, st::PBState, bc, cfg; assemble::Bool=true)
         pb_sync(be)
     end
     (converged=ck && cw, finite=fin, sweeps=(sk, sw), res=(rk, rw), floored=(nk, nw), retried=(qk, qw))
+end
+
+@kernel function _k_kw_relax!(k,w,rk,rw,rho::Float64,alpha::Float64)
+    i=@index(Global)
+    @inbounds begin
+        k[i]=(1-alpha)*rk[i]/rho+alpha*k[i]
+        w[i]=(1-alpha)*rw[i]/rho+alpha*w[i]
+    end
 end
 
 "Reset the step's turbulence counters (floors, sweeps, retries); pimple_step! calls it at the start of every attempt."
@@ -707,7 +720,7 @@ function _wall_flux_assembled(st::PBState, m::PBMesh, bc, cfg, L::Integer, work)
     u = lev(st.ux, L); v = lev(st.uy, L); Fb = lev(st.Fb, L)
     ubf, vbf = z(max(nb, 1)), z(max(nb, 1)); gux, guy, gvx, gvy = z(nc), z(nc), z(nc), z(nc)
     bfx, bfy, bdg = z(max(nb, 1)), z(max(nb, 1)), z(max(nb, 1))
-    _launch!(_k_bvel!, be, nb, ubf, vbf, u, v, bc.kind, bc.ub, bc.vb, m.bown, m.bSx, m.bSy, m.bSmag)
+    _launch!(_k_bvel!, be, nb, ubf, vbf, u, v, bc.kind, bc.ub, bc.vb, m.bown, m.bSx, m.bSy, m.bSmag, Fb)
     for (g1, g2, phi, phib) in ((gux, guy, u, ubf), (gvx, gvy, v, vbf))
         _launch!(_k_lsq_grad!, be, nc, g1, g2, phi, phib, G.u11, G.u12, G.u22, m.cface, m.own, m.nei, m.dx, m.dy,
                  m.bdx, m.bdy, bc.kind, Int32(m.nf), Int32(0), Int32(0), Int32(0))

@@ -170,6 +170,7 @@ Base.@kwdef struct PBConfig{M<:MMSField,B}
     turb_nonorth_split::Bool = true
     turb_step_tol::Float64 = Inf
     turb_step_maxit::Int = 20
+    turb_step_relax::Float64 = 1.0
     turb_outer_ramp::Int = 0
     turb_outer_tol::Float64 = 0.0
     turb_mut::Symbol = :frozen
@@ -480,7 +481,7 @@ const SST_DENSITY_NEUTRAL_FIELDS = (:rho_l, :mu, :dt, :lambda_u, :n_outer_max, :
     :mg_every_steps, :mg_diag_delta, :cpl_eta, :cpl_abs, :cpl_restart, :cpl_maxit, :cpl_au,
     :cpl_sweeps, :cpl_vcycles, :cpl_newton, :cpl_reproject, :sst_tu,
     :sst_mut_ratio, :turb_tol, :turb_lin_rtol, :turb_sweeps_max, :turb_nonorth,
-    :turb_nonorth_split, :turb_step_tol, :turb_step_maxit, :turb_outer_ramp, :turb_outer_tol, :turb_omega_bound, :k_min, :w_min,
+    :turb_nonorth_split, :turb_step_tol, :turb_step_maxit, :turb_step_relax, :turb_outer_ramp, :turb_outer_tol, :turb_omega_bound, :k_min, :w_min,
     :speed_dev,                   # W7 (the third review's G1): an acknowledgement flag, no arithmetic
     :domain)                      # W7 (the merge review's M2): the gate's case-class label, no arithmetic
 # (W6, 22 Oct 2026: turb_mut and turb_omega_nonorth are enumerated fields, classified by value in SST_DENSITY_ADMITTED_VALUES
@@ -550,8 +551,8 @@ function check_turbulence_config(cfg)
         throw(ArgumentError("PBConfig.turb_omega_bound must lie in [0, 1) (0: no bound; got $(cfg.turb_omega_bound))"))
     (cfg.turb_outer_tol >= 0 && isfinite(cfg.turb_outer_tol)) ||
         throw(ArgumentError("PBConfig.turb_outer_tol must be >= 0 and finite (0: turb_tol; got $(cfg.turb_outer_tol))"))
-    (cfg.turb_step_tol > 0 && !isnan(cfg.turb_step_tol) && cfg.turb_step_maxit >= 1 && cfg.turb_outer_ramp >= 0) ||
-        throw(ArgumentError("PBConfig: turb_step_tol > 0 (Inf: one update per step), turb_step_maxit >= 1 and " *
+    (cfg.turb_step_tol > 0 && !isnan(cfg.turb_step_tol) && cfg.turb_step_maxit >= 1 && 0 < cfg.turb_step_relax <= 1 && cfg.turb_outer_ramp >= 0) ||
+        throw(ArgumentError("PBConfig: turb_step_tol > 0 (Inf: one update per step), turb_step_maxit >= 1, 0 < turb_step_relax <= 1 and " *
                             "turb_outer_ramp >= 0 required"))
     why = sst_density_refusals(cfg)
     isempty(why) || throw(ArgumentError("PBConfig.turbulence = :sst is refused: it requires a uniform density rho = rho_l " *
@@ -1101,14 +1102,18 @@ pbcav_march!(st::PBState, m::PBMesh, bc, cfg::PBConfig; kw...) =
     with_speed_modes(() -> _pbcav_march!(st, m, bc, cfg; kw...), cfg)   # W7: the modes held for the march, restored after
 function _pbcav_march!(st::PBState, m::PBMesh, bc, cfg::PBConfig; t_end::Real=Inf, max_steps::Integer=typemax(Int),
                        steady_tol::Real=0.0, work=nothing, ledger::PBLedger=PBLedger(), on_step=nothing,
-                       max_halvings::Integer=10, stop=nothing, steady_ok=nothing, turb_steady_tol=nothing, pre_step=nothing)
+                       max_halvings::Integer=10, stop=nothing, steady_ok=nothing, turb_steady_tol=nothing, pre_step=nothing,
+                       control=nothing)
     be = cfg.backend
     sst_steady = cfg.turbulence === :sst && steady_tol > 0
     sst_steady && check_turb_steady_tol(cfg, turb_steady_tol)
     w = work === nothing ? pbwork(m, bc, cfg) : work
     ledger.nsteps == 0 && ledger_init!(ledger, m, st, w, cfg)
     st.dt = st.dt > 0 ? min(st.dt, cfg.dt) : cfg.dt
-    hist = NamedTuple[]; streak = 0; nrej = 0; nstall = 0; nacc = 0; tally = Dict{Symbol,Int}()
+    hist = NamedTuple[]; streak = control === nothing ? 0 : Int(get(control,"streak",0))
+    nrej = control === nothing ? 0 : Int(get(control,"nrej",0)); nstall = control === nothing ? 0 : Int(get(control,"nstall",0))
+    nacc = 0; tally = control === nothing ? Dict{Symbol,Int}() : Dict(Symbol(k)=>Int(v) for (k,v) in get(control,"tally",Dict()))
+    save_control() = control === nothing ? nothing : merge!(control,Dict("streak"=>streak,"nrej"=>nrej,"nstall"=>nstall,"tally"=>Dict(string(k)=>v for (k,v) in tally)))
     while (!isfinite(t_end) || st.t < t_end - 1e-12*max(1.0, abs(t_end))) && nacc < max_steps
         isfinite(t_end) && (st.dt = min(st.dt, t_end - st.t))
         pre_step === nothing || pre_step(st)        # the attempt's boundary values (freeair.jl's ramp start); none by default
@@ -1128,6 +1133,7 @@ function _pbcav_march!(st::PBState, m::PBMesh, bc, cfg::PBConfig; t_end::Real=In
                                          "(max_halvings $max_halvings; reasons $(tally); last $reason, stalled residual $(rej.stalled)); " *
                                          rejection_text(rej, cfg))
             st.dt /= 2
+            save_control()
             stop !== nothing && stop(st) && break
             continue
         end
@@ -1145,6 +1151,7 @@ function _pbcav_march!(st::PBState, m::PBMesh, bc, cfg::PBConfig; t_end::Real=In
         on_step === nothing || on_step(st, rec, ledger)
         streak += 1
         streak >= cfg.regrow_after && st.dt < cfg.dt && (st.dt = min(cfg.dt, st.dt*cfg.regrow_factor))
+        save_control()
         steady_tol > 0 && steady <= steady_tol && tsteady && (steady_ok === nothing || steady_ok(st)) && break
         stop !== nothing && stop(st) && break
     end
@@ -1179,13 +1186,17 @@ the segregated loop's final re-check failures :momentum_final, :theta_final, :bo
 function pbcav_run!(st::PBState, m::PBMesh, bc, cfg::PBConfig; wall_cap::Real, t_end::Real=Inf, steady_tol::Real=0.0,
                     max_steps::Integer=typemax(Int), segment::Real=600.0, work=nothing, ledger::PBLedger=PBLedger(),
                     on_step=nothing, max_halvings::Integer=10, clock=time, steady_ok=nothing, turb_steady_tol=nothing,
-                    pre_step=nothing)
+                    pre_step=nothing, control=nothing, stop_requested=nothing)
     (wall_cap > 0 && isfinite(wall_cap)) || throw(ArgumentError("pbcav_run!: a registered wall cap (> 0 s) is required"))
     cfg.turbulence === :sst && steady_tol > 0 && check_turb_steady_tol(cfg, turb_steady_tol)
     seg = min(Float64(segment), 600.0, 0.01*wall_cap)
     rej0 = ledger.last_rejection
-    t0 = clock(); nextcheck = Ref(t0 + seg); capped = Ref(false); n0 = st.nstep; last_steady = Ref(NaN)
+    t0 = clock(); nextcheck = Ref(t0 + seg); capped = Ref(false); requested = Ref(false); n0 = st.nstep; last_steady = Ref(NaN)
     function stop(s)
+        if stop_requested!==nothing && stop_requested(s)
+            requested[]=true
+            return true
+        end
         tn = clock()
         tn < nextcheck[] && return false
         while nextcheck[] <= tn; nextcheck[] += seg; end
@@ -1199,8 +1210,10 @@ function pbcav_run!(st::PBState, m::PBMesh, bc, cfg::PBConfig; wall_cap::Real, t
     hist = NamedTuple[]; refusal = ""; mgref = false
     outcome = try
         _, _, hist = pbcav_march!(st, m, bc, cfg; t_end, max_steps, steady_tol, work, ledger, on_step=cb, max_halvings, stop,
-                                  steady_ok, turb_steady_tol, pre_step)
-        if capped[]
+                                  steady_ok, turb_steady_tol, pre_step, control)
+        if requested[]
+            :STOPPED
+        elseif capped[]
             :INCOMPLETE
         elseif steady_tol > 0 && last_steady[] <= steady_tol && last_turb[] && (steady_ok === nothing || steady_ok(st))
             :STEADY

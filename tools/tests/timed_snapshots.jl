@@ -64,7 +64,10 @@ end
     end
 end
 
-include(joinpath(REPOSITORY,"apps","airfoil_web","src","server.jl"))
+const APP_TEST_PRIVATE=mktempdir(SCRATCH)
+withenv("LUDWIG_PRIVATE_ROOT"=>APP_TEST_PRIVATE) do
+    include(joinpath(REPOSITORY,"apps","airfoil_web","src","server.jl"))
+end
 const A=AirfoilWeb
 @testset "Backend preferences and persistent storage" begin
     @test A._output_preferences(Dict())["snapshot_interval_minutes"]==10
@@ -79,8 +82,25 @@ const A=AirfoilWeb
     @test case["flow"]["snapshot_interval_seconds"]==150.
     @test case["flow"]["cfd_history_stride"]==100
     @test !haskey(case["flow"],"lowspeed_live_every")
-    @test !occursin("TEMP_DELETEABLE",A.RUN_DIR)
-    @test occursin("TEMP_DELETEABLE",A.PREVIEW_DIR)
+    @test relpath(A.RUN_DIR,A.PRIVATE_ROOT)==joinpath("results","airfoil_runs")
+    @test startswith(relpath(A.PREVIEW_DIR,A.PRIVATE_ROOT),"TEMP_DELETEABLE")
     cfg=A.CFDBackend.lowspeed_configuration(Dict("reynolds"=>6e6,"snapshot_interval_seconds"=>7.))
     @test cfg["snapshot_interval_seconds"]==7.
+end
+
+@testset "Native checkpoints follow numeric export preferences and download as binary" begin
+    settings=A._output_preferences(Dict())
+    @test A._selected_export("state_checkpoint.pbrestart",settings)
+    @test A._selected_export("STATE_CHECKPOINT.PBRESTART",settings)
+    @test !A._selected_export("state_checkpoint.pbrestart",merge(settings,Dict("numeric_slices"=>false)))
+    @test A._output_capabilities()["lowspeed"]["volume_vtk"]===true
+    id=string(A.uuid4());dir=A._safe_job_dir(id);mkpath(dir)
+    bytes=Vector{UInt8}(codeunits("PBRestart/1 test download\n"))
+    write(joinpath(dir,"state_checkpoint.pbrestart"),bytes)
+    response=A.app_handler(A.HTTP.Request("GET","/api/jobs/$id/files/state_checkpoint.pbrestart"))
+    @test response.status==200
+    @test A.HTTP.header(response,"Content-Type")=="application/octet-stream"
+    @test response.body==bytes
+    @test A._asset_response(id,"../outside.pbrestart").status==403
+    @test A._asset_response(id,"missing.pbrestart").status==404
 end

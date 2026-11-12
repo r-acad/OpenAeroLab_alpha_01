@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="/static/styles/studies.css">
   <link rel="stylesheet" href="/static/styles/plots.css">
   <script src="/common-static/workbench.js" defer></script>
+  <script src="/static/scripts/workflow_help.js" defer></script>
 </head>
 <body data-workbench="airfoil">
   <a class="skip-link" href="#results">Skip to results</a>
@@ -34,7 +35,7 @@
       <div class="header-meta">
         <div id="operation-feedback" class="operation-feedback hidden" role="status" aria-live="polite"><span class="operation-spinner" aria-hidden="true"></span><span id="operation-label">Working…</span><span class="operation-track" aria-hidden="true"></span></div>
         <span id="server-state" class="status-pill"><i></i> Connecting</span>
-        <label class="header-control">Wire
+        <label class="header-control hidden" hidden>Wire
           <select id="transport"><option value="msgpack">MessagePack</option><option value="bson">Binary JSON</option></select>
         </label>
         <label class="header-control">Theme
@@ -43,17 +44,23 @@
       </div>
     </header>
 
-    <nav class="menu-bar panel" aria-label="Airfoil Lab menus"><details class="top-menu" id="menu-project"><summary>Project</summary><div class="menu-popover"><button type="button" id="study-new" title="Start a new study with default setup">New study</button><button type="button" id="study-open" title="Recent studies or the native file dialog (Ctrl+O)">Open study...</button><button type="button" id="study-save" title="Save back to the opened file (Ctrl+S)">Save study</button><button type="button" id="study-save-as" title="Choose another folder or filename (Ctrl+Shift+S)">Save study as...</button><button type="button" data-airfoil-parameters="model" data-focus-control="source-kind">Choose airfoil</button><button type="button" id="open-saved-airfoil">Open saved results…</button><button type="button" data-command="download-result">Save result JSON</button><a href="/">All workbenches</a></div></details><details class="top-menu" id="menu-model"><summary>Model</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="model" data-focus-control="source-kind">Airfoil source and shape</button><button type="button" data-open-tab="geometry">Geometry view</button></div></details><details class="top-menu" id="menu-mesh"><summary>Mesh</summary><div class="menu-popover"><button type="button" data-open-tab="geometry">Topology and resolution</button><button type="button" data-command="create-mesh">Create mesh</button><button type="button" data-command="refine-mesh">Refine mesh</button></div></details><details class="top-menu" id="menu-validation"><summary>Validation</summary><div class="menu-popover"><button type="button" data-validation="rae2822-case9">RAE 2822 · AGARD Case 9</button><button type="button" data-validation="oat15a-2.5">ONERA OAT15A · DPW steady</button><button type="button" data-validation="naca0012-stall">NACA 0012 · NASA stall polar</button><small>Loads the published flow conditions and reference data. Numerical convergence is assessed separately.</small></div></details><details class="top-menu" id="menu-analysis"><summary>Analysis</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="flow" data-focus-control="alpha">Flow conditions</button><button type="button" data-airfoil-parameters="solver">Solver settings</button><button type="button" data-airfoil-parameters="sweep">Alpha sweep</button><button type="button" data-airfoil-parameters="outputs">Outputs and reports</button><div class="menu-section"><h2>Solve</h2><button type="button" data-command="run-button">Run analysis</button></div></div></details><details class="top-menu" id="menu-results"><summary>Results</summary><div class="menu-popover"><button type="button" id="study-load-results" disabled title="Open the results linked by this study without changing its setup">Load study results</button><button type="button" id="literature-menu" class="hidden">Published reference distributions</button><button type="button" data-open-tab="results">Surface quantities</button><button type="button" data-open-tab="field">Flow field</button><button type="button" data-open-tab="polar">Polar</button><button type="button" data-open-tab="diagnostics">Convergence and diagnostics</button><button type="button" data-open-tab="log">Run log</button><button type="button" data-open-tab="campaign">Campaign</button></div></details><details class="top-menu" id="menu-view"><summary>Display</summary><div class="menu-popover"><button type="button" data-open-tab="geometry">Geometry and grid</button><button type="button" data-open-tab="field">Flow field</button><div class="menu-section"><h2>Colour scale</h2><label class="field"><span>Contour palette</span><select id="results-palette" title="Colour scale for numeric surface and plane fields. Existing PNG files retain their saved colours."></select><small>Applies to numeric fields; saved images keep their original colours.</small></label></div></div></details><details class="top-menu" id="menu-help"><summary>Help</summary><div class="menu-popover"><button type="button" data-workflow-help>Quick start and workflow</button><a href="/solvers">Solver methods and maturity</a></div></details></nav>
+<nav class="menu-bar panel" aria-label="Airfoil Lab menus">
+  <details class="top-menu" id="menu-project"><summary>Project</summary><div class="menu-popover"><button type="button" id="study-new" title="Start a new study">New study</button><button type="button" id="study-open" title="Open a study (Ctrl+O)">Open study...</button><button type="button" id="study-save" title="Save study (Ctrl+S)">Save study</button><button type="button" id="study-save-as" title="Choose a folder and name (Ctrl+Shift+S)">Save study as...</button><a href="/">All workbenches</a></div></details>
+  <details class="top-menu" id="menu-model"><summary>Setup</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="model" data-focus-control="dat-file">Airfoil and flow conditions</button><button type="button" data-airfoil-parameters="sweep" data-focus-control="sweep-enabled">Multiple angles</button><div class="menu-section"><h2>Advanced</h2><button type="button" data-airfoil-parameters="solver" data-focus-control="backend">Solver and numerical settings</button><button type="button" data-airfoil-parameters="outputs">Saved outputs and reports</button><a href="/solvers">Solver methods and maturity</a></div></div></details>
+  <details class="top-menu" id="menu-mesh"><summary>Mesh</summary><div class="menu-popover"><button type="button" data-open-tab="geometry">Inspect airfoil and mesh</button><small>The solver creates its mesh when you run. Use Create mesh in Geometry to inspect it first.</small></div></details>
+  <details class="top-menu" id="menu-results"><summary>Results</summary><div class="menu-popover"><button type="button" id="open-saved-airfoil">Open saved job…</button><button type="button" id="study-load-results" disabled title="Open results linked by this study">Load study results</button><button type="button" id="literature-menu" class="hidden">Published reference distributions</button><button type="button" data-open-tab="results">Surface quantities</button><button type="button" data-open-tab="field">Flow field</button><button type="button" data-open-tab="polar">Polar</button><button type="button" data-open-tab="diagnostics">Convergence and diagnostics</button><button type="button" data-open-tab="log">Run log</button><button type="button" data-open-tab="campaign">Campaign</button></div></details>
+  <details class="top-menu" id="menu-view"><summary>Display</summary><div class="menu-popover"><div class="menu-section"><h2>Colour scale</h2><label class="field"><span>Contour palette</span><select id="results-palette" title="Colours for numeric surface and flow fields"></select><small>Saved images retain their original colours.</small></label></div></div></details>
+  <details class="top-menu" id="menu-validation"><summary>Validation</summary><div class="menu-popover"><button type="button" data-validation="rae2822-case9">RAE 2822 · AGARD Case 9</button><button type="button" data-validation="oat15a-2.5">ONERA OAT15A · DPW steady</button><button type="button" data-validation="naca0012-stall">NACA 0012 · NASA stall polar</button><small>Published conditions and reference data; numerical convergence is assessed separately.</small></div></details>
+  <details class="top-menu" id="menu-help"><summary>Help</summary><div class="menu-popover"><button type="button" data-airfoil-workflow-help>Low-speed quick start</button><a href="/solvers">Solver guide</a></div></details>
+</nav>
     <div class="study-strip panel" aria-label="Current study"><strong id="study-name">Untitled study</strong><span id="study-status" role="status" aria-live="polite"></span></div>
     <div class="workspace">
       <aside class="setup-column panel" aria-label="Analysis setup">
-        <div class="setup-title"><span class="eyebrow">Setup</span><strong id="airfoil-parameter-title">Model</strong></div>
-        <nav class="setup-nav" aria-label="Jump to setup section">
-          <a href="#airfoil-heading">Airfoil</a><a href="#flow-heading">Flow</a><a href="#solver-heading">Solver</a><a href="#sweep-heading">Sweep</a><a href="/solvers">All solvers &amp; maturity</a>
-        </nav>
+        <div class="setup-title"><span class="eyebrow">Setup</span><strong id="airfoil-parameter-title">Airfoil and flow</strong></div>
+        <p class="workflow-intro"><strong id="setup-method">Low-speed 2D CFD</strong><span>Open an airfoil file, set Reynolds number and angle, then Run. Add a Gurney flap if required. Numerical defaults are selected automatically.</span></p>
         <div class="setup-groups">
-          <section class="setup-group" data-airfoil-panel="model" data-parameter-title="Model" aria-labelledby="airfoil-heading">
-            <h2 id="airfoil-heading">Airfoil</h2>
+          <div data-airfoil-panel="model" data-parameter-title="Airfoil and flow"><section class="setup-group" aria-labelledby="airfoil-heading">
+            <h2 id="airfoil-heading">1. Airfoil</h2>
             <div class="form-grid">
               <label class="field"><span>Source</span>
                 <select id="source-kind">
@@ -61,7 +68,7 @@
                   <option value="rae2822">RAE 2822</option>
                   <option value="oat15a">ONERA OAT15A</option>
                   <option value="uiuc">UIUC database</option>
-                  <option value="dat">XFOIL coordinate file (.dat)</option>
+                  <option value="dat" selected>XFOIL coordinate file (.dat)</option>
                   <option value="cavitation_reference">Cavitation references</option>
                 </select>
               </label>
@@ -81,17 +88,17 @@
             </div>
             <div id="dat-picker" class="hidden"><label class="field"><span>Airfoil coordinate file</span><input id="dat-file" type="file" accept=".dat,text/plain" title="Choose an XFOIL .dat text file: optional title, then x y points from the trailing edge around the leading edge and back. Coordinates are normalized to unit chord."></label><p id="dat-status" class="hint" role="status">Choose a .dat file. Its coordinates are embedded when you save the study.</p></div>
             <details id="gurney-group" class="gurney-group geometry-options">
-              <summary>Geometry additions <span>Gurney, spoiler, streamline mesh</span></summary>
+              <summary>Optional Gurney flap</summary>
               <div class="geometry-options-body">
-              <label class="check-line" title="A Gurney flap: a zero-thickness plate perpendicular to the chord at the trailing edge, with sharp corners; in the low-speed CFD a baffle (an interior wall) on the section's own C+H mesh"><input id="gurney-enabled" type="checkbox"><span>Gurney flap</span></label>
+              <label class="check-line" title="Add a thin plate perpendicular to the chord. Low-speed flaps require finite trailing-edge coordinates; the source section is preserved."><input id="gurney-enabled" type="checkbox"><span>Gurney flap</span></label>
               <div id="gurney-controls" class="form-grid hidden">
                 <label class="field"><span>Plate height h/c</span><input id="gurney-height" type="number" min="0.001" max="0.05" step="0.001" value="0.01" title="Plate height h/c, perpendicular to the chord at the TE, zero thickness, sharp (0.001 to 0.05)"></label>
                 <label class="field"><span>Side</span><select id="gurney-mode" title="One side: the plate stands on that trailing-edge point and extends h away from the airfoil. Symmetric: a T, h/2 above and h/2 below the trailing edge."><option value="lower" selected>Lower (pressure) side</option><option value="upper">Upper side</option><option value="symmetric">Symmetric T (h/2 above, h/2 below)</option></select></label>
-                <label class="field"><span>Mesh refinement at the flap tip</span><select id="gurney-refine" title="Rows are added around the plate tip and along its wake. Rows clustered at the plate root move into the flap-height recirculation region. The finite-thickness trailing-edge H block uses fewer cross rows while retaining its interfaces and first edge cells. Tip cells become about 1/4 (Standard) or 1/6 (Fine) of the section's own mesh cells. Off: the section's own C+H mesh."><option value="standard" selected>Standard (tip cells 1/4)</option><option value="fine">Fine (tip cells 1/6)</option><option value="off">Off (the section's own mesh)</option></select></label>
+
               </div>
               <p id="gurney-note" class="hint hidden">Plate height h/c, perpendicular to the chord at the TE, zero thickness, sharp.</p>
               <p id="gurney-range" class="hint hidden"></p>
-              <div id="lbm-spoiler-group" class="hidden">
+              <details class="advanced-cfd"><summary>Other geometry and mesh options</summary><label class="field"><span>Mesh refinement at the flap tip</span><select id="gurney-refine" title="Automatic uses the recommended flap-tip treatment for the selected mesh. Explicit settings are for mesh comparisons."><option value="auto" selected>Automatic (recommended)</option><option value="standard">Standard (tip cells 1/4)</option><option value="fine">Fine (tip cells 1/6)</option><option value="off">Off (the section's own mesh)</option></select></label><div id="lbm-spoiler-group" class="hidden">
                 <label class="check-line" title="LBM 3D only: a flat plate hinged on the upper surface, deflected from the local surface tangent, over the full span. Its thickness is the LBM plate thickness (lattice cells)."><input id="lbm-spoiler" type="checkbox"><span>Spoiler (LBM 3D)</span></label>
                 <div id="lbm-spoiler-controls" class="form-grid hidden">
                   <label class="field"><span>Hinge x/c</span><input id="lbm-spoiler-hinge" type="number" value="0.7" min="0.2" max="0.95" step="0.01" title="Hinge on the upper surface at this x/c (0.2 to 0.95)"></label>
@@ -106,16 +113,16 @@
                 <label class="field"><span>Mesh admission</span><select id="streamline-admission" title="Demo: convex cells, conforming C/H interfaces and an unchanged wall first spacing are required; every quality gate's change is reported, none refuses. Strict: every gate that passed still passes and no failing gate gets worse (the morph is reduced or refused otherwise)."><option value="demo" selected>Demo (report gate changes)</option><option value="strict">Strict (no gate may get worse)</option></select></label>
                 <label class="check-line" title="When JXfoil's viscous solution is refused (not converged, or trailing-edge separation over 0.10 c), use the inviscid path, labelled as a fallback, instead of refusing the point."><input id="streamline-fallback" type="checkbox"><span>Inviscid fallback if viscous is refused</span></label>
               </div>
-              <p id="streamline-note" class="hint hidden">Development, not validated.</p>
+              <p id="streamline-note" class="hint hidden">Development, not validated.</p></details>
               </div>
             </details>
           </section>
 
-          <section class="setup-group" data-airfoil-panel="flow" data-parameter-title="Flow conditions" aria-labelledby="flow-heading">
-            <h2 id="flow-heading">Flow</h2>
+          <section class="setup-group" aria-labelledby="flow-heading">
+            <h2 id="flow-heading">2. Flow conditions</h2>
             <div class="form-grid">
               <label class="field"><span>Mach</span><input id="mach" type="number" value="0" min="0" max="5" step="0.01"></label>
-              <label class="field"><span>Reynolds</span><input id="reynolds" type="number" value="300000" min="1" step="10000"></label>
+              <label class="field"><span>Reynolds</span><input id="reynolds" type="number" value="3000000" min="1" step="10000"></label>
               <label class="field"><span>Angle, &deg;</span><input id="alpha" type="number" value="4" min="-30" max="30" step="any"></label>
               <label class="field"><span>Transition Ncrit</span><input id="ncrit" type="number" value="9" min="0.1" max="20" step="0.5"></label>
             </div>
@@ -128,13 +135,15 @@
             <p id="flow-hint" class="hint">Ncrit applies to XFOIL and JXfoil boundary layers.</p>
           </section>
 
-          <section class="setup-group" data-airfoil-panel="solver" data-parameter-title="Solver" aria-labelledby="solver-heading">
-            <h2 id="solver-heading">Solver</h2>
+          </div><section class="setup-group" data-airfoil-panel="solver" data-parameter-title="Solver" aria-labelledby="solver-heading">
+            <h2 id="solver-heading">Advanced setup</h2>
+            <p id="saved-flow-overrides" class="hint warning-text hidden" role="status"></p>
+            <button id="clear-saved-flow-overrides" type="button" class="secondary-button hidden" title="Clear only saved request overrides for the next run. Keep the current airfoil, flow conditions and flap controls; a running job continues unchanged.">Clear saved overrides</button>
             <label class="field"><span>Backend</span>
-              <select id="backend"><optgroup label="Single solver"><option value="jxfoil">JXfoil (Julia clone)</option><option value="xfoil">XFOIL executable</option><option value="transonic">Compressible CFD</option><option value="cavitation">Species / cavitation CFD</option><option value="lowspeed">Low-speed CFD (pressure based)</option><option value="lbm">LBM 3D (choose D3Q27 or D3Q39)</option></optgroup><optgroup label="Comparison runs"><option value="both">JXfoil + compressible CFD</option><option value="cfd_both">Compressible + Species CFD</option><option value="xfoil_cfd_both">XFOIL + both CFD backends</option><option value="xfoil_lowspeed">XFOIL + low-speed CFD</option></optgroup><optgroup label="Research and unavailable — see solver guide"><option value="pond" disabled>PonD finite-volume — research</option><option value="barotropic" disabled>Barotropic core — verification</option><option value="free_surface" disabled>Free-surface core — experimental</option><option value="pbcav_cavitation" disabled>PBCav phase change — incomplete</option><option value="tem_legacy" disabled>TEM cavitation step — superseded</option><option value="d3q19" disabled>D3Q19 LBM — retired</option></optgroup></select>
+              <select id="backend"><optgroup label="Single solver"><option value="jxfoil">JXfoil (Julia clone)</option><option value="xfoil">XFOIL executable</option><option value="transonic">Compressible CFD</option><option value="cavitation">Species / cavitation CFD</option><option value="lowspeed" selected>Low-speed 2D CFD</option><option value="lbm">LBM 3D (choose D3Q27 or D3Q39)</option></optgroup><optgroup label="Comparison runs"><option value="both">JXfoil + compressible CFD</option><option value="cfd_both">Compressible + Species CFD</option><option value="xfoil_cfd_both">XFOIL + both CFD backends</option><option value="xfoil_lowspeed">XFOIL + low-speed CFD</option></optgroup><optgroup label="Research and unavailable — see solver guide"><option value="pond" disabled>PonD finite-volume — research</option><option value="barotropic" disabled>Barotropic core — verification</option><option value="free_surface" disabled>Free-surface core — experimental</option><option value="pbcav_cavitation" disabled>PBCav phase change — incomplete</option><option value="tem_legacy" disabled>TEM cavitation step — superseded</option><option value="d3q19" disabled>D3Q19 LBM — retired</option></optgroup></select>
             </label>
             <label class="check-line"><input id="show-reference" type="checkbox" checked><span>Show matching validation reference</span></label>
-            <p id="backend-note" class="hint">JXfoil provides coefficients and surface pressure. Flow fields require CFD.</p>
+            <p id="backend-note" class="hint">The default low-speed solver creates the mesh and saves final fields.</p><details id="solver-numerics" class="advanced-cfd"><summary>Numerical and model settings</summary>
             <div id="rans-acceleration-line" class="hidden">
               <label class="check-line" title="Experimental steady RANS convergence acceleration. The selected solver method is recorded in the result."><input id="rans-acceleration" type="checkbox"><span>Try steady RANS acceleration (experimental)</span></label>
               <p id="rans-acceleration-note" class="hint"></p>
@@ -154,15 +163,16 @@
             </div>
             <p class="hint">See the <a href="/solvers">complete solver guide</a> for each method, application, maturity, and research paths that are not selectable here.</p>
             <div id="lowspeed-controls" class="hidden">
-              <p class="experimental-note">Low-speed CFD is the new incompressible pressure-based solver (version 2, in development, not yet validated): fully turbulent k-omega SST in free air, on the CPU (8 threads) by default or, opt-in, on the GPU. Mach is ignored.</p>
+              <p class="experimental-note">Low-speed CFD uses an incompressible pressure-based solver with fully turbulent SST in free air. CPU execution uses the configured thread count; GPU execution is optional. Mach is ignored. The solver remains in development; inspect mesh quality and convergence.</p>
               <div class="form-grid">
-                <label class="field"><span>Low-speed mesh</span><select id="lowspeed-resolution" title="The solver builds the mesh at Run. Fine refines the C+H baseline or Gurney mesh by one level (PB_MESH_LEVEL=1); on a sharp C mesh it uses the fine C preset."><option value="demo" selected>Demo (fast) · 23,040 C cells</option><option value="fine">Fine (development · slower)</option></select></label>
+                <label class="field"><span>Low-speed mesh</span><select id="lowspeed-resolution" title="Automatic uses the recommended mesh for the airfoil. Override only for a mesh comparison."><option value="auto" selected>Automatic (recommended)</option><option value="standard">Standard</option><option value="fine">Fine (slower)</option><option value="demo">Legacy coarse mesh</option></select></label>
                 <label class="field"><span>Freestream Tu, %</span><input id="lowspeed-tu" type="number" value="1" min="0.0001" max="19" step="any"></label>
                 <label class="field"><span>Freestream μt/μ</span><input id="lowspeed-mut-ratio" type="number" value="10" min="0.0001" max="10000" step="any"></label>
                 <label class="field"><span>Momentum steady limit</span><input id="lowspeed-steady-tol" type="number" value="1e-6" min="1e-9" max="1e-3" step="any" title="PB_STEADY_TOL. The original default is 1e-6; a larger value may stop earlier and needs independent checks."></label>
                 <label class="field"><span>SST steady limit</span><input id="lowspeed-turb-steady-tol" type="number" value="1e-7" min="1e-9" max="1e-3" step="any" title="PB_TURB_STEADY_TOL. The original default is 1e-7; a larger value may stop earlier and needs independent checks."></label>
               </div>
-              <label class="check-line" title="Run the native finite-trailing-edge C+H mesh without a flap, using the same ramp start and base turbulence setting as a flap case."><input id="lowspeed-ch-baseline" type="checkbox"><span>No-flap C+H baseline</span></label>
+              <label class="field"><span>Low-speed topology</span><select id="lowspeed-topology" title="Automatic retains the airfoil trailing edge and uses matching clean/flap solver settings. Override only for a controlled comparison."><option value="auto" selected>Automatic (recommended)</option><option value="ch_native">Native C+H</option><option value="sharp">Legacy sharp C</option></select></label>
+              <div class="form-grid"><label class="field"><span>C+H starting flow</span><select id="lowspeed-start"><option value="auto" selected>Automatic</option><option value="ramp">Gradual start</option><option value="projection">Projected start</option></select></label><label class="field"><span>C+H base turbulence</span><select id="lowspeed-mut-base"><option value="auto" selected>Automatic</option><option value="committed">Committed</option><option value="extrapolated">Extrapolated</option></select></label></div>
               <label class="check-line" title="Opt-in: run the low-speed CFD on the GPU (CUDA) with the solver's adopted CUDA free-air speed settings. The run queues for the machine's shared GPU lock and waits while another owner holds it; the CPU stays the default."><input id="lowspeed-gpu" type="checkbox"><span>Run on GPU (CUDA)</span></label>
               <p id="lowspeed-gpu-note" class="hint hidden">GPU (CUDA), opt-in: the mesh is built on the CPU and shown first; the run then waits for the shared GPU lock (the job status says who holds it) and marches on the GPU with the solver's adopted CUDA speed settings (Float64). The CPU remains the default.</p>
               <p id="lowspeed-note" class="hint">Defaults: Tu 1%, μt/μ 10. Looser steady limits may stop earlier; inspect mesh quality, residuals and loads before interpreting coefficients.</p>
@@ -252,6 +262,7 @@
                 </div>
               </div>
             </details>
+            </details>
           </section>
 
           <details id="output-options" data-airfoil-panel="outputs" data-parameter-title="Outputs and reports" class="setup-group output-options"><summary>Outputs and reports</summary><div id="output-controls" class="output-controls"></div></details>
@@ -278,7 +289,7 @@
         </details>
         <details class="saved-results"><summary>Reports and exported files</summary><div id="output-results" class="output-results-body"></div></details>
         <div class="run-panel">
-          <button id="run-button" type="button" class="primary-button">Run analysis <span aria-hidden="true">&#8599;</span></button>
+          <button id="run-button" type="button" class="primary-button" title="Build the mesh and solve the current airfoil and flow conditions">Run analysis <span aria-hidden="true">&#8599;</span></button><button id="cancel-button" type="button" class="secondary-button" title="Stop the current job; completed results and files are retained" disabled>Cancel run</button>
           <details id="run-status" class="run-status" aria-live="polite">
             <summary><span id="job-title">Ready to analyze</span><span id="job-percent">0%</span></summary>
             <div class="run-status-body"><p id="job-message">Select an airfoil and flow conditions, then run the Julia solvers.</p><span id="job-id" class="mono"></span></div>
@@ -311,7 +322,7 @@
         <div class="tab-stack">
           <section id="tab-geometry" class="tab-pane is-active" role="tabpanel" aria-labelledby="tab-button-geometry" data-tab-panel="geometry">
             <div class="panel pane-panel geometry-panel">
-              <div class="chart-heading"><div><h3 id="geometry-title">Airfoil geometry</h3><p id="geometry-status">Loading selected airfoil…</p></div><span id="geometry-axis-label">x/c &middot; y/c</span></div>
+              <div class="chart-heading"><div><h3 id="geometry-title">Airfoil geometry</h3><p id="geometry-status">Open an airfoil coordinate file to preview its geometry.</p></div><span id="geometry-axis-label">x/c &middot; y/c</span></div>
               <div class="geometry-controls">
                 <label class="header-control">Display <select id="geometry-display"><option value="outline">Geometry</option><option value="mesh">Geometry + mesh</option><option value="curvature">Curvature porcupine</option><option id="native-result-geometry" value="native" disabled hidden>Native result geometry</option></select></label>
                 <label id="cfd-te-topology-field" class="header-control" title="Auto creates a connected C+H mesh for a finite trailing edge, and a C mesh for a sharp trailing edge. No silent A-plus fallback.">TE topology <select id="cfd-te-topology"><option value="auto" selected>Auto: C+H blunt / C sharp</option><option value="aplus">Legacy A-plus</option></select></label>
@@ -319,11 +330,11 @@
                 <label id="curvature-scale-field" class="header-control hidden" title="Normal distance / chord = scale × signed outward curvature × chord. Leave blank for automatic scaling.">κ scale <input id="curvature-scale" type="number" min="0" step="any" placeholder="Auto" aria-label="Curvature normal distance scale"></label>
                 <fieldset id="curvature-mapping-field" class="name-options curvature-options hidden" aria-describedby="curvature-mapping-help"><legend>κ mapping</legend><label><input type="radio" name="curvature-mapping" value="linear" checked>Linear</label><label><input type="radio" name="curvature-mapping" value="log">Log</label></fieldset>
                 <label class="header-control">Resolution <select id="preview-resolution" title="Standard C+H uses curvature-aware leading-edge spacing. Actual mesh dimensions and total cells appear after generation."><option value="standard">Standard</option><option value="fine">Fine</option><option value="very_fine">Very fine</option></select></label>
-                <button id="create-mesh" class="secondary-button" type="button">Create mesh</button><button id="refine-mesh" class="secondary-button" type="button">Refine mesh</button>
+                <button id="create-mesh" class="secondary-button" type="button">Create mesh</button><button id="refine-mesh" class="secondary-button hidden" type="button" hidden aria-hidden="true">Refine mesh</button>
               </div>
               <p id="curvature-mapping-help" class="hint curvature-help hidden">Log uses signed log1p(|κc|), preserving zero and concavity. The probe shows the original κc.</p>
               <div class="view-tools" data-view="geometry"><details class="view-help"><summary title="Mouse and keyboard controls">Controls</summary><p>Wheel: zoom at cursor<br>Left drag: zoom window<br>Right/middle or Shift/Ctrl drag: pan<br>Double click or F/Home: fit<br>Esc: cancel zoom window</p></details><button type="button" data-action="zoom-out" title="Zoom out">&minus;</button><button type="button" data-action="zoom-in" title="Zoom in">+</button><button type="button" data-action="center" title="Fit the airfoil">Fit</button><button type="button" data-action="te" title="Trailing-edge close-up (with a Gurney plate: the plate and the base)">TE</button><button type="button" data-action="le" title="Leading-edge close-up (centred on the stagnation point when JXfoil streamlines are present)">LE</button><label class="check-line view-check" title="Draw the JXfoil wake path and stagnation streamline of a streamline-aligned mesh"><input id="geometry-streamlines" type="checkbox" checked><span>JXfoil streamlines</span></label></div>
-              <div id="geometry-chart" class="chart spatial-view empty-chart">Loading the selected geometry.</div>
+              <div id="geometry-chart" class="chart spatial-view empty-chart">Open an airfoil coordinate file to preview its geometry.</div>
               <div id="curvature-chart" class="chart spatial-view hidden empty-chart">Curvature will appear with the geometry.</div>
             </div>
           </section>
@@ -349,6 +360,7 @@
               <div id="field-scale"></div><div id="field-view" class="field-view spatial-view empty-chart">Choose CFD to inspect a flow field.</div>
               <div id="babylon-view" class="babylon-view hidden" aria-label="Interactive Babylon.js flow view"></div>
               <div id="field-legend" class="field-legend hidden"></div>
+              <div id="point-downloads" class="point-downloads hidden" aria-label="Selected operating point files"></div>
             </section>
           </section>
 

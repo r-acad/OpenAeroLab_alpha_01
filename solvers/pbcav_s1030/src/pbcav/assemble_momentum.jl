@@ -63,11 +63,11 @@
 
 "Boundary velocity values of every face for the least-squares stencil: the condition's value, or (slip) the owner's
 tangential velocity, or (outlet) the owner's velocity."
-@kernel function _k_bvel!(ubf, vbf, u, v, bkind, ub, vb, bown, bSx, bSy, bSmag)
+@kernel function _k_bvel!(ubf, vbf, u, v, bkind, ub, vb, bown, bSx, bSy, bSmag, Fb)
     b = @index(Global)
     @inbounds begin
         k = bkind[b]; P = bown[b]
-        if is_velocity_bc(k)
+        if is_velocity_bc(k) || (k == UInt8(BC_FREESTREAM_OUTLET) && Fb[b] < 0)
             ubf[b] = ub[b]; vbf[b] = vb[b]
         elseif k == UInt8(BC_SLIP)
             nx = bSx[b]/bSmag[b]; ny = bSy[b]/bSmag[b]; un = u[P]*nx + v[P]*ny
@@ -135,14 +135,20 @@ end
                 end
                 rx += nu_; ry += nv_
             end
-            if lu >= Int32(1) && phi > 0            # outflow through a velocity face: deferred correction to the face value
+            # An open far-field outflow convects the owner (upwind). Forcing its
+            # prescribed exterior velocity into outgoing convection cancels the
+            # upwind diagonal and lets an inviscid far-corner mode grow. Its
+            # prescribed normal flux and viscous boundary value remain unchanged.
+            if lu >= Int32(1) && phi > 0 && k != UInt8(BC_FARFIELD)
                 rx -= phi*(ubf[b] - u[P]); ry -= phi*(vbf[b] - v[P])
             end
         elseif k == UInt8(BC_SLIP)
             dg = G; rx = G*ubf[b]; ry = G*vbf[b]
-        else                                         # pressure outlet: no viscous flux; backflow at the cell's velocity
+        else                                         # pressure outlet: no viscous flux
             ain = max(-phi, 0.0)
-            dg = ain; rx = ain*u[P]; ry = ain*v[P]
+            dg = ain
+            rx = ain*(k == UInt8(BC_FREESTREAM_OUTLET) ? ubf[b] : u[P])
+            ry = ain*(k == UInt8(BC_FREESTREAM_OUTLET) ? vbf[b] : v[P])
         end
         bdg[b] = dg; bfx[b] = rx; bfy[b] = ry
     end
@@ -218,14 +224,16 @@ end
                 rx += nu_; ry += nv_
             end
             rx += mu*(gux[P]*bSx[b] + gvx[P]*bSy[b]); ry += mu*(guy[P]*bSx[b] + gvy[P]*bSy[b])
-            if lu >= Int32(1) && phi > 0
+            if lu >= Int32(1) && phi > 0 && k != UInt8(BC_FARFIELD)
                 rx -= phi*(ubf[b] - u[P]); ry -= phi*(vbf[b] - v[P])
             end
         elseif k == UInt8(BC_SLIP)
             dg = G; rx = G*ubf[b]; ry = G*vbf[b]
         else
             ain = max(-phi, 0.0)
-            dg = ain; rx = ain*u[P]; ry = ain*v[P]
+            dg = ain
+            rx = ain*(k == UInt8(BC_FREESTREAM_OUTLET) ? ubf[b] : u[P])
+            ry = ain*(k == UInt8(BC_FREESTREAM_OUTLET) ? vbf[b] : v[P])
         end
         bdg[b] = dg; bfx[b] = rx; bfy[b] = ry
     end
@@ -366,7 +374,7 @@ The boundary face velocities and the cells' least-squares velocity gradients at 
 """
 function velocity_gradients!(w, m::PBMesh, st::PBState, bc, cfg; level::Integer=1)
     be = cfg.backend; u = lev(st.ux, level); v = lev(st.uy, level); G = w.lsq
-    _launch!(_k_bvel!, be, m.nb, w.ubf, w.vbf, u, v, bc.kind, bc.ub, bc.vb, m.bown, m.bSx, m.bSy, m.bSmag)
+    _launch!(_k_bvel!, be, m.nb, w.ubf, w.vbf, u, v, bc.kind, bc.ub, bc.vb, m.bown, m.bSx, m.bSy, m.bSmag, lev(st.Fb, level))
     for (g1, g2, phi, phib) in ((w.gux, w.guy, u, w.ubf), (w.gvx, w.gvy, v, w.vbf))
         _launch!(_k_lsq_grad!, be, m.nc, g1, g2, phi, phib, G.u11, G.u12, G.u22, m.cface, m.own, m.nei, m.dx, m.dy,
                  m.bdx, m.bdy, bc.kind, Int32(m.nf), Int32(0), Int32(0), Int32(0))

@@ -7,6 +7,8 @@
 #   velocity Dirichlet: BC_NOSLIP, BC_MOVING_WALL, BC_INLET, BC_FARFIELD -- u_b given. Momentum: the two-point viscous
 #       term mu |S|^2/(S.d_b) (u_P - u_b) implicit, its non-orthogonal part deferred; convection upwind (an inflow face is
 #       an implicit neighbour of value u_b; an outflow face carries u_P implicitly and the deferred correction to u_b).
+#       BC_FARFIELD is open for outgoing convection: it carries the upwind owner without that deferred correction,
+#       while its prescribed normal flux and viscous boundary value stay fixed. This retains outgoing advection damping.
 #       Pressure: the flux u_b . S is fixed (a Neumann face of the pressure equation). The plan's foil and base (no slip;
 #       zero phase flux) and the inlet (velocity U along the channel, pure liquid) are this kind.
 #   BC_SLIP (tunnel walls): zero normal flux and zero tangential stress. Momentum: mu |S|^2/(S.d_b) (u_P - u_t) with u_t the
@@ -14,18 +16,21 @@
 #   BC_PRESSURE_OUTLET: p_b given (the plan's p_out = p_v + sigma q); zero-gradient velocity (no viscous flux); backflow
 #       enters at the cell's velocity (deferred). Pressure: a Dirichlet face of the pressure equation, its flux from the
 #       momentum interpolation of the owner cell (rhie_chow_flux!).
+#   BC_FREESTREAM_OUTLET: free-air pressure outlet with analytic exterior u_b, v_b. Ordinary outflow is zero-gradient;
+#       backflow transports exterior momentum and turbulence instead of feeding the owner's reversed velocity back in.
+#       Pressure stays Dirichlet and the viscous face flux stays zero.
 # Pressure at a face without a pressure value (the Green-Gauss gradient): p_P + grad(p)_P . d_b, the least-squares
 # gradient taken over the internal faces and the pressure-Dirichlet faces.
 # =====================================================================================================================
 
 "The condition kinds."
-@enum BCKind::UInt8 BC_NOSLIP = 1 BC_SLIP = 2 BC_INLET = 3 BC_PRESSURE_OUTLET = 4 BC_FARFIELD = 5 BC_MOVING_WALL = 6
+@enum BCKind::UInt8 BC_NOSLIP = 1 BC_SLIP = 2 BC_INLET = 3 BC_PRESSURE_OUTLET = 4 BC_FARFIELD = 5 BC_MOVING_WALL = 6 BC_FREESTREAM_OUTLET = 7
 
 "Velocity-Dirichlet kinds (u_b given, flux fixed)."
 is_velocity_bc(k::UInt8) = k == UInt8(BC_NOSLIP) || k == UInt8(BC_MOVING_WALL) || k == UInt8(BC_INLET) ||
                            k == UInt8(BC_FARFIELD)
 "Pressure-Dirichlet kinds (p_b given)."
-is_pressure_bc(k::UInt8) = k == UInt8(BC_PRESSURE_OUTLET)
+is_pressure_bc(k::UInt8) = k == UInt8(BC_PRESSURE_OUTLET) || k == UInt8(BC_FREESTREAM_OUTLET)
 
 """
     default_bc_kind(tag::UInt8) -> BCKind

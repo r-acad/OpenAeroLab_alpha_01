@@ -181,8 +181,9 @@ function baffle_record()
         "window_columns"=>q.window_columns, "tip"=>[q.tip[1], q.tip[2]], "root"=>[q.root[1], q.root[2]],
         "normal"=>[q.nx, q.ny], "theta_b_max_deg"=>q.theta_b_max, "theta_b_row"=>q.theta_b_row, "d1_min"=>q.d1_min,
         "d1_max"=>q.d1_max, "tip_fraction"=>q.tip_fraction, "growth_kink"=>q.growth_kink) for q in PLAN.plates]
-    rec = Dict{String,Any}("version"=>"PBBaffleGurneyV2", "spec"=>PBCav.spec_string(BSPEC), "side"=>String(BSPEC.side), "h"=>BSPEC.h,
-        "receipt"=>PBCav.baffle_receipt_line(PLAN), "x_sha256"=>hx, "y_sha256"=>hy,
+    receipt=PBCav.baffle_receipt_line(PLAN);version=match(r"\bversion=(\S+)",receipt)
+    rec = Dict{String,Any}("version"=>(version===nothing ? "unknown" : String(version.captures[1])), "spec"=>PBCav.spec_string(BSPEC), "side"=>String(BSPEC.side), "h"=>BSPEC.h,
+        "receipt"=>receipt, "x_sha256"=>hx, "y_sha256"=>hy,
         "gate"=>isempty(fail) ? "pass" : "FAIL", "gate_failures"=>fail,
         "gate_limits"=>Dict{String,Any}("theta_b_max_deg"=>PBCav.BAFFLE_THETA_B_MAX, "tip_fraction_max"=>PBCav.BAFFLE_TIP_FRACTION_MAX,
                                         "first_cell_change_max"=>PBCav.BAFFLE_FIRST_CELL_MAX),
@@ -299,6 +300,13 @@ if get(CFG, "mesh_only", false) === true          # Create mesh in the app: the 
     flush(stdout)
     exit(0)
 end
+if String(CFG["resolution"]) in ("standard","fine")
+    isdefined(Main,:CMeshQualityMetrics) || include(joinpath(@__DIR__,"..","..","..","..","src","cmesh","cmesh_quality_metrics.jl"))
+    q=Main.CMeshQualityMetrics
+    summary=q.quality_summary(BLOCKS.X,BLOCKS.Y,BLOCKS.NIW,BLOCKS.NIF;strip=(X=BLOCKS.Xs,Y=BLOCKS.Ys))
+    failures=q.gate_failures(q.quality_gates(summary;cavitating=false,strip_grade=true))
+    isempty(GATE_FAILURES)&&isempty(failures) || error("Automatic C+H mesh quality checks failed; inspect Create mesh before running this section: "*join(vcat(GATE_FAILURES,failures),"; "))
+end
 @printf("Low-speed CFD C+H mesh: C %d x %d + H %d x %d cells (%d), %d foil faces, %d base faces, first wall spacing %.3g c; PBCav audit gates: %s\n",
         NI, NJ, NIS, NS, MESHC.nc, BLOCKS.NIF, NS, CALL.dn1, isempty(GATE_FAILURES) ? "all pass" : "FAIL " * join(GATE_FAILURES, "; "))
 flush(stdout)
@@ -331,13 +339,18 @@ const st = PBCav.allocate_state(MESH; backend=BACKEND)
 const Ux, Uy = PBCav.uinf(fs)
 const w = PBCav.pbwork(MESH, bc, cfg)
 const FOIL_SHA = bytes2hex(sha256(read(CFG["foil"])))
+const SOURCE_SHA=isdefined(PBCav,:freeair_source_signature) ? PBCav.freeair_source_signature() : ""
 function checked_warm_state!()
     path = get(CFG, "warm_start", nothing)
-    path === nothing && return nothing
+    if path===nothing
+        get(CFG,"require_warm_start",false) && throw(ArgumentError("The required saved initial-flow checkpoint is missing"))
+        return nothing
+    end
     try
         saved = open(deserialize, path)
         saved["topology"] == "conformal_C_H_v1" || error("topology differs")
         saved["commit"] == CFG["commit"] || error("solver commit differs")
+        isempty(SOURCE_SHA) || get(saved,"source_sha256",nothing)==SOURCE_SHA || error("loaded solver source differs")
         saved["mesh_hashes"] == collect(MESH_HASHES) || error("C-block mesh differs")
         saved["strip_hashes"] == [MESH_RESULT["strip_x_sha256"], MESH_RESULT["strip_y_sha256"]] || error("H-block mesh differs")
         saved["foil_sha256"] == FOIL_SHA || error("foil differs")
@@ -360,6 +373,7 @@ function checked_warm_state!()
         @printf("PB FREEAIR START: checked C+H warm state from alpha %.3f deg, dt %.5g, Gamma %.6g\n", saved["alpha_deg"], st.dt, saved["gamma"])
         return (source=String(path), gamma=saved["gamma"])
     catch err
+        get(CFG,"require_warm_start",false) && throw(ArgumentError("Required saved initial flow refused: "*sprint(showerror,err)))
         println("PB FREEAIR START: C+H warm state refused (", sprint(showerror, err), "); using configured fresh start")
         return nothing
     end
@@ -371,6 +385,8 @@ if WARM === nothing && RAMP === nothing
     SST && PBCav.init_turbulence!(st, MESH, bc, cfg; work=w)
 end
 const ps = WARM !== nothing ? nothing : RAMP === nothing ? PBCav.project_start!(st, MESH, bc, cfg; work=w) : PBCav.ramp_start!(st, MESH, bc, cfg, fs, RAMP; work=w)
+WARM===nothing && (st.dt=min(cfg.dt,get(k,"PB_START_DT",cfg.dt)))
+println("PB START STEP: initial dt ",st.dt,"; adaptive ceiling ",cfg.dt)
 const START_TAIL = RAMP === nothing ? "" :
     @sprintf(", start ramp: the far field from %.4g U to U over t = %.4g c/U (r = r0 + (1 - r0)(1 - cos(pi t/T))/2)", RAMP.r0, RAMP.T)
 WARM === nothing && @printf("PB FREEAIR START: projection FCG %d, rel %.2e, max |div F|/V %.3e -> %.3e%s\n", ps.fcg, ps.rel, ps.div_before, ps.div_after, START_TAIL)
@@ -378,11 +394,37 @@ flush(stdout)
 const pv = k["PB_VORTEX"] === :point ? PBCav.PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=WARM === nothing ? 0.0 : WARM.gamma) : nothing
 const MAXS = k["PB_MAX_STEPS"]
 const T_MARCH = time()
+const SNAPSHOTS=FullFieldArtifact.FieldSnapshots.Schedule(get(CFG,"snapshot_interval_seconds",600.))
+const LIVE_LW=SNAPSHOTS.interval>0 ? PBCav.LoadsWork(MESH;backend=BACKEND) : nothing
+function write_live(s,step)
+    PBCav.loads_gradients!(LIVE_LW,s,MESH,bc,w,cfg)
+    u=Array(PBCav.lev(s.ux,1));v=Array(PBCav.lev(s.uy,1));p=Array(PBCav.lev(s.p,1));mt=Array(PBCav.lev(s.mut,2))
+    vo=Array(LIVE_LW.gvx).-Array(LIVE_LW.guy);xc=Array(MESH.xc);yc=Array(MESH.yc)
+    meshpath=joinpath(OUT,"mesh_full.msgpack");meshhash=bytes2hex(open(sha256,meshpath))
+    name=@sprintf("live_field_%06d.msgpack",step);blocks=Any[]
+    for (id,blk,ni,nj) in (("C",0,NI,NJ),("H",1,NIS,NS))
+        file=@sprintf("live_field_%06d_%s.msgpack",step,id)
+        FullFieldArtifact.write_full_field((i,j)->begin
+            c=PBCav.cell_index(MESH,blk,i,j)
+            (xc[c],yc[c],hypot(u[c],v[c])/fs.U,(p[c]-fs.p_inf)/PBCav.qinf(fs),p[c],1.,u[c],v[c],1.,vo[c],mt[c]/cfg.mu)
+        end,joinpath(OUT,file),ni,nj,meshpath,max(step,1))
+        push!(blocks,Dict("id"=>id,"artifact"=>file,"ni"=>ni,"nj"=>nj))
+    end
+    payload=Dict{String,Any}("kind"=>"structured_blocks","blocks"=>blocks,"iteration"=>max(step,1),
+        "mesh_sha256"=>meshhash,"cell_order"=>"j-major, i-fastest","total_cells"=>NI*NJ+NIS*NS)
+    FullFieldArtifact.FieldSnapshots.atomic_write(joinpath(OUT,name),AirfoilWire.encode(payload,:msgpack))
+    println("FIELD_SNAPSHOT,",name,",",step)
+end
+const REJECTION_KEYS=PBCav.REJECTION_REASONS
+const rejection_io=open(joinpath(OUT,"rejection_history.csv"),"w")
+println(rejection_io,join(("step","t","dt","total_rejections",string.(REJECTION_KEYS)...),","))
 const BON = PBCav.omega_bound_on(cfg)
 const bio = BON ? open(joinpath(OUT, "omega_bound_history.csv"), "w") : nothing
 bio === nothing || println(bio, PBCav.OMEGA_BOUND_HISTORY_HEADER)
 const BSTEPS = Ref(0); const BLAST = Ref(0)
 function app_step(s, r, led)
+    counts=(get(led.rejections,key,0) for key in REJECTION_KEYS)
+    println(rejection_io,join((r.step,r.t,r.dt,sum(values(led.rejections)),counts...),","));flush(rejection_io)
     if BON                                           # the driver's census hook, first (it only reads)
         n = 0; c = nothing
         if PBCav.pb_maxabs(w.turb.wcut; backend=BACKEND) > 0
@@ -395,6 +437,9 @@ function app_step(s, r, led)
     tr = isfinite(sk) && isfinite(sw) ? max(sk, sw) : r.steady
     @printf("ITERATION,%d,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g\n", r.step, MAXS, r.steady, r.steady, tr,
             r.CL, r.CD, r.flux_net, r.CM)
+    FullFieldArtifact.FieldSnapshots.save_if_due!(SNAPSHOTS) do
+        write_live(s,r.step)
+    end
     if r.step % 25 == 0
         @printf("PB progress: step %d of at most %d, wall %.0f s, CL %.5f, CD %.6f, CM %.5f, steady residual %.3e (stop at %.1e), k/omega %.3e/%.3e (stop at %.1e), circulation defect %.2e\n",
                 r.step, MAXS, time() - T_MARCH, r.CL, r.CD, r.CM, r.steady, k["PB_STEADY_TOL"], sk, sw, k["PB_TURB_STEADY_TOL"], r.Gamma_defect)
@@ -402,17 +447,26 @@ function app_step(s, r, led)
     flush(stdout)
 end
 const hio = open(joinpath(OUT, "loads_history.csv"), "w")
+const CANCEL_FILE=get(ENV,"AIRFOIL_CANCEL_FILE","")
+cancel_requested(s)=!isempty(CANCEL_FILE)&&isfile(CANCEL_FILE)
+const CONTROLLER=Dict{String,Any}()
+const CONTROL_KW=isdefined(PBCav,:write_freeair_checkpoint) ? (;control=CONTROLLER,stop_requested=cancel_requested) : (;)
 const R = try
     PBCav.freeair_run!(st, MESH, bc, cfg, fs; wall_cap=k["PB_WALL_CAP"], vortex=pv, max_steps=MAXS,
                        steady_tol=k["PB_STEADY_TOL"], turb_steady_tol=k["PB_TURB_STEADY_TOL"], history=hio, work=w,
-                       on_step=app_step, RUNKW...)
+                       on_step=app_step,CONTROL_KW..., RUNKW...)
 finally
     close(hio)
+    close(rejection_io)
     bio === nothing || close(bio)
+end
+if isdefined(PBCav,:write_freeair_checkpoint) && R.outcome!=:NOT_REACHED
+    PBCav.write_freeair_checkpoint(joinpath(OUT,"state_checkpoint.pbrestart"),MESH,st,bc,k;control=CONTROLLER,ledger=R.ledger,vortex=pv)
+    get(k,"PB_OUTPUT_FIELDS",:on)===:on && PBCav.write_freeair_vtu(joinpath(OUT,"flow_fields.vtu"),MESH,st,cfg,fs)
 end
 if R.outcome != :NOT_REACHED
     checkpoint = Dict{String,Any}(
-        "topology"=>"conformal_C_H_v1", "commit"=>CFG["commit"],
+        "topology"=>"conformal_C_H_v1", "commit"=>CFG["commit"], "source_sha256"=>SOURCE_SHA,
         "mesh_hashes"=>collect(MESH_HASHES),
         "strip_hashes"=>[MESH_RESULT["strip_x_sha256"], MESH_RESULT["strip_y_sha256"]],
         "foil_sha256"=>FOIL_SHA, "baffle"=>get(ENVK, "PB_BAFFLE", ""),
@@ -505,6 +559,7 @@ const CPB = isempty(BASEQ) ? NaN : sum(SD.Cp[q]*SD.ds[q] for q in BASEQ)/sum(SD.
 const START_TEXT = RAMP === nothing ? "projection (plain; Kutta refuses a base)" :
     @sprintf("ramp (the far field accelerated from %.4g U to U over t = %.4g c/U; Kutta refuses a base and a baffle)", RAMP.r0, RAMP.T)
 result = merge(MESH_RESULT, Dict{String,Any}(
+    "source_sha256"=>SOURCE_SHA,
     "solver"=>"PBCav $(PBCav.PBCAV_VERSION)", "snapshot"=>SNAP, "threads"=>Threads.nthreads(), "topology"=>"conformal_C_H_v1",
     "rans_acceleration"=>Bool(get(CFG,"rans_acceleration",false)),
     "rans_acceleration_method"=>String(get(CFG,"rans_acceleration_method","standard")),

@@ -248,21 +248,6 @@ function lbm_section_preview(path::AbstractString, flow::AbstractDict; source::A
     Dict{String,Any}("x"=>first.(poly), "z"=>last.(poly), "meta"=>_lbm_clean(meta), "support"=>support)
 end
 
-"Kill a recorded solver pid if it is still a running julia process (the worker was stopped before it could)."
-function _lbm_stop_recorded_solver(dir::AbstractString, log::Function)
-    f = joinpath(dir, "lbm_solver.pid")
-    isfile(f) || return
-    pid = tryparse(Int, strip(read(f, String)))
-    pid === nothing && return
-    alive = try
-        occursin("julia", lowercase(read(`tasklist /FI "PID eq $pid" /NH`, String)))
-    catch
-        false
-    end
-    alive || return
-    _deliver_log(log, "Stopping the LBM solver left running by its worker (recorded pid $pid).")
-    try run(`taskkill /PID $pid /T /F`) catch end
-end
 "Remove the GPU lock a killed LBM worker left behind (only one whose owner.txt names that worker's pid)."
 function _lbm_release_if_pid!(pid::Integer)
     f = joinpath(AirfoilGPULock.LOCK_DIR, AirfoilGPULock.OWNER_FILE)
@@ -275,12 +260,16 @@ end
 
 "Run the worker and turn its lines into job events (ITERATION, GPU_WAIT/GPU_ACQUIRED, LBM_FRAME, log lines)."
 function _lbm_log_process(cmd::Cmd, dir::AbstractString, progress::Function, log::Function, alpha::Float64, total::Integer)
+    AirfoilJobControl.check_cancelled()
     logpath = joinpath(dir, "worker.log")
     open(logpath, "w") do io
         output = Pipe()
-        proc = run(pipeline(cmd; stdout=output, stderr=output); wait=false)
-        close(output.in)
+        proc = run(pipeline(AirfoilJobControl.process_command(cmd); stdout=output, stderr=output); wait=false)
+        owned = AirfoilJobControl.track!(proc)
         wpid = getpid(proc)
+        reader = nothing
+        try
+        close(output.in)
         gpu_wait = Ref{Union{Nothing,String}}(nothing)
         reader = @async for line in eachline(output)
             println(io, line); flush(io)
@@ -329,12 +318,17 @@ function _lbm_log_process(cmd::Cmd, dir::AbstractString, progress::Function, log
                 progress(ev); heartbeat = time()
             end
         end
-        wait(proc); wait(reader)
-        if !success(proc)
-            _lbm_stop_recorded_solver(dir, log)
+        wait(proc)
+        AirfoilJobControl.finish!(owned)
+        wait(reader)
+        AirfoilJobControl.check_cancelled()
+        success(proc)
+        finally
+            AirfoilJobControl.finish!(owned)
+            wait(proc)
+            reader === nothing || (try wait(reader) catch end)
             _lbm_release_if_pid!(wpid) && _deliver_log(log, "Released the GPU lock that LBM worker pid $(wpid) left behind.")
         end
-        success(proc)
     end
 end
 

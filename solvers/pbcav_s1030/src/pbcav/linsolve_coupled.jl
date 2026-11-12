@@ -85,6 +85,7 @@ mutable struct CoupledWork{V,M,FS}
     Hx::V; Hy::V; hbx::V; hby::V; hxx::V; hxy::V; hyx::V; hyy::V
     Fl::V; Fbl::V; dvc::V; rc2::V; rw2::V; zw2::V
     eox::V; eoy::V; enx::V; eny::V; dF0::V
+    ebox::V; eboy::V; dFb0::V
     part::V; sc::V
     kref::Float64; rref::Int
     matvecs::Int; precs::Int
@@ -107,6 +108,7 @@ function CoupledWork(m::PBMesh, w, cfg)
                 z(nc), z(nc), z(nc), z(nc), z(nc), z(nc), z(nc), z(nc),
                 z(nf), z(nb), z(nc), z(nc), z(nc), z(nc),
                 z(nf), z(nf), z(nf), z(nf), z(nf),
+                z(nb), z(nb), z(nb),
                 z(max(cld(N, PB_DOT_CHUNK), 1)), z(8),
                 0.0, 0, 0, 0, nothing)
 end
@@ -364,6 +366,31 @@ end
     @inbounds y[i] = a[i] - b[i]
 end
 
+"Frozen incoming exterior-to-owner momentum jump on a free-air pressure outlet; zero on every other boundary."
+@kernel function _k_cpl_conv_bfaces!(ebox, eboy, Fb, bkind, bown, ub, vb, u, v)
+    b = @index(Global)
+    @inbounds begin
+        incoming = bkind[b] == UInt8(BC_FREESTREAM_OUTLET) && Fb[b] < 0
+        ebox[b] = incoming ? ub[b] - u[bown[b]] : 0.0
+        eboy[b] = incoming ? vb[b] - v[bown[b]] : 0.0
+    end
+end
+"The boundary analogue of _k_cpl_newton!: J += rho deltaF_b (u_ext-u_P), R -= rho (F_RC-F) (u_ext-u_P)."
+@kernel function _k_cpl_newton_bfaces!(yu, yv, dFb, ebox, eboy, cface, nf::Int32, rho_l::Float64, s::Float64)
+    c = @index(Global)
+    @inbounds begin
+        ax = 0.0; ay = 0.0
+        for k in 1:4
+            code = cface[k, c]
+            if code > nf
+                b = code - nf
+                ax += dFb[b]*ebox[b]; ay += dFb[b]*eboy[b]
+            end
+        end
+        yu[c] += s*rho_l*ax; yv[c] += s*rho_l*ay
+    end
+end
+
 "x.y into the host (the deterministic two-pass reduction on the coupled work's preallocated partials)."
 function cpl_dot(cw::CoupledWork, x, y; backend=CPU())
     _dot_dev!(cw.sc, 1, x, y, cw.part; backend)
@@ -381,7 +408,7 @@ increment's face fluxes F_lin(x) in cw.Fl, cw.Fbl.
 function _cpl_apply_body!(y, x, cw::CoupledWork, w, m::PBMesh, bc, cfg)
     be = cfg.backend; nc = m.nc; G = w.lsq
     du = cfield(x, 1, nc); dv = cfield(x, 2, nc); dp = cfield(x, 3, nc)
-    _launch!(_k_bvel!, be, m.nb, cw.ubl, cw.vbl, du, dv, bc.kind, cw.zb, cw.zb, m.bown, m.bSx, m.bSy, m.bSmag)
+    _launch!(_k_bvel!, be, m.nb, cw.ubl, cw.vbl, du, dv, bc.kind, cw.zb, cw.zb, m.bown, m.bSx, m.bSy, m.bSmag, cw.Fbconv)
     for (g1, g2, phi, phib) in ((cw.gux, cw.guy, du, cw.ubl), (cw.gvx, cw.gvy, dv, cw.vbl))
         _launch!(_k_lsq_grad!, be, nc, g1, g2, phi, phib, G.u11, G.u12, G.u22, m.cface, m.own, m.nei, m.dx, m.dy,
                  m.bdx, m.bdy, bc.kind, Int32(m.nf), Int32(0), Int32(0), Int32(0))
@@ -418,6 +445,8 @@ function _cpl_apply_body!(y, x, cw::CoupledWork, w, m::PBMesh, bc, cfg)
              m.ba, m.bkx, m.bky, Float64(cfg.nonorth), _rc_on(cfg), du, dv)
     _launch!(_k_cpl_div!, be, nc, cfield(y, 3, nc), cw.Fl, cw.Fbl, m.cface, Int32(m.nf))
     cfg.cpl_newton && _launch!(_k_cpl_newton!, be, nc, cfield(y, 1, nc), cfield(y, 2, nc), cw.Fl, cw.eox, cw.eoy, cw.enx, cw.eny,
+                                 m.cface, Int32(m.nf), cfg.rho_l, 1.0)
+    cfg.cpl_newton && _launch!(_k_cpl_newton_bfaces!, be, nc, cfield(y, 1, nc), cfield(y, 2, nc), cw.Fbl, cw.ebox, cw.eboy,
                                  m.cface, Int32(m.nf), cfg.rho_l, 1.0)
     cw.rref > 0 && _launch!(_k_cpl_ref!, be, 1, cfield(y, 3, nc), dp, Int32(cw.rref), cw.kref)
     pb_sync(be)
@@ -664,6 +693,11 @@ function cpl_freeze!(cw::CoupledWork, w, m::PBMesh, st::PBState, bc, cfg, t_new:
                  m.own, m.nei, m.xf, m.yf, m.ftx, m.fty, m.xc, m.yc, lu)
         _launch!(_k_cpl_sub2!, be, m.nf, cw.dF0, w.Fs, cw.Fconv)
         _launch!(_k_cpl_newton!, be, nc, cfield(cw.R, 1, nc), cfield(cw.R, 2, nc), cw.dF0, cw.eox, cw.eoy, cw.enx, cw.eny,
+                 m.cface, Int32(m.nf), cfg.rho_l, -1.0)
+        _launch!(_k_cpl_conv_bfaces!, be, m.nb, cw.ebox, cw.eboy, cw.Fbconv, bc.kind, m.bown, bc.ub, bc.vb,
+                 lev(st.ux, 1), lev(st.uy, 1))
+        _launch!(_k_cpl_sub2!, be, m.nb, cw.dFb0, w.Fbs, cw.Fbconv)
+        _launch!(_k_cpl_newton_bfaces!, be, nc, cfield(cw.R, 1, nc), cfield(cw.R, 2, nc), cw.dFb0, cw.ebox, cw.eboy,
                  m.cface, Int32(m.nf), cfg.rho_l, -1.0)
     end
     _launch!(_k_cpl_dpc_face!, be, m.nf, w.Df, w.a, w.at, m.vol, m.own, m.nei, m.fw, cfg.cpl_au)
@@ -921,7 +955,7 @@ followed by one residual evaluation, which writes no state (the systems are re-a
 function _komega_step_update!(w, m::PBMesh, st::PBState, bc, cfg, iters::Ref{Int}, res::Ref{Float64})
     assembled = false
     while true
-        r = komega_solve!(w, m, st, bc, cfg; assemble=!assembled); iters[] += 1
+        r = komega_solve!(w, m, st, bc, cfg; assemble=!assembled,relax=cfg.turb_step_relax); iters[] += 1
         r.finite || return :nonfinite
         r.converged || return :turb_linear_failed
         turb_update!(w, m, st, bc, cfg) || return :nonfinite             # the committed mu_t of the new k, omega

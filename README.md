@@ -26,7 +26,7 @@ packages and verifies each runtime. Subsequent setup runs reuse downloaded packa
 run setup again after updating the repository. No shared system image is required.
 
 The current CUDA solvers require an NVIDIA GPU and a compatible installed NVIDIA
-driver on **Windows or Linux**. The pinned solver environments select CUDA 13.0;
+driver on **Windows or Linux**. The pinned solver environments select CUDA 12.9;
 their toolkit libraries download automatically, but system GPU drivers are not
 installed by setup. On Windows, setup also installs the
 [Microsoft Visual C++ x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe)

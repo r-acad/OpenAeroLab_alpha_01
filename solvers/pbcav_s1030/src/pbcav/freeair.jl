@@ -11,8 +11,10 @@
 # THE CONDITIONS (`freeair_bcset`, bc.jl's kinds, nothing new in the assemblers):
 #   foil (and base)        BC_NOSLIP, u_b = 0;
 #   far field (BT_FAR)     BC_FARFIELD, velocity Dirichlet at the freestream U (cos alpha, sin alpha), on the inflow and on
-#                          the lateral faces alike (bc.jl: an outflow velocity face convects its own u_b, deferred);
-#   outlets                BC_PRESSURE_OUTLET at p_inf (zero-gradient velocity, backflow at the cell's velocity).
+#                          the lateral faces alike; outgoing convection uses the upwind owner, with the analytical
+#                          normal flux and viscous boundary value retained (bc.jl);
+#   outlets                BC_FREESTREAM_OUTLET at p_inf: zero-gradient outflow; incoming momentum and SST state use
+#                          the analytic exterior freestream rather than the owner's backflow velocity.
 #   The incidence is the freestream's (PB_ALPHA); the mesh is not rotated.
 # THE POINT-VORTEX CORRECTION (optional; Thomas and Salas 1986, AIAA J. 24(7) 1074-1080, incompressible form, beta = 1): the
 #   far-field velocity is the freestream plus the velocity of a point vortex at the quarter chord (x_v, y_v) = (0.25, 0) whose
@@ -155,8 +157,11 @@ end
         if k == UInt8(BC_FARFIELD)
             du, dv = point_vortex_velocity(bxf[b], byf[b], G, xv, yv)
             ub[b] = Ux + du; vb[b] = Uy + dv
-        elseif k == UInt8(BC_PRESSURE_OUTLET)
+        elseif is_pressure_bc(k)
             du, dv = point_vortex_velocity(bxf[b], byf[b], G, xv, yv)
+            if k == UInt8(BC_FREESTREAM_OUTLET)
+                ub[b] = Ux + du; vb[b] = Uy + dv
+            end
             pb[b] = pinf - rho*(Ux*du + Uy*dv) - 0.5*rho*(du*du + dv*dv)
         end
     end
@@ -185,8 +190,9 @@ end
 """
     freeair_bcset(mesh, fs::FreeStream; G=0.0, backend=CPU()) -> BCSet
 
-The free-air conditions (header): foil and base no slip, BT_FAR far field (velocity Dirichlet), outlets pressure at p_inf;
-with G != 0 the point-vortex values. Refuses a mesh with tunnel tags (inlet or slip walls): build it with `freeair_blocks`.
+The free-air conditions (header): foil and base no slip; BT_FAR fixes analytic normal flux and viscous velocity,
+with owner-upwind outgoing convection; outlets prescribe pressure and the exterior velocity for incoming transport.
+With G != 0 these are the point-vortex values. Refuses tunnel tags: build the mesh with `freeair_blocks`.
 """
 function freeair_bcset(m::PBMesh, fs::FreeStream; G::Real=0.0, backend=CPU())
     m.family === :cmesh || throw(ArgumentError("freeair_bcset needs a C-mesh"))
@@ -197,7 +203,7 @@ function freeair_bcset(m::PBMesh, fs::FreeStream; G::Real=0.0, backend=CPU())
     BT_FAR in tags || throw(ArgumentError("freeair_bcset: the mesh has no far-field faces"))
     kinds = Dict(t => (t == BT_FOIL || t == BT_BASE || t == BT_BAFFLE_FRONT || t == BT_BAFFLE_BACK ? BC_NOSLIP :
                        t == BT_FAR ? BC_FARFIELD :
-                       (t == BT_OUTLET || t == BT_SOUTLET) ? BC_PRESSURE_OUTLET :
+                       (t == BT_OUTLET || t == BT_SOUTLET) ? BC_FREESTREAM_OUTLET :
                        throw(ArgumentError("freeair_bcset: boundary tag $t has no free-air condition"))) for t in tags)
     bc = bcset(m; kinds, backend)
     set_farfield!(bc, m, fs, G; backend)
@@ -338,7 +344,7 @@ Green-Gauss gradients with the boundary face pressures, of the state's level 1, 
 """
 function loads_gradients!(lw::LoadsWork, st::PBState, m::PBMesh, bc, w, cfg)
     be = cfg.backend; u = lev(st.ux, 1); v = lev(st.uy, 1); G = w.lsq
-    _launch!(_k_bvel!, be, m.nb, lw.ubf, lw.vbf, u, v, bc.kind, bc.ub, bc.vb, m.bown, m.bSx, m.bSy, m.bSmag)
+    _launch!(_k_bvel!, be, m.nb, lw.ubf, lw.vbf, u, v, bc.kind, bc.ub, bc.vb, m.bown, m.bSx, m.bSy, m.bSmag, lev(st.Fb, 1))
     for (g1, g2, phi, phib) in ((lw.gux, lw.guy, u, lw.ubf), (lw.gvx, lw.gvy, v, lw.vbf))
         _launch!(_k_lsq_grad!, be, m.nc, g1, g2, phi, phib, G.u11, G.u12, G.u22, m.cface, m.own, m.nei, m.dx, m.dy,
                  m.bdx, m.bdy, bc.kind, Int32(m.nf), Int32(0), Int32(0), Int32(0))
@@ -453,7 +459,7 @@ and `loads` (the final loads), `fluxes`, `hist` (the per-step records), `vortex`
 function freeair_run!(st::PBState, m::PBMesh, bc::BCSet, cfg, fs::FreeStream; wall_cap::Real, vortex=nothing,
                       max_steps::Integer=typemax(Int), t_end::Real=Inf, steady_tol::Real=0.0, vortex_tol::Real=1e-6,
                       turb_steady_tol=nothing, history=nothing, work=nothing, ledger::PBLedger=PBLedger(), on_step=nothing,
-                      max_halvings::Integer=10, ramp=nothing)
+                      max_halvings::Integer=10, ramp=nothing, control=nothing, stop_requested=nothing)
     fs.rho == cfg.rho_l || throw(ArgumentError("freeair_run!: FreeStream.rho = $(fs.rho) differs from PBConfig.rho_l = " *
         "$(cfg.rho_l) (review of W2, R8)"))
     ramp === nothing || check_start_ramp(ramp)
@@ -498,7 +504,7 @@ function freeair_run!(st::PBState, m::PBMesh, bc::BCSet, cfg, fs::FreeStream; wa
         nothing
     end
     r = pbcav_run!(st, m, bc, cfg; wall_cap, t_end, steady_tol, max_steps, work=w, ledger, on_step=cb, max_halvings,
-                   steady_ok=ok, turb_steady_tol, pre_step=pre)
+                   steady_ok=ok, turb_steady_tol, pre_step=pre, control, stop_requested)
     L = airfoil_loads!(lw, st, m, bc, w, cfg, fs); fl = boundary_fluxes(lw, st, m; backend=be)
     merge(r, (loads=L, fluxes=fl, hist=recs, vortex=vortex, lw=lw))
 end
@@ -545,7 +551,7 @@ The driver's exit code of a free-air run (review of W2, R3; the 14 Oct rule: a n
 :REACHED (the steps or time asked for were made), 2 for :NOT_REACHED (the march was refused), 3 for :INCOMPLETE (the wall cap
 was reached), 1 for anything else.
 """
-freeair_exit_code(outcome::Symbol) = outcome in (:STEADY, :REACHED) ? 0 : outcome === :NOT_REACHED ? 2 :
+freeair_exit_code(outcome::Symbol) = outcome in (:STEADY, :REACHED, :STOPPED) ? 0 : outcome === :NOT_REACHED ? 2 :
                                      outcome === :INCOMPLETE ? 3 : 1
 
 """
@@ -564,6 +570,7 @@ function freeair_config(k::AbstractDict; backend=CPU())
                    speed_settings(k)...,
                    cpl_visc_nonorth=get(k, "PB_CPL_VISC_NONORTH", :jacobian), cpl_au=get(k, "PB_CPL_AU", 0.8),
                    cpl_eta=get(k, "PB_CPL_ETA", 0.1), cpl_sweeps=get(k, "PB_CPL_SWEEPS", 1),
+                   cpl_restart=get(k, "PB_CPL_RESTART", 30), cpl_maxit=get(k, "PB_CPL_MAXIT", 300),
                    cpl_vcycles=get(k, "PB_CPL_VCYCLES", 1),
                    speed_dev=get(k, "PB_SPEED_DEV", false),
                    domain=:freeair)    # the PROVISIONAL gate's case class (the merge review of cf838408, M2; no arithmetic)
@@ -581,6 +588,7 @@ function freeair_config_line(cfg, fs::FreeStream, k::AbstractDict)
                  k["PB_VORTEX_RELAX"], k["PB_VORTEX_EVERY"])
     s *= " vortex_tol=1e-06"                         # freeair_drive!'s (freeair_run!'s default; the review of the integration, F6 a)
     s *= " cpl_visc_nonorth=" * string(cfg.cpl_visc_nonorth) * @sprintf(" cpl_au=%.4g", cfg.cpl_au)       # W6b
+    s *= @sprintf(" cpl_restart=%d cpl_maxit=%d", cfg.cpl_restart, cfg.cpl_maxit)
     (cfg.cpl_eta != 0.1 || cfg.cpl_sweeps != 1 || cfg.cpl_vcycles != 1) &&
         (s *= @sprintf(" cpl_eta=%.4g cpl_sweeps=%d cpl_vcycles=%d", cfg.cpl_eta, cfg.cpl_sweeps, cfg.cpl_vcycles))
     # W7's speed settings, printed only when one differs from its default (so the receipt of a default run is the one before W7);
@@ -596,6 +604,7 @@ function freeair_config_line(cfg, fs::FreeStream, k::AbstractDict)
                  cfg.sst_tu, cfg.sst_mut_ratio, kin, win, cfg.wall_omega, cfg.turb_coupling, cfg.turb_mut, cfg.turb_omega_nonorth, cfg.turb_omega_bound, cfg.turb_outer_ramp, cfg.turb_outer_tol,
                  cfg.turb_nonorth, cfg.turb_nonorth_split, cfg.turb_tol, cfg.turb_step_tol, _kw_goal_floor(cfg),
                  k["PB_TURB_STEADY_TOL"], cfg.k_min, cfg.w_min, cfg.turb_lin_rtol, cfg.turb_sweeps_max, cfg.turb_step_maxit)
+    cfg.turb_step_relax != 1 && (s *= @sprintf(" turb_step_relax=%.4g",cfg.turb_step_relax))
     # turb_mut_base (27 Oct 2026, records air/mutbase/): appended only when not the default, so a default receipt is the one
     # before it, byte for byte
     cfg.turb_mut_base === :extrapolated ? s : s * " turb_mut_base=" * string(cfg.turb_mut_base)
@@ -698,6 +707,11 @@ omega_bound_final_max_cut_over_Q, omega_bound_final_at) and in one line PB FREEA
 nothing new is printed; under SST with the bound unable to act the summary line says omega_bound=0 or omega_bound=unsplit(b).
 """
 function freeair_drive!(m::PBMesh, k::AbstractDict; backend=CPU())
+    output_dir=k["PB_OUT_DIR"]
+    if !isempty(get(k,"PB_RESTART","")) && !isempty(output_dir) &&
+            any(name->isfile(joinpath(output_dir,name)),("loads_history.csv","omega_bound_history.csv","surface.csv","baffle.csv"))
+        throw(ArgumentError("A native restart needs a new PB_OUT_DIR; refusing to overwrite earlier history or surface results in $output_dir"))
+    end
     fs = FreeStream(; alpha=k["PB_ALPHA"])
     bc = freeair_bcset(m, fs; backend)
     cfg = freeair_config(k; backend)
@@ -705,7 +719,16 @@ function freeair_drive!(m::PBMesh, k::AbstractDict; backend=CPU())
     println(freeair_config_line(cfg, fs, k))
     st = allocate_state(m; backend); Ux, Uy = uinf(fs)
     G0 = 0.0; kut = ""; ramp = nothing
-    if get(k, "PB_START", :projection) === :ramp         # the ramp start (24 Oct 2026; opt-in): the freestream accelerated
+    control=Dict{String,Any}(); restored=nothing; ledger=PBLedger()
+    restart=get(k,"PB_RESTART","")
+    if !isempty(restart)
+        w=pbwork(m,bc,cfg)
+        restored=read_freeair_checkpoint!(restart,m,st,bc,k;control,ledger)
+        G0=restored["circulation"]
+        get(k,"PB_START",:projection) === :ramp && (ramp=k["PB_START_RAMP"])
+        ps=(fcg=0,rel=0.0,div_before=0.0,div_after=0.0)
+        kut=", resumed checked checkpoint at step $(st.nstep), t=$(st.t)"
+    elseif get(k, "PB_START", :projection) === :ramp         # the ramp start (24 Oct 2026; opt-in): the freestream accelerated
         ramp = k["PB_START_RAMP"]
         w = pbwork(m, bc, cfg)
         ps = ramp_start!(st, m, bc, cfg, fs, ramp; work=w)
@@ -725,9 +748,16 @@ function freeair_drive!(m::PBMesh, k::AbstractDict; backend=CPU())
         sst && init_turbulence!(st, m, bc, cfg; work=w)
         ps = project_start!(st, m, bc, cfg; work=w)
     end
+    if restored===nothing
+        st.dt=min(cfg.dt,k["PB_START_DT"])
+        kut *= @sprintf(", initial dt %.6g (PB_START_DT cap; grows toward %.6g)",st.dt,cfg.dt)
+    end
     @printf("PB FREEAIR START: projection FCG %d, rel %.2e, max |div F|/V %.3e -> %.3e%s\n", ps.fcg, ps.rel, ps.div_before,
             ps.div_after, kut)
     pv = k["PB_VORTEX"] === :point ? PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=G0) : nothing
+    if pv !== nothing && restored !== nothing
+        append!(pv.hist,[(Int(x[1]),Float64(x[2])) for x in restored["vortex_history"]])
+    end
     dir = k["PB_OUT_DIR"]; isempty(dir) || mkpath(dir)
     hio = isempty(dir) ? nothing : open(joinpath(dir, "loads_history.csv"), "w")
     # W6b (the review of W6b, F1 a): where turb_omega_bound acted, per committed step (its own file beside the load history,
@@ -746,7 +776,7 @@ function freeair_drive!(m::PBMesh, k::AbstractDict; backend=CPU())
     end
     r = try
         freeair_run!(st, m, bc, cfg, fs; wall_cap=k["PB_WALL_CAP"], vortex=pv, max_steps=k["PB_MAX_STEPS"],
-                     steady_tol=k["PB_STEADY_TOL"], turb_steady_tol=k["PB_TURB_STEADY_TOL"], history=hio, work=w, on_step=onb, ramp)
+                     steady_tol=k["PB_STEADY_TOL"], turb_steady_tol=k["PB_TURB_STEADY_TOL"], history=hio, work=w, on_step=onb, ramp, control, ledger)
     finally
         hio === nothing || close(hio)
         bio === nothing || close(bio)
@@ -782,6 +812,11 @@ function freeair_drive!(m::PBMesh, k::AbstractDict; backend=CPU())
     (sst && bon) && @printf("PB FREEAIR OMEGA BOUND: at the committed state (steady assembly, bound %.3g): %d cells cut, max cut/Q %.3e at %s; cells %s; acted in %d of %d committed steps (last %d)\n",
                             cfg.turb_omega_bound, bcs.n, bcs.ratio, bcs.at, bcs.cells, bsteps[], r.nstep, blast[])
     isempty(r.refusal) || println("PB FREEAIR REFUSAL: ", r.refusal)
+    if !isempty(dir)
+        stem="step"*lpad(string(st.nstep),9,'0')
+        get(k,"PB_OUTPUT_FIELDS",:on) === :on && println("PB FIELD: ",write_freeair_vtu(joinpath(dir,"fields_"*stem*".vtu"),m,st,cfg,fs))
+        get(k,"PB_OUTPUT_CHECKPOINT",:on) === :on && println("PB CHECKPOINT: ",write_freeair_checkpoint(joinpath(dir,"state_"*stem*".pbrestart"),m,st,bc,k;vortex=pv,control,ledger))
+    end
     r
 end
 
@@ -822,6 +857,8 @@ function mesh_audit(m::PBMesh; band::Integer=40, outlet_cells::Integer=3)
         end
     end
     sk = [hypot(skx[f], sky[f])/hypot(dx[f], dy[f]) for f in 1:m.nf]
+    smag=H(m.Smag)
+    skof = [hypot(skx[f],sky[f])/max(0.2hypot(dx[f],dy[f]),0.5smag[f]) for f in 1:m.nf]
     vr = [max(vol[own[f]]/vol[nei[f]], vol[nei[f]]/vol[own[f]]) for f in 1:m.nf]
     # wall-normal growth along each C column (cells (i, j) and (i, j + 1))
     rn_band = 1.0; rn_out = 1.0; rn_band_at = (0, 0); rn_out_at = (0, 0)
@@ -850,7 +887,7 @@ function mesh_audit(m::PBMesh; band::Integer=40, outlet_cells::Integer=3)
     ca = argmax(ar); cam = argmin(amin)
     (cells=nc, faces=m.nf, hmax=sqrt(maximum(vol)), hmin=sqrt(minimum(vol)),
      theta_max=maximum(th), theta_gt60=count(>(60), th), theta_gt65=count(>(65), th), theta_gt70=count(>(70), th),
-     theta_at=loc(own[ft]), skew_max=maximum(sk), skew_at=loc(own[fs_]),
+     theta_at=loc(own[ft]), skew_max=maximum(sk), skew_of_max=maximum(skof), skew_at=loc(own[fs_]),
      AR_max=maximum(ar), AR_median=sort(ar)[cld(nc, 2)], AR_at=loc(ca), AR_outlet_max=maximum(ar[outc]),
      AR_gt1000=count(>(1000), ar), AR_principal_max=maximum(arp),
      VR_max=maximum(vr), VR_at=loc(own[fv]), VR_cut_max=isempty(cut) ? 1.0 : maximum(vr[cut]),
@@ -866,14 +903,15 @@ end
 The audit against version 1's mesh-quality option's G2 limits (docs/_records/2026-10-15_mesh_quality/DESIGN.md section 7, as
 registered there for version 1's channel presets; quoted here as reference limits, not registered for this family): G2a
 theta <= 65; G2c AR within 3 cells of the outlet <= 1,000 (a cavitating-preset gate); G2d VR <= 2; G2e r_n <= 1.15 in the
-band, <= 1.2 elsewhere; G2f r_t on the foil and the cut <= 1.2; G2g skew <= 4 (version 2's skew/d, the audit's stand-in for
-skew_OF); G2h outlet theta_b <= 15.
+band, <= 1.2 elsewhere; G2f r_t on the foil and the cut <= 1.2; G2g skew_OF <= 4;
+G2h outlet theta_b <= 15. G2g uses the OpenFOAM normalization
+|skew vector|/max(0.2 |d|, |S|/2), not the separately reported skew/d.
 """
 mesh_audit_gates(a) = [("G2a theta_max", a.theta_max, 65.0, a.theta_max <= 65), ("G2c AR_outlet3", a.AR_outlet_max, 1000.0,
                          a.AR_outlet_max <= 1000), ("G2d VR_max", a.VR_max, 2.0, a.VR_max <= 2),
                         ("G2e rn_band", a.rn_band_max, 1.15, a.rn_band_max <= 1.15), ("G2e rn_out", a.rn_out_max, 1.2, a.rn_out_max <= 1.2),
                         ("G2f rt_foil", a.rt_foil_max, 1.2, a.rt_foil_max <= 1.2), ("G2f rt_cut", a.rt_cut_max, 1.2, a.rt_cut_max <= 1.2),
-                        ("G2g skew", a.skew_max, 4.0, a.skew_max <= 4), ("G2h theta_b_outlet", a.theta_b_outlet_max, 15.0,
+                        ("G2g skew_OF", a.skew_of_max, 4.0, a.skew_of_max <= 4), ("G2h theta_b_outlet", a.theta_b_outlet_max, 15.0,
                          a.theta_b_outlet_max <= 15)]
 
 "One line of the mesh audit (the driver prints it for a free-air mesh)."
@@ -882,5 +920,5 @@ function mesh_audit_line(a)
     @sprintf("PB MESH AUDIT: cells=%d hmax=%.4g theta_max=%.2f gt65=%d skew_max=%.3f AR_max=%.0f AR_median=%.2f AR_outlet3=%.0f VR_max=%.3f rn_band=%.4f rn_out=%.4f rt_foil=%.4f rt_cut=%.4f angle_min=%.2f theta_b_outlet=%.2f dn1_wall=%.3e G2=%s",
              a.cells, a.hmax, a.theta_max, a.theta_gt65, a.skew_max, a.AR_max, a.AR_median, a.AR_outlet_max, a.VR_max,
              a.rn_band_max, a.rn_out_max, a.rt_foil_max, a.rt_cut_max, a.angle_min, a.theta_b_outlet_max, a.dn1_wall,
-             join([string(n, ":", p ? "pass" : "FAIL") for (n, _, _, p) in g], ","))
+             join([string(n, ":", p ? "pass" : "FAIL") for (n, _, _, p) in g], ",")) * @sprintf(" skew_OF_max=%.3f",a.skew_of_max)
 end

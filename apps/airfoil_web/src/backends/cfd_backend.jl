@@ -3,6 +3,10 @@ module CFDBackend
 using Printf
 using TOML
 using SHA
+if !isdefined(parentmodule(@__MODULE__), :AirfoilJobControl)
+    Base.include(parentmodule(@__MODULE__), joinpath(@__DIR__, "..", "job_control.jl"))
+end
+using ..AirfoilJobControl
 include(joinpath(@__DIR__, "rans_acceleration.jl"))
 using .RANSAcceleration
 include(joinpath(@__DIR__, "..", "workers", "implicit_methods.jl"))
@@ -178,11 +182,15 @@ function _log_process(cmd::Cmd, log_path::AbstractString, progress::Function,
                       log::Function, backend::String, alpha::Float64;
                       physical_seconds_per_ctu::Union{Nothing,Real}=nothing,
                       residual_kind::Union{Nothing,AbstractString}=nothing)
+    AirfoilJobControl.check_cancelled()
     open(log_path, "w") do io
         output = Pipe()
-        proc = run(pipeline(cmd; stdout=output, stderr=output); wait=false)
-        close(output.in)  # Only the child writes; EOF must reach the reader.
+        proc = run(pipeline(AirfoilJobControl.process_command(cmd); stdout=output, stderr=output); wait=false)
+        owned = AirfoilJobControl.track!(proc)
+        reader = nothing
         wpid = getpid(proc)
+        try
+        close(output.in)  # Only the child writes; EOF must reach the reader.
         gpu_wait = Ref{Union{Nothing,String}}(nothing)   # the low-speed worker waiting for the shared GPU lock (gpu_lock.jl)
         reader = @async begin
             last_iteration_event = nothing
@@ -296,10 +304,17 @@ progress(Dict("event"=>"started", "backend"=>backend, "alpha_deg"=>alpha, "pid"=
             end
         end
         wait(proc)
+        AirfoilJobControl.finish!(owned)
         wait(reader)  # Include final buffered lines before reporting completion.
-        # the server's safety net: a GPU lock a killed low-speed worker left behind (only one naming that worker's pid)
-        backend == "lowspeed" && AirfoilGPULock.release_if_pid!(wpid) && _deliver_log(log, "Released the GPU lock that worker pid $(wpid) left behind.")
+        success(proc) || AirfoilJobControl.check_cancelled()
         success(proc)
+        finally
+            AirfoilJobControl.finish!(owned)
+            wait(proc)
+            reader === nothing || (try wait(reader) catch end)
+            backend == "lowspeed" && AirfoilGPULock.release_if_pid!(wpid) &&
+                _deliver_log(log, "Released the GPU lock that worker pid $(wpid) left behind.")
+        end
     end
 end
 
@@ -908,26 +923,35 @@ The caller owns a fresh job directory. A failed point retains its log and does n
 coefficients. The function is synchronous; call it in a Task for a responsive web server.
 """
 function run_case(case::AbstractDict, backend::AbstractString, outdir::AbstractString;
-                  progress::Function=(_)->nothing, log::Function=(_)->nothing)
+                  progress::Function=(_)->nothing, log::Function=(_)->nothing,initial_warmdir=nothing)
     backend in ("transonic", "cavitation", "lowspeed", "lbm") || throw(ArgumentError("unsupported CFD backend: $backend"))
+    initial_warmdir===nothing || backend=="lowspeed" || throw(ArgumentError("Checked initial flow is supported only by low-speed CFD"))
     path = _geometry(case)
     flow = _get(case, "flow", Dict())
     flow isa AbstractDict || throw(ArgumentError("flow must be an object"))
     alphas = _alpha_values(case)
     mkpath(outdir)
     points = Dict{String,Any}[]
-    warmdir = nothing
+    warmdir = initial_warmdir
     for (i, alpha) in enumerate(alphas)
+        AirfoilJobControl.check_cancelled()
         dir = joinpath(outdir, backend, @sprintf("%03d_alpha_%+.3f", i, alpha))
         mkpath(dir)
         _deliver_log(log, @sprintf("Starting %s point %d/%d at alpha %.3f deg",
                                    backend, i, length(alphas), alpha))
         try
             point = backend == "lbm" ? _lbm_point(case,path,flow,alpha,dir,progress,log) :
-                    backend == "lowspeed" ? _lowspeed_point(case,path,flow,alpha,dir,progress,log,warmdir) :
+                    backend == "lowspeed" ? _lowspeed_point(case,path,flow,alpha,dir,progress,log,warmdir;
+                        warm_required=i==1 && initial_warmdir!==nothing) :
                     backend == "transonic" ? _transonic_point(case,path,flow,alpha,dir,progress,log,warmdir;
                         mesh_anchor=length(alphas)>1 ? first(alphas) : nothing) :
                                                _cavitation_point(case,path,flow,alpha,dir,progress,log)
+            if i==1 && initial_warmdir!==nothing
+                offered=abspath(joinpath(initial_warmdir,"state_checkpoint.jls"))
+                used=get(get(point,"diagnostics",Dict()),"warm_start_source","")
+                used isa AbstractString && !isempty(used) && normpath(abspath(used))==normpath(offered) ||
+                    throw(ArgumentError("The worker refused the required checked initial flow; inspect solver.log for its compatibility reason. A cold fallback is not accepted."))
+            end
             push!(points, point)
             backend in ("lowspeed", "transonic") && isfile(joinpath(dir, "state_checkpoint.jls")) && (warmdir = dir)
             progress(Dict("event"=>"point_complete", "backend"=>backend, "alpha_deg"=>alpha,
@@ -935,6 +959,8 @@ function run_case(case::AbstractDict, backend::AbstractString, outdir::AbstractS
             _deliver_log(log, @sprintf("Completed %s point %d/%d at alpha %.3f deg",
                                        backend, i, length(alphas), alpha))
         catch err
+            AirfoilJobControl.check_cancelled()
+            i==1 && initial_warmdir!==nothing && rethrow()
             push!(points, Dict{String,Any}("backend"=>backend, "alpha_deg"=>alpha,
                                           "status"=>"failed", "error"=>sprint(showerror, err),
                                           "artifacts"=>Dict("log"=>joinpath(dir,"solver.log"))))

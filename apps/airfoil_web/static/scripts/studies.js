@@ -42,14 +42,14 @@ window.AirfoilStudies = (() => {
     resetLog();window.AirfoilBabylon?.hide();clearError();
     el['job-title'].textContent='Ready';el['job-message'].textContent='Choose the setup, then run an analysis.';
     el['job-id'].textContent='';el['job-percent'].textContent='0%';el['progress-bar'].style.width='0%';
-    el['download-result'].disabled=true;
+    el['download-result'].disabled=true;el['cancel-button'].disabled=true;
     renderSelection();renderPolars();renderTable();
   }
   async function allowReplace() {
-    if(!dirty&&!['queued','running'].includes(state.job?.status))return true;
+    if(!dirty&&!['queued','running','cancelling'].includes(state.job?.status))return true;
     const dialog=$('study-confirm');
     $('study-confirm-text').textContent=(dirty?'The current study has unsaved changes. ':'')+
-      (['queued','running'].includes(state.job?.status)?'The running job will continue and can be reopened from saved results. ':'')+
+      (['queued','running','cancelling'].includes(state.job?.status)?'The running job will continue and can be reopened from saved results. ':'')+
       'Save first, discard changes, or cancel.';
     dialog.returnValue='cancel';dialog.showModal();
     const choice=await new Promise(resolve=>dialog.addEventListener('close',()=>resolve(dialog.returnValue),{once:true}));
@@ -62,7 +62,7 @@ window.AirfoilStudies = (() => {
     try {
         detach();restoreControls(defaults);path=null;etag=null;resultLink=null;
         window.WingLegends?.restore(null);
-      state.savedLowspeedTopology=null;state.machEdited=false;state.reynoldsEdited=false;
+      state.machEdited=false;state.reynoldsEdited=false;
       updateSetup();scheduleGeometryPreview();await window.AirfoilBenchmarks.restore(null);
       switchTab('geometry');dirty=false;status('New study. Save to choose its location.');closeMenus();
     } finally {restoring=false;}
@@ -83,9 +83,7 @@ window.AirfoilStudies = (() => {
       updateSetup();
       // Retain API-only numerical settings without resurrecting optional GUI
       // controls (e.g. a flap or trip after its checkbox is switched off).
-      const represented=collectCase().flow;
-      const managed=new Set(window.AirfoilManagedFlowKeys||[]);
-      state.studyFlowExtras=Object.fromEntries(Object.entries(study.request.flow).filter(([key])=>!(key in represented)&&!managed.has(key)));
+      restoreSavedFlowExtras(study.request.flow);
       path=data.path;etag=data.etag;resultLink=study.results;
       window.WingLegends?.restore(study.view?.color_scales);
         if(study.view?.color_scales?.palettes?.flow)window.LudwigPalettes?.set(study.view.color_scales.palettes.flow);

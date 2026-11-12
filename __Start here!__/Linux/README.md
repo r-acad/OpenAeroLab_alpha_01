@@ -19,7 +19,7 @@ requires a separate compatible Julia installation. No `sudo` is used by setup.
 
 For native file dialogs, install `zenity` (GNOME) or `kdialog` (KDE). Without one,
 use the browser file selector and explicit destination paths. NVIDIA GPU solves
-need a driver compatible with the pinned CUDA 13.0 runtime. AMD GPUs and Apple
+need a driver compatible with the pinned CUDA 12.9 runtime. AMD GPUs and Apple
 GPU backends are not implemented. CPU-only machines can use JXfoil and viewers;
 the installer reports whether CUDA is functional.
 

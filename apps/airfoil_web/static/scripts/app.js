@@ -192,35 +192,34 @@ const AirfoilWire = { encodeMsgpack, decodeMsgpack, encodeBson, decodeBson };
 if (typeof window !== "undefined") window.AirfoilWire = AirfoilWire;
 
 const $ = id => document.getElementById(id);
-const minimumServiceRevision = 20;
+const minimumServiceRevision = 26;
 const el = Object.fromEntries([
+  "point-downloads", "saved-flow-overrides", "clear-saved-flow-overrides",
   "cav-fs-controls", "cav-conventional-controls", "cav-speed", "cav-water-depth", "cav-air-height", "cav-fs-duration", "cav-fs-max-steps", "cav-fs-resolution", "cav-fs-vapor", "geometry-axis-label", "cav-fs-formulation", "cav-fs-formulation-note", "history-residual-title", "cfd-te-topology-field", "underwater-mesh-note",
   "cfd-time-mode-field", "cfd-time-mode", "physical-time-controls", "cfd-duration-ctu", "cfd-burnin-ctu", "cfd-block-ctu", "cfd-auto-stop-field", "cfd-sfd-field", "cfd-time-note", "cav-duration-field", "sampling-state", "diagnostics-axis-note", "cav-chord-field", "cav-chord", "rans-acceleration-line", "rans-acceleration", "rans-acceleration-note",
   "rans-method-line", "rans-method", "rans-method-note", "implicit-method-options", "implicit-warmup", "implicit-cfl", "implicit-basis", "implicit-sst-substeps", "implicit-nonmonotone", "implicit-preconditioner", "implicit-recovery",
-  "server-state", "transport", "theme-mode", "source-kind", "naca-picker", "naca-code", "uiuc-picker", "dat-picker", "dat-file", "dat-status", "airfoil-search", "airfoil-select", "catalog-status", "airfoil-meta", "airfoil-name", "airfoil-description", "airfoil-link", "show-reference", "curvature-mapping-field", "curvature-mapping-help", "cfd-te-topology",
+  "server-state", "setup-method", "transport", "theme-mode", "source-kind", "naca-picker", "naca-code", "uiuc-picker", "dat-picker", "dat-file", "dat-status", "airfoil-search", "airfoil-select", "catalog-status", "airfoil-meta", "airfoil-name", "airfoil-description", "airfoil-link", "show-reference", "curvature-mapping-field", "curvature-mapping-help", "cfd-te-topology",
   "mach", "reynolds", "alpha", "ncrit", "transition-mode", "trip-controls", "trip-upper", "trip-lower", "sigma", "sigma-field", "flow-hint", "backend", "backend-note", "advanced-cfd", "advanced-air", "advanced-cav", "cfd-steps", "cfd-gpu", "cfd-rk", "cfd-rk-field", "gas-physics-fields", "cfd-auto-stop", "cfd-mass-ceiling", "gas-mesh-field", "cfd-mesh", "cfd-resolution", "base-faces-field", "cfd-n-base", "cfd-sfd-storage", "cfd-viscosity-model", "cfd-temperature-field", "cfd-temperature", "cav-warm-steps", "cav-duration", "cav-frames", "cav-channel", "cav-channel-field", "cav-fluid", "cav-domain", "cav-domain-note", "cav-depth", "cav-depth-field", "cav-air-mode", "cav-air-mode-field", "operation-feedback", "operation-label", "curvature-scale", "curvature-scale-field",
-  "cav-reference-picker", "cav-reference-select", "cav-reference-meta", "cav-reference-status", "cav-reference-note", "cav-reference-link", "run-status", "job-progress", "gas-mesh-label", "sweep-enabled", "sweep-controls", "alpha-start", "alpha-stop", "alpha-step", "sweep-count", "run-button", "form-error", "job-title", "job-message", "job-percent", "progress-bar", "job-id", "log-state", "log-count", "log-follow", "log-download", "log-view", "log-empty", "log-warning",
-  "lowspeed-controls", "lowspeed-resolution", "lowspeed-tu", "lowspeed-mut-ratio", "lowspeed-steady-tol", "lowspeed-turb-steady-tol", "lowspeed-note", "lowspeed-ch-baseline", "lowspeed-gpu", "lowspeed-gpu-note", "recent-select", "recent-open", "recent-refresh", "recent-status",
+  "cav-reference-picker", "cav-reference-select", "cav-reference-meta", "cav-reference-status", "cav-reference-note", "cav-reference-link", "run-status", "job-progress", "gas-mesh-label", "sweep-enabled", "sweep-controls", "alpha-start", "alpha-stop", "alpha-step", "sweep-count", "run-button", "cancel-button", "form-error", "job-title", "job-message", "job-percent", "progress-bar", "job-id", "log-state", "log-count", "log-follow", "log-download", "log-view", "log-empty", "log-warning",
+  "lowspeed-controls", "lowspeed-resolution", "lowspeed-tu", "lowspeed-mut-ratio", "lowspeed-steady-tol", "lowspeed-turb-steady-tol", "lowspeed-note", "lowspeed-topology", "lowspeed-start", "lowspeed-mut-base", "lowspeed-gpu", "lowspeed-gpu-note", "recent-select", "recent-open", "recent-refresh", "recent-status",
   "gurney-group", "gurney-enabled", "gurney-controls", "gurney-height", "gurney-mode", "gurney-refine", "gurney-note", "gurney-range",
   "streamline-align", "streamline-controls", "streamline-mode", "streamline-admission", "streamline-fallback", "streamline-note", "geometry-streamlines", "field-streamlines",
   "result-backend", "result-alpha", "download-result", "geometry-chart", "geometry-title", "geometry-status", "geometry-display", "native-result-geometry", "curvature-chart", "preview-resolution", "create-mesh", "refine-mesh", "trailing-edge-thickness", "cp-chart", "reference-note", "field-kind", "field-renderer", "field-grid", "field-mesh-overlay", "field-view", "babylon-view", "field-legend", "polar-cl", "polar-cd", "polar-cm", "polar-note", "points-body", "result-notes", "convergence-panel", "convergence-state", "history-residual", "history-cl", "history-cd"
 ].map(id => [id, $(id)]));
   const state = { serviceRevision: null, airfoils: [], catalogLoaded: false, cavitationReferences: [], cavitationReferencesLoaded: false, cavitationReferencesLoading: null, cavitationReferenceSelection: 0, cavitationReferenceAppliedId: null, job: null, result: null, pollTimer: null, historyTimer: null, pollGeneration: 0, logCursor: 0, historyCursor: 0, logLineCount: 0, jobWire: "msgpack", machEdited: false, liveHistory: Object.create(null), activeCfdAlpha: null, requestedAlpha: null, activeTab: "geometry", meshKeys: "", fullMeshes: new Map(), meshLoading: new Set(), fullFields: new Map(), fieldLoading: new Set(), preview: null, previewGeneration: 0, previewTimer: null, gridVisible: true, meshOverlay: false, showAirfoilName: true, showStreamlines: true };
 const colors = { jxfoil: "#087e89", xfoil: "#bf39bd", transonic: "#df713e", cavitation: "#3e69ac", lowspeed: "#2f8f4e", lbm: "#7a4fb5" };
-const backendName = { jxfoil: "JXfoil (Julia clone)", xfoil: "XFOIL executable", transonic: "Compressible CFD", cmesh: "Compressible CFD", cavitation: "Species / cavitation CFD", lowspeed: "Low-speed CFD (pressure-based, new)", lbm: "LBM 3D (LUDWIG)" };
+const backendName = { jxfoil: "JXfoil (Julia clone)", xfoil: "XFOIL executable", transonic: "Compressible CFD", cmesh: "Compressible CFD", cavitation: "Species / cavitation CFD", lowspeed: "Low-speed 2D CFD", lbm: "LBM 3D (LUDWIG)" };
 function selectedBackends(value) {
   return ({both:["jxfoil","transonic"],cfd_both:["transonic","cavitation"],xfoil_cfd_both:["xfoil","transonic","cavitation"],xfoil_lowspeed:["xfoil","lowspeed"]})[value] || [value];
 }
 // ---- Gurney flap (23 Oct 2026): a zero-thickness plate perpendicular to the chord at the trailing edge, exact sharp
 // root and tip corners (gurney.jl). One side: the plate extends h from that trailing-edge point; symmetric: a T, h/2 each way.
-const gurneyRules={heightMin:.001,heightMax:.05,minimumServiceRevision:11,baffleServiceRevision:16,refineServiceRevision:17,refineLevels:["off","standard","fine"]};   // 28 Oct 2026: the low-speed baffle needs api revision 16 (its result shape)
+const gurneyRules={heightMin:.001,heightMax:.05,minimumServiceRevision:11,baffleServiceRevision:16,refineServiceRevision:17,refineLevels:["auto","off","standard","fine"]};
 // The Gurney flap is a baffle (an interior wall) of the low-speed CFD's native C+H mesh; the solver's quality gate admits only a
 // range of h that depends on the section and the mesh. Create mesh returns it; the page keeps the last one it saw (and the
 // last refusal) and shows them beside the height. Nothing here decides: the solver's gate is the authority.
-const gurneyDemoRange="On the demo mesh of NACA 0012 the gate admits h/c from 5.75e-4 to 0.0726 on one side and, as the total h, 1.15e-3 to 0.145 symmetric.";
-const gurneyUnsteadyCaveat="Steady RANS caveat: a Gurney flap sheds, and the steady march suppresses the shedding, so the plate's back-face suction is a bound, not a time average. Development evidence (apps/airfoil_web/validation/gurney_urans_20261027, a 2 %c flap on NACA 0012, time-accurate at small dt, on the earlier reshaped-mesh plate): the wake sheds and the time-mean C_D rose to 22 % above the steady value (a lower bound). Development, not validated.";
-function gurneyRangeKey(value){return value?JSON.stringify([value.airfoil,value.flow.lowspeed_resolution||"demo",value.flow.gurney_mode]):null;}
-function gurneyRefusalKey(value){return value?JSON.stringify([value.airfoil,value.flow.lowspeed_resolution||"demo",value.flow.gurney_mode,value.flow.gurney_height]):null;}
+function gurneyRangeKey(value){return value?JSON.stringify([value.airfoil,value.flow.lowspeed_resolution||"auto",value.flow.gurney_mode]):null;}
+function gurneyRefusalKey(value){return value?JSON.stringify([value.airfoil,value.flow.lowspeed_resolution||"auto",value.flow.gurney_mode,value.flow.gurney_height]):null;}
 // Take the baffle's record (the mesh metadata's gurney_baffle, or a point's baffle) into the page's memory.
 function rememberGurneyRange(value,baffle){
   const r=baffle?.range;if(!r||!value||value.flow.gurney_height==null)return;
@@ -236,14 +235,25 @@ function gurneyFlow(strict=true){
   if(el["gurney-height"].value.trim()===""||!Number.isFinite(h)||h<gurneyRules.heightMin||h>gurneyRules.heightMax)
     return fail(`Enter a Gurney plate height h/c between ${gurneyRules.heightMin} and ${gurneyRules.heightMax}.`);
   if(!["symmetric","lower","upper"].includes(mode))return fail("Select the Gurney flap side.");
-  const refine=el["gurney-refine"]?.value||"standard";
-  if(!gurneyRules.refineLevels.includes(refine))return fail("Select the mesh refinement at the flap tip: off, standard or fine.");
-  return {gurney_height:h,gurney_mode:mode,gurney_refine:refine};
+  const refine=el["gurney-refine"]?.value||"auto";
+  if(!gurneyRules.refineLevels.includes(refine))return fail("Select automatic, off, standard or fine flap-tip refinement.");
+  return {gurney_height:h,gurney_mode:mode,...(refine==="auto"?{}:{gurney_refine:refine})};
 }
 // ---- Streamline-aligned meshes (24 Oct 2026, DEVELOPMENT, NOT VALIDATED): the CFD mesh lines are moved onto JXfoil's wake
 // path and stagnation streamline at the analysis angle (streamline_backend.jl). Off: no key is sent and nothing changes.
 const streamlineRules={minimumServiceRevision:12};
 // The low-speed CFD's opt-in GPU run (24 Oct 2026): the request key lowspeed_gpu, sent only when ticked.
+function lowspeedTopologyFlow(){
+  const topology=el["lowspeed-topology"].value||"auto";
+  const flow=topology==="auto"?{}:{lowspeed_topology:topology};
+  if(el["lowspeed-start"].value!=="auto")flow.lowspeed_start=el["lowspeed-start"].value;
+  if(el["lowspeed-mut-base"].value!=="auto")flow.lowspeed_turb_mut_base=el["lowspeed-mut-base"].value;
+  return flow;
+}
+function lowSpeedOverride(flow,key,id,fallback,min,max,label){
+  const value=inputNumber(id,label,min,max);
+  if(value!==fallback)flow[key]=value;else delete flow[key];
+}
 const lowspeedGpuRules={minimumServiceRevision:13};
 function lowspeedGpuRefusal(){
   if(!el["lowspeed-gpu"].checked)return "";
@@ -263,7 +273,7 @@ function streamlineRefusal(flow,backends){
   if(backends.includes("cavitation"))return "Streamline alignment is not offered for the Species / cavitation CFD (its driver builds its own mesh).";
   const lowspeed=backends.includes("lowspeed"),compressible=backends.includes("transonic");
   if(!lowspeed&&!compressible)return "Streamline alignment is available for the low-speed CFD (pressure-based, new) with a Gurney flap, and for the compressible CFD on a finite trailing edge (C+H mesh).";
-  if(lowspeed&&flow.gurney_height==null&&flow.lowspeed_topology!=="ch_native")return "Streamline alignment runs on the low-speed CFD's C+H mesh: enable a Gurney flap (the clean sharp-trailing-edge C mesh is not aligned yet).";
+  if(lowspeed&&flow.gurney_height==null&&flow.lowspeed_topology==="sharp")return "Streamline alignment runs on the low-speed CFD's C+H mesh: enable a Gurney flap (the clean sharp-trailing-edge C mesh is not aligned yet).";
   if(compressible&&flow.gurney_height!=null)return "Streamline alignment with a Gurney flap is offered on the low-speed CFD only: the Gurney flap is a baffle, which only the low-speed solver has.";
   if(compressible&&(flow.cfd_te_topology||"auto")!=="auto")return "Streamline alignment on the compressible CFD runs on the C+H mesh: select TE topology Auto (a finite trailing edge).";
   return "";
@@ -272,7 +282,7 @@ function updateStreamlineSetup(backends=selectedBackends(el.backend.value)){
   const on=streamlineEnabled();
   el["streamline-controls"].classList.toggle("hidden",!on);el["streamline-note"].classList.toggle("hidden",!on);
   if(!on)return;
-  const refusal=streamlineRefusal({cfd_streamline_align:true,gurney_height:gurneyEnabled()?Number(el["gurney-height"].value):undefined,cfd_te_topology:el["cfd-te-topology"].value,lowspeed_topology:el["lowspeed-ch-baseline"].checked?"ch_native":undefined},backends)||
+  const refusal=streamlineRefusal({cfd_streamline_align:true,gurney_height:gurneyEnabled()?Number(el["gurney-height"].value):undefined,cfd_te_topology:el["cfd-te-topology"].value,lowspeed_topology:(el["lowspeed-topology"].value==="ch_native")?"ch_native":undefined},backends)||
     (backends.includes("transonic")&&!backends.includes("lowspeed")&&!coupledChForControls()?"Streamline alignment runs on the C+H mesh of a finite trailing edge; this section's trailing edge is sharp, so its CFD mesh is not C+H.":"");
   el["streamline-note"].textContent="DEVELOPMENT, NOT VALIDATED. "+(gurneyEnabled()?
     "Before meshing, JXfoil solves the CLEAN section at the analysis angle (it cannot model the Gurney plate); the CFD mesh lines are then moved onto its wake path (from the native base's midpoint) and its stagnation streamline, and the Gurney baffle is cut AFTER the alignment, on the aligned mesh (it never moves the wall row, so the aligned wake cut stays). ":
@@ -527,7 +537,7 @@ async function loadHealth() {
     if(state.serviceRevision<minimumServiceRevision) {
       el["server-state"].className="status-pill offline";
       el["server-state"].textContent="Julia restart needed";
-      el["job-message"].textContent="Restart run.cmd, then use the browser tab it opens (the port may change). This Julia service predates the current mesh, C+H / nonlinear free-surface formulation controls or cavitation reference cases.";
+      el["job-message"].textContent="Restart the app launcher, then use the browser tab it opens. The running Julia service predates the current low-speed defaults and checked saved-flow support.";
       return;
     }
     el["server-state"].className = "status-pill online";
@@ -541,7 +551,7 @@ async function loadHealth() {
 }
 async function requireCurrentService() {
   if(state.serviceRevision===null || state.serviceRevision<minimumServiceRevision)await loadHealth();
-  if(state.serviceRevision<minimumServiceRevision)throw new Error("Restart run.cmd and use the browser tab it opens before creating a mesh or running an analysis. This Julia service cannot apply the current mesh, C+H / nonlinear free-surface formulation controls or cavitation reference cases; its port may differ from the new service.");
+  if(state.serviceRevision<minimumServiceRevision)throw new Error("Restart the app launcher and use the browser tab it opens before creating a mesh or running. The running Julia service predates the current low-speed defaults and checked saved-flow support.");
 }
 function usesCoupledCh({airfoil,flow={},backends=[],preview=null}) {
   if(!backends.includes("transonic")||(flow.cfd_te_topology||"auto")!=="auto")return false;
@@ -572,6 +582,7 @@ function updateSetup() {
   el["cav-reference-meta"].classList.toggle("hidden",!isCavitationReference);
   if (isUiuc && !state.catalogLoaded && !state.embeddedAirfoil) loadAirfoils();
   const backends=selectedBackends(el.backend.value),gas=backends.includes("transonic"),cav=backends.includes("cavitation"),cavOnly=cav&&!gas;
+  el["setup-method"].textContent=backends.map(labelBackend).join(" + ");
   window.LudwigOutputControls?.setCapabilities(null,backends);
   const coupledCh=coupledChForControls();
   const chMeshConflict=coupledCh&&el["cfd-mesh"].value==="legacy_sharp_cmesh";
@@ -674,12 +685,31 @@ function updateSetup() {
     const ratio = (stop - start) / step;
     const count = Number.isFinite(ratio) && ratio > 0 ? Math.floor(ratio + 1e-8) + 1 : 0;
     el["sweep-count"].textContent = count ? `${count} requested angles · limit ${cfd || backends.includes("lowspeed") ? 31 : 121}` : "Set a nonzero step pointing toward the end angle.";
-    if (backends.includes("lowspeed") && count) el["sweep-count"].textContent += ` · low-speed CFD about ${Math.round(count*20)} min`;
   }
+  const lowOnly=backends.length===1&&backends[0]==="lowspeed";
+  el.mach.closest(".field").classList.toggle("hidden",lowOnly);
+  el.ncrit.closest(".field").classList.toggle("hidden",!backends.some(b=>["jxfoil","xfoil"].includes(b)));
+  el["transition-mode"].closest(".field").classList.toggle("hidden",!tripCapable);
+  el["preview-resolution"].closest(".header-control").classList.toggle("hidden",backends.includes("lowspeed"));
+  el["cfd-te-topology-field"].classList.toggle("hidden",underwater||backends.includes("lowspeed"));
   updateLowspeedSetup(backends);
   updateGurneySetup(backends,underwater);
   updateStreamlineSetup(backends);
   window.AirfoilLBM?.updateSetup(backends);   // LBM 3D (LUDWIG, lbm.js): its controls, notes and estimate
+  renderSavedFlowOverrides();
+  window.AirfoilContextHelp?.refresh();
+}
+function renderSavedFlowOverrides() {
+  const entries=Object.entries(state.studyFlowExtras||{}),host=el["saved-flow-overrides"];
+  host.classList.toggle("hidden",!entries.length);
+  el["clear-saved-flow-overrides"].classList.toggle("hidden",!entries.length);
+  host.textContent=entries.length?`Saved request overrides: ${entries.map(([key,value])=>`${key}=${JSON.stringify(value)}`).join("; ")}. These settings are retained for the next request. Clear saved overrides to use automatic defaults while keeping the visible controls.`:"";
+}
+function restoreSavedFlowExtras(flow) {
+  state.studyFlowExtras={};
+  const represented=collectCase().flow,managed=new Set(window.AirfoilManagedFlowKeys||[]);
+  state.studyFlowExtras=Object.fromEntries(Object.entries(flow||{}).filter(([key])=>!(key in represented)&&!managed.has(key)));
+  renderSavedFlowOverrides();
 }
 function updateGurneySetup(backends=selectedBackends(el.backend.value),underwater=false) {
   const on=gurneyEnabled();
@@ -688,14 +718,11 @@ function updateGurneySetup(backends=selectedBackends(el.backend.value),underwate
   if(underwater&&on){el["gurney-note"].textContent="The nonlinear free surface uses the native trailing edge; the Gurney flap is refused there.";el["gurney-range"].classList.add("hidden");return;}
   if(!on)return;
   const h=Number(el["gurney-height"].value),mode=el["gurney-mode"].value||"lower",valid=Number.isFinite(h)&&h>=gurneyRules.heightMin&&h<=gurneyRules.heightMax;
-  const where=backends.includes("lowspeed")?" The low-speed CFD (PBCav C+H free-air mesh, snapshot S1030_FLAPREF) models it as a baffle: a wall inside the C+H mesh along the grid line from the trailing-edge corner, straightened onto the chord's normal with its tip at exactly h. Standard and Fine redistribute mesh rows around the flap and wake; Off uses the section's own rows."
-    :"";
   const panel=backends.some(b=>b==="xfoil"||b==="jxfoil")?" XFOIL/JXfoil cannot model the plate: they run the clean section, labelled as the no-flap reference.":"";
-  const refusal=gurneyBackendRefusal({cfd_te_thickness:el["trailing-edge-thickness"].value.trim()===""?undefined:Number(el["trailing-edge-thickness"].value),
-    cfd_te_topology:el["cfd-te-topology"].value||"auto",cfd_mesh:el["cfd-mesh"].value,gurney_height:valid?h:0},backends);
-  el["gurney-note"].textContent=`Plate height h/c, perpendicular to the chord at the TE, zero thickness, sharp: `+
-    (mode==="symmetric"?"a T from h/2 above the upper to h/2 below the lower trailing-edge point":mode==="upper"?"from the upper trailing-edge point up h":"from the lower trailing-edge point down h")+
-    `. The airfoil is unchanged; its native base stays.`+where+panel+" "+gurneyUnsteadyCaveat+(refusal?` Refused here: ${refusal}`:"");
+  const refusal=gurneyBackendRefusal({cfd_te_thickness:backends.includes("lowspeed")?undefined:el["trailing-edge-thickness"].value.trim()===""?undefined:Number(el["trailing-edge-thickness"].value),
+    cfd_te_topology:backends.includes("lowspeed")?"auto":el["cfd-te-topology"].value||"auto",cfd_mesh:backends.includes("lowspeed")?undefined:el["cfd-mesh"].value,gurney_height:valid?h:0},backends);
+  const finiteEdge=backends.includes("lowspeed")?" Low-speed flaps require a finite gap at the source trailing edge; closed profiles are refused to preserve your geometry.":"";
+  el["gurney-note"].textContent="The plate is normal to the chord. Height 0.01 means 1% chord; a symmetric plate splits the height equally above and below. The wake may be unsteady, so inspect convergence."+finiteEdge+panel+(refusal?` ${refusal}`:"");
   el["gurney-note"].classList.toggle("warning-text",!!refusal);
   // the solver gate's admitted range of h for this section, mesh and side (from Create mesh), and its last refusal
   const value=previewCase(false),range=state.gurneyRange,key=gurneyRangeKey(value);
@@ -708,40 +735,21 @@ function updateGurneySetup(backends=selectedBackends(el.backend.value),underwate
       (valid&&!inside?` The entered h/c ${h} is outside it: the solver will refuse it.`:"");
     warn=valid&&!inside;
   }else if(range&&range.key===key)text="No height of this mesh's corner line passes the solver's gate.";
-  else text=`The solver's quality gate admits only a range of h that depends on the section and the mesh; Create mesh returns it. ${gurneyDemoRange}`;
+  else text="The flap height is checked against the section and mesh. Create mesh reports the admitted range before running.";
   el["gurney-range"].textContent=text;el["gurney-range"].classList.toggle("warning-text",warn);
 }
-// Low-speed CFD (PBCav, version 2): incompressible, fully turbulent SST, CPU only. Mach is not one of its inputs.
+// Low-speed CFD: incompressible, fully turbulent SST, CPU by default or opt-in CUDA.
 function updateLowspeedSetup(backends=selectedBackends(el.backend.value)) {
   const lowspeed=backends.includes("lowspeed"),alone=lowspeed&&backends.length===1;
   el["lowspeed-controls"].classList.toggle("hidden",!lowspeed);
-  el["lowspeed-ch-baseline"].disabled=gurneyEnabled();
-  el["lowspeed-note"].textContent=el["lowspeed-resolution"].value==="fine"&&(gurneyEnabled()||el["lowspeed-ch-baseline"].checked)?
-    "Fine C+H subdivides the demo mesh once, with about four times as many cells. On NACA 0012, the refined mesh still misses several quality gates; inspect Create mesh and treat coefficients as development results.":
-    "Defaults: Tu 1%, μt/μ 10. Looser steady limits may stop earlier; inspect mesh quality, residuals and loads before interpreting coefficients.";
+  el["lowspeed-topology"].disabled=gurneyEnabled();
+  el["lowspeed-note"].textContent="Automatic selects the recommended mesh. Keep the defaults for an ordinary run; use explicit overrides for mesh or tolerance comparisons. Inspect convergence before interpreting forces.";
   el["lowspeed-gpu-note"].classList.toggle("hidden",!(lowspeed&&el["lowspeed-gpu"].checked));
-  el.mach.title=alone?"Ignored: the low-speed CFD is incompressible.":lowspeed?"XFOIL uses this Mach (0 = incompressible); the low-speed CFD ignores it.":"";
   if(!lowspeed)return;
   if(alone)el.mach.disabled=true;
-  const gpu=el["lowspeed-gpu"].checked,where=gpu?"on the GPU (CUDA, opt-in) once the shared GPU lock is free":"on 8 CPU threads";
-  if(gurneyEnabled()){
-    // Gurney flap: the low-speed CFD runs PBCav's native C+H mesh with the plate as a baffle; XFOIL runs the clean section (no-flap reference).
-    el["backend-note"].textContent=(alone?"Low-speed CFD":"XFOIL + low-speed CFD: XFOIL runs first, on the clean section (no-flap reference: XFOIL cannot model the plate); then the low-speed CFD")+
-      " on PBCav's C+H free-air mesh (conforming C block + H block behind the finite base) with the Gurney plate as a baffle (snapshot S1030_FLAPREF). The selected flap-tip mesh refinement also redistributes rows across the flap-height wake; Off uses the section's own mesh. Fully turbulent SST, ramp start, "+(gpu?where:"about 15-60 minutes per angle "+where)+". The solver refuses a plate height outside the mesh's admitted range, and says which.";
-    el["flow-hint"].textContent=alone?"Reynolds and angle set the low-speed CFD case. Mach, Ncrit and trips are not used: the CFD is incompressible and fully turbulent.":"Ncrit and the prescribed trips apply to XFOIL only; the low-speed CFD is fully turbulent and ignores Mach.";
-    return;
-  }
-  if(el["lowspeed-ch-baseline"].checked){
-    el["backend-note"].textContent="Low-speed CFD no-flap baseline: the section's native finite trailing edge on the same C+H mesh as the Gurney case, with the same ramp start and committed base turbulence setting. Fully turbulent SST, "+where+". Keep Reynolds, angle, Tu and μt/μ the same when comparing cases.";
-    el["flow-hint"].textContent="The no-flap C+H baseline uses the same solver path and mesh as the flap case. Mach, Ncrit and trips are not used by the low-speed CFD.";
-    return;
-  }
-  el["backend-note"].textContent=alone ?
-    "Low-speed CFD: the new incompressible pressure-based solver (version 2, in development, not yet validated). Fully turbulent k-omega SST in free air on the demo mesh, "+(gpu?where:"about 15-25 minutes per angle "+where+" (alpha 0 longer)")+"; the live charts show CL, CD and the solver's steady residual. Mach is ignored." :
-    "XFOIL + low-speed CFD: XFOIL runs first, on the same closed-trailing-edge section as the low-speed CFD (like for like), at the entered Mach (0 = incompressible) with the transition setting below; the low-speed CFD (version 2, not yet validated) then runs every angle, fully turbulent, about 15-25 minutes per angle. Compare against XFOIL with fixed transition near the leading edge.";
-  el["flow-hint"].textContent=alone ?
-    "Reynolds and angle set the low-speed CFD case. Mach, Ncrit and trips are not used: the CFD is incompressible and fully turbulent." :
-    "Ncrit and the prescribed trips apply to XFOIL only; the low-speed CFD is fully turbulent and ignores Mach.";
+  const hardware=el["lowspeed-gpu"].checked?"GPU":"CPU";
+  el["backend-note"].textContent="Low-speed 2D CFD with fully turbulent SST, running on the "+hardware+". Automatic retains the section's trailing edge and selects matching settings for clean and Gurney cases. Development solver: inspect convergence and mesh quality before using coefficients.";
+  el["flow-hint"].textContent=alone?"Set Reynolds number and angle of attack. The app selects the mesh and solver settings; optional overrides are under Setup → Advanced.":"Reynolds number and angle set the CFD case. Mach, Ncrit and trips apply to the XFOIL comparison only.";
 }
 function inputNumber(id, label, min = -Infinity, max = Infinity) {
   const value = Number(el[id].value);
@@ -769,6 +777,7 @@ function collectCase() {
   if(kind==="cavitation_reference"&&(!preset||state.cavitationReferenceAppliedId!==preset.id))throw new Error("Wait for the selected cavitation reference preset to load.");
   const selected=el.backend.value,backends=selectedBackends(selected),hasCfd=backends.some(isCfdBackend);
   const underwater=backends.includes("cavitation")&&el["cav-domain"].value==="underwater";
+  const lowOnly=backends.length===1&&backends[0]==="lowspeed";
   if(underwater&&(backends.length!==1||backends[0]!=="cavitation"))throw new Error("Nonlinear free surface currently requires the standalone Species / cavitation backend. Other backends use different flow conditions.");
   const id = selectedSourceId(kind);
   if (kind === "naca4" && !/^\d{4}$/.test(id)) throw new Error("Enter a four digit NACA designation.");
@@ -777,10 +786,10 @@ function collectCase() {
   const flow = {
     ...(state.studyFlowExtras||{}),
     ...(preset?.flow||{}),
-    mach: underwater ? undefined : inputNumber("mach", "Mach number", 0, 5),
+    mach: underwater||lowOnly ? undefined : inputNumber("mach", "Mach number", 0, 5),
     reynolds: inputNumber("reynolds", "Reynolds number", 1),
     alpha_deg: inputNumber("alpha", "angle of attack", -90, 90),
-    ncrit: underwater ? undefined : inputNumber("ncrit", "Ncrit", 0.01, 100)
+    ncrit: underwater||lowOnly ? undefined : inputNumber("ncrit", "Ncrit", 0.01, 100)
   };
   if(!el["rans-acceleration-line"].classList.contains("hidden")&&el["rans-acceleration"].checked){
     if(state.serviceRevision!=null&&state.serviceRevision<21)throw new Error("Restart run.cmd and use the browser tab it opens: this Julia service predates the steady RANS acceleration option.");
@@ -801,8 +810,8 @@ function collectCase() {
     }else{for(const key of Object.keys(implicitKeys))delete flow[key];delete flow.cfd_implicit_preconditioner;}
   }else{delete flow.rans_method;for(const key of Object.keys(implicitKeys))delete flow[key];delete flow.cfd_implicit_preconditioner;}
   if(underwater)flow.cfd_te_thickness=0;
-  else if (el["trailing-edge-thickness"].value.trim() !== "") flow.cfd_te_thickness = inputNumber("trailing-edge-thickness", "trailing-edge thickness", 0, 0.05);
-  if(hasCfd&&!underwater)flow.cfd_te_topology=el["cfd-te-topology"].value||"auto";
+  else if (!backends.includes("lowspeed")&&el["trailing-edge-thickness"].value.trim() !== "") flow.cfd_te_thickness = inputNumber("trailing-edge-thickness", "trailing-edge thickness", 0, 0.05);
+  if(hasCfd&&!underwater&&!backends.includes("lowspeed"))flow.cfd_te_topology=el["cfd-te-topology"].value||"auto";
   if(!underwater)Object.assign(flow,gurneyFlow(true));
   if(!underwater)Object.assign(flow,streamlineFlow());
   else if(gurneyEnabled())throw new Error("The Gurney flap is not available for the nonlinear free surface (an annular development mesh with the native trailing edge).");
@@ -868,14 +877,15 @@ function collectCase() {
     }
   }
   if (backends.includes("lowspeed")) {
-    if (Number(flow.cfd_te_thickness) > 0) throw new Error(flow.gurney_height!=null ? "The Gurney flap and the CFD trailing-edge thickness override both set the trailing edge. Clear the CFD trailing-edge thickness." : "Low-speed CFD uses a sharp-trailing-edge C-mesh. Clear the CFD trailing-edge thickness override to run it.");
+    for(const key of ["cfd_te_thickness","cfd_te_topology","cfd_mesh","cfd_resolution","cfd_n_base"])delete flow[key];
+    if(lowOnly)delete flow.ncrit;
     if (flow.reynolds < 1e4 || flow.reynolds > 1e8) throw new Error("Low-speed CFD supports Reynolds numbers from 10,000 to 100 million.");
-    flow.lowspeed_resolution = el["lowspeed-resolution"].value || "demo";
-    flow.lowspeed_tu = inputNumber("lowspeed-tu", "freestream turbulence intensity (%)", 0.0001, 19) / 100;
-    flow.lowspeed_mut_ratio = inputNumber("lowspeed-mut-ratio", "freestream eddy-viscosity ratio", 0.0001, 10000);
-    flow.lowspeed_steady_tol = inputNumber("lowspeed-steady-tol", "momentum steady limit", 1e-9, 1e-3);
-    flow.lowspeed_turb_steady_tol = inputNumber("lowspeed-turb-steady-tol", "SST steady limit", 1e-9, 1e-3);
-    if(el["lowspeed-ch-baseline"].checked&&!gurneyEnabled())Object.assign(flow,{lowspeed_topology:"ch_native",lowspeed_start:"ramp",lowspeed_turb_mut_base:"committed"});
+    if(el["lowspeed-resolution"].value!=="auto")flow.lowspeed_resolution=el["lowspeed-resolution"].value;else delete flow.lowspeed_resolution;
+    lowSpeedOverride(flow,"lowspeed_tu","lowspeed-tu",1,0.0001,19,"freestream turbulence intensity (%)");if(flow.lowspeed_tu!=null)flow.lowspeed_tu/=100;
+    lowSpeedOverride(flow,"lowspeed_mut_ratio","lowspeed-mut-ratio",10,0.0001,10000,"freestream eddy-viscosity ratio");
+    lowSpeedOverride(flow,"lowspeed_steady_tol","lowspeed-steady-tol",1e-6,1e-9,1e-3,"momentum steady limit");
+    lowSpeedOverride(flow,"lowspeed_turb_steady_tol","lowspeed-turb-steady-tol",1e-7,1e-9,1e-3,"SST steady limit");
+    Object.assign(flow,lowspeedTopologyFlow());
     if (el["lowspeed-gpu"].checked) { const gpuRefusal=lowspeedGpuRefusal(); if(gpuRefusal)throw new Error(gpuRefusal); flow.lowspeed_gpu = true; }
     if (backends.length === 1) flow.mach = 0;
   }
@@ -938,8 +948,9 @@ function previewCase(mesh) {
     cfd_mesh: el["cfd-mesh"].value, cfd_resolution: el["preview-resolution"].value, cfd_te_topology:el["cfd-te-topology"].value||"auto",
     cfd_n_base: valueOr("cfd-n-base", 4) };
   if(selectedBackends(el.backend.value).includes("lowspeed")){
-    flow.lowspeed_resolution=el["lowspeed-resolution"].value||"demo";
-    if(el["lowspeed-ch-baseline"].checked&&!gurneyEnabled())Object.assign(flow,{lowspeed_topology:"ch_native",lowspeed_start:"ramp",lowspeed_turb_mut_base:"committed"});
+    for(const key of ["cfd_mesh","cfd_resolution","cfd_te_topology","cfd_n_base"])delete flow[key];
+    if(el["lowspeed-resolution"].value!=="auto")flow.lowspeed_resolution=el["lowspeed-resolution"].value;
+    Object.assign(flow,lowspeedTopologyFlow());
   }
   if(selectedBackends(el.backend.value).includes("lbm")){const keys=window.AirfoilLBM?.flowKeys(flow,false);if(!keys)return null;Object.assign(flow,keys);}
   if(selectedBackends(el.backend.value).includes("cavitation")){
@@ -955,7 +966,7 @@ function previewCase(mesh) {
     flow.trip_upper=valueOr("trip-upper",.05);flow.trip_lower=valueOr("trip-lower",.05);
   }
   if(flow.cav_domain==="underwater")flow.cfd_te_thickness=0;
-  else if (el["trailing-edge-thickness"].value.trim() !== "") flow.cfd_te_thickness = valueOr("trailing-edge-thickness", 0);
+  else if (!selectedBackends(el.backend.value).includes("lowspeed")&&el["trailing-edge-thickness"].value.trim() !== "") flow.cfd_te_thickness = valueOr("trailing-edge-thickness", 0);
   if(flow.cav_domain!=="underwater"&&gurneyEnabled()){const g=gurneyFlow(false);if(!g)return null;Object.assign(flow,g);}
   if(flow.cav_domain!=="underwater")Object.assign(flow,streamlineFlow());
   try{applyReferenceTripControls(flow);}catch{return null;}
@@ -981,17 +992,13 @@ function invalidatePreviewMesh() {
 async function loadGeometryPreview(mesh = false, generation = ++state.previewGeneration) {
   clearTimeout(state.previewTimer);
   const lowspeedMesh = mesh && selectedBackends(el.backend.value).includes("lowspeed");
-  if (lowspeedMesh && Number(el["trailing-edge-thickness"].value) > 0) {
-    displayError(gurneyEnabled() ? "The Gurney flap and the CFD trailing-edge thickness override both set the trailing edge. Clear the CFD trailing-edge thickness." : "Low-speed CFD uses a sharp-trailing-edge C-mesh. Clear the CFD trailing-edge thickness override to create its mesh.");
-    return;
-  }
   if (mesh && gurneyEnabled()) {try{gurneyFlow(true);}catch(err){displayError(err);return;}}
   const value = previewCase(mesh);
   if (!value) {if(mesh)displayError("Check the selected airfoil, transition and flow settings before creating the mesh. Nonlinear free surface also requires valid dimensions, duration and step limit.");return;}
   if (mesh) {const refusal=gurneyBackendRefusal(value.flow,value.backends)||streamlineRefusal(value.flow,value.backends);if(refusal){displayError(refusal);return;}}
   state.previewAbort?.abort();
   const controller = new AbortController(); state.previewAbort = controller;
-  const done = beginOperation("preview", lowspeedMesh ? "Creating the low-speed CFD mesh in Julia (about a minute)…" : mesh ? "Creating mesh in Julia…" : "Loading selected airfoil…", mesh ? [[el["create-mesh"], "Creating…"], [el["refine-mesh"], "Meshing…"]] : []);
+  const done = beginOperation("preview", lowspeedMesh ? "Creating the low-speed CFD mesh…" : mesh ? "Creating mesh…" : "Loading selected airfoil…", mesh ? [[el["create-mesh"], "Creating…"], [el["refine-mesh"], "Meshing…"]] : []);
   const sourceKey = geometrySourceKey(value.airfoil, value.flow);
   const settingsKey = meshSettingsKey(value);
   if (state.preview?.sourceKey !== sourceKey) {
@@ -1004,7 +1011,7 @@ async function loadGeometryPreview(mesh = false, generation = ++state.previewGen
     state.preview.settingsKey = settingsKey;
     renderSelectedGeometry();
   }
-  el["geometry-status"].textContent = lowspeedMesh ? "Creating the low-speed CFD mesh in Julia (about a minute)…" : mesh ? "Creating mesh in Julia…" : "Loading selected airfoil…";
+  el["geometry-status"].textContent = lowspeedMesh ? "Creating the low-speed CFD mesh…" : mesh ? "Creating mesh…" : "Loading selected airfoil…";
   try {
     if(mesh && !(state.serviceRevision>=minimumServiceRevision))await requireCurrentService();
     const payload = await request("/api/preview", { method: "POST", value, format: el.transport.value, signal: controller.signal });
@@ -1066,12 +1073,14 @@ function jobStatus(job) {
   window.LudwigOutputControls?.render(job);
   const status = String(job.status || "queued");
   state.displayJobStatus=status;
+  el["cancel-button"].disabled=(state.serviceRevision!=null&&state.serviceRevision<24)||!job.id||!["queued","running"].includes(status);
+  el["cancel-button"].textContent=status==="cancelling"?"Cancelling…":"Cancel run";
   const stalled = status === "failed" && /stopped without convergence/i.test(String(job.message || ""));
   const diagnosticResult=['failed','partial'].includes(status)&&!job.error&&(job.result?.results||[]).some(p=>['not_converged','stopped_without_convergence'].includes(p.status)&&finite(p.cl)&&finite(p.cd));
-  el["job-title"].textContent = diagnosticResult ? "Results saved · convergence incomplete" : stalled ? "Stopped without convergence" : ({ queued: "Queued", running: "Julia solvers running", completed: "Analysis complete", partial: "Analysis finished with partial results", failed: "Analysis failed" })[status] || status;
+  el["job-title"].textContent = diagnosticResult ? "Results saved · convergence incomplete" : stalled ? "Stopped without convergence" : ({ queued: "Queued", running: "Julia solvers running", cancelling: "Stopping after the current operation", cancelled: "Analysis cancelled", completed: "Analysis complete", partial: "Analysis finished with partial results", failed: "Analysis failed" })[status] || status;
   el["job-message"].textContent = job.error || job.message || ({ queued: "Waiting for the worker.", running: "Computing the requested operating points.", completed: "Results are ready below." })[status] || "";
   let progress = Number(job.progress);
-  if (!Number.isFinite(progress)) progress = ["completed","partial","failed"].includes(status) ? 100 : 0;
+  if (!Number.isFinite(progress)) progress = ["completed","partial","failed","cancelled"].includes(status) ? 100 : 0;
   else if (progress > 0 && progress <= 1) progress *= 100;
   progress = Math.max(0, Math.min(100, progress));
   el["job-percent"].textContent = `${Math.round(progress)}%`;
@@ -1107,7 +1116,7 @@ function pointOverlayData(hostId) {
     else if(isCfdBackend(backend)){label=isPhysicalPoint(point)?"Instantaneous · unvalidated":validCfdPolarPoint(point)?"CFD · unvalidated":"Diagnostic · unverified";kind="diagnostic";}
     else{label=point.converged===false?"Unconverged":"Computed";kind=point.converged===false?"diagnostic":"saved";}
   }else{
-    const running=["queued","running"].includes(state.displayJobStatus||state.job?.status);
+    const running=["queued","running","cancelling"].includes(state.displayJobStatus||state.job?.status);
     const key=`${backend}:${Number(alpha)}`,rows=state.liveHistory[key]||[],row=orderedHistory(rows).at(-1);
     if(running&&row){values=row;label=`Live n=${row.iteration} · mesh preview · unverified`;kind="live";}
     else if(["failed","partial"].includes(state.displayJobStatus||state.job?.status)){values=null;label="No saved coefficients";kind="failed";}
@@ -1214,7 +1223,7 @@ async function pollLogs(id, generation, drain = false) {
       const payload = await request(`/api/jobs/${encodeURIComponent(id)}/logs?after=${state.logCursor}`, { format: state.jobWire });
       if (generation !== state.pollGeneration) return false;
       appendLog(payload, id);
-      el["log-state"].textContent = payload.status === "completed" ? "Analysis complete · final log available" : payload.status === "failed" ? "Analysis failed · inspect the messages below" : state.logLineCount ? "Receiving process output" : "Waiting for process output…";
+      el["log-state"].textContent = payload.status === "completed" ? "Analysis complete · final log available" : payload.status === "cancelled" ? "Analysis cancelled · final log available" : payload.status === "failed" ? "Analysis failed · inspect the messages below" : state.logLineCount ? "Receiving process output" : "Waiting for process output…";
       if (!drain || !Array.isArray(payload.entries) || !payload.entries.length) break;
     }
     return true;
@@ -1260,7 +1269,7 @@ async function pollTelemetry(id, generation) {
   // Telemetry must keep arriving while a status response or mesh artifact is
   // being serialized, and while the user is looking at a different tab.
   await Promise.allSettled([pollLogs(id, generation), pollHistory(id, generation)]);
-  if (generation !== state.pollGeneration || ["completed", "partial", "failed"].includes(state.job?.status)) return;
+  if (generation !== state.pollGeneration || ["completed", "partial", "failed", "cancelled"].includes(state.job?.status)) return;
   state.historyTimer = setTimeout(() => pollTelemetry(id, generation), 500);
 }
 async function pollJob(id, generation) {
@@ -1277,12 +1286,12 @@ async function pollJob(id, generation) {
       state.result = job.result;
       state.meshKeys = Object.keys(job.result.meshes || {}).sort().join("|"); refreshLiveField(); window.AirfoilLBM?.onResult();
       const resultCount = job.result.results?.length || 0;
-      if (priorCount !== resultCount || ["completed","partial","failed"].includes(job.status)) {
+      if (priorCount !== resultCount || ["completed","partial","failed","cancelled"].includes(job.status)) {
         if (resultCount) renderResult();
         else if (state.meshKeys !== priorMeshes) { renderPoint(); renderPolars(); }
       } else if (state.meshKeys !== priorMeshes) { renderPoint(); renderPolars(); }
     }
-    if (["completed","partial","failed"].includes(job.status)) {
+    if (["completed","partial","failed","cancelled"].includes(job.status)) {
       clearTimeout(state.historyTimer);
       await Promise.allSettled([pollLogs(id, generation, true), pollHistory(id, generation, true)]); // Collect final messages and telemetry.
       if (generation !== state.pollGeneration) return;
@@ -1296,6 +1305,16 @@ async function pollJob(id, generation) {
     el["job-message"].textContent = `Status request failed: ${jobOutcome.reason.message}. Retrying…`;
   }
   state.pollTimer = setTimeout(() => pollJob(id, generation), jobOutcome.status === "fulfilled" ? 1000 : 2000);
+}
+async function cancelAnalysis(){
+  const job=state.job;
+  if(!job?.id||!["queued","running"].includes(job.status))return;
+  el["cancel-button"].disabled=true;
+  try{
+    const stopped=await request(`/api/jobs/${encodeURIComponent(job.id)}/cancel`,{method:"POST",format:state.jobWire});
+    if(state.job?.id!==job.id)return;
+    state.job=stopped;jobStatus(stopped);el["run-status"].open=true;
+  }catch(err){el["cancel-button"].disabled=false;displayError(err);}
 }
 async function runAnalysis() {
   clearError();
@@ -1516,7 +1535,7 @@ function analysisUsesPhysicalClock(backend) {
 function renderIterationHistory(point = currentResult()) {
   refreshPointOverlays();
   if (!el["convergence-panel"]) return;
-  const running = ["queued", "running"].includes(state.job?.status), cfd=isCfdBackend(point?.backend);
+  const running = ["queued", "running", "cancelling"].includes(state.job?.status), cfd=isCfdBackend(point?.backend);
   if (!running && point && !cfd) {
     el["convergence-state"].textContent = "Select a CFD point to inspect its history.";
     el["sampling-state"].classList.add("hidden");
@@ -1541,7 +1560,7 @@ function renderIterationHistory(point = currentResult()) {
   const residualField=rawProjection?"residual_linf":"residual_scaled";
   const lowspeedHistory=backend==="lowspeed",lbmHistory=backend==="lbm";
   const residualLabel=lbmHistory?"force change per sample, |ΔCL|+|ΔCD|":lowspeedHistory?"solver steady residual (momentum)":projection?rawProjection?"volume-flux divergence, 1/s":"volume-flux divergence × c/U":underwater?"mass-rate diagnostic":"scaled mass residual";
-  el["history-residual-title"].textContent=lbmHistory?"LBM force change per sample, |ΔCL|+|ΔCD| · log₁₀":lowspeedHistory?"Steady residual (momentum; stop at 1e-6) · log₁₀":projection?`Volume-flux divergence (${rawProjection?"L∞, 1/s":"scaled by c/U"}) · log₁₀`:underwater?"Mass-rate diagnostic · log₁₀":"Mass residual (scaled L∞) · log₁₀";
+  el["history-residual-title"].textContent=lbmHistory?"LBM force change per sample, |ΔCL|+|ΔCD| · log₁₀":lowspeedHistory?"Steady momentum residual · log₁₀":projection?`Volume-flux divergence (${rawProjection?"L∞, 1/s":"scaled by c/U"}) · log₁₀`:underwater?"Mass-rate diagnostic · log₁₀":"Mass residual (scaled L∞) · log₁₀";
   const secondTimes=rows.map(r=>r.t_seconds).filter(finite),seconds=!running&&finite(diag.elapsed_seconds)?diag.elapsed_seconds:secondTimes.length?Math.max(...secondTimes):null;
   const requestedSeconds=!running?diag.requested_duration_seconds:state.analysisCase?.flow?.cav_fs_duration_seconds;
   const times=rows.map(r=>r.t_ctu).filter(finite),elapsed=!running&&finite(diag.elapsed_ctu) ? diag.elapsed_ctu : times.length ? Math.max(...times) : progress.elapsed_ctu;
@@ -1562,7 +1581,7 @@ function renderIterationHistory(point = currentResult()) {
     if(underwater){el["sampling-state"].textContent=`${projection?"Experimental inviscid physical state":"Experimental inviscid startup"} · instantaneous fields and loads only · no SST, energy or phase change · cavitation, drag and stall parity unqualified`;el["sampling-state"].title="The physical clock advances only through accepted solver steps. A step-limit stop may occur before the requested duration.";}
   }
   const secondsAxis=underwater&&secondTimes.length>0,physicalAxis=physical&&times.length>0;
-  el["diagnostics-axis-note"].textContent=`Live updates every 0.5 s. Wheel: zoom · drag: box zoom · right drag: pan · double click: fit. Horizontal axis: ${secondsAxis?"actual physical time, seconds":physicalAxis?"actual physical time t U∞ / c (CTU)":"solver iteration"}.${underwater?` Residual: ${residualLabel}. Experimental startup diagnostics do not establish steady convergence or stall parity.${projection?" Pressure iteration residuals describe the inner linear solve separately.":""}`:lbmHistory?" LBM 3D: the solver's force samples (about 16 per convective time); the residual is the change of CL plus CD between samples, not an equation residual. Horizontal axis: LBM time step.":lowspeedHistory?" Residual: the low-speed solver's own steady residual of the momentum equation (ρU²/c per unit volume); its steady stop also needs the k and ω residuals below 1e-7 and the far-field circulation settled. The solver's mass balance is exact to round-off at every step.":" Residual shows volume-scaled continuity mass flux divergence."}${physical?" The iteration budget can end before the requested physical duration.":""}`;
+  el["diagnostics-axis-note"].textContent=`Live updates every 0.5 s. Wheel: zoom · drag: box zoom · right drag: pan · double click: fit. Horizontal axis: ${secondsAxis?"actual physical time, seconds":physicalAxis?"actual physical time t U∞ / c (CTU)":"solver iteration"}.${underwater?` Residual: ${residualLabel}. Experimental startup diagnostics do not establish steady convergence or stall parity.${projection?" Pressure iteration residuals describe the inner linear solve separately.":""}`:lbmHistory?" LBM 3D: the solver's force samples (about 16 per convective time); the residual is the change of CL plus CD between samples, not an equation residual. Horizontal axis: LBM time step.":lowspeedHistory?" Residual: the low-speed solver's own steady residual of the momentum equation (ρU²/c per unit volume); its steady stop also needs the k and ω residuals below the configured limit and the far-field circulation settled. The solver's mass balance is exact to round-off at every step.":" Residual shows volume-scaled continuity mass flux divergence."}${physical?" The iteration budget can end before the requested physical duration.":""}`;
   for (const [field, id, color, transform] of [
     [residualField, "history-residual", colors.blue || "#3e69ac", v => v > 0 ? Math.log10(v) : null],
     ["cl", "history-cl", colors.jxfoil, v => v],
@@ -1819,8 +1838,9 @@ function fieldResolutionStatus(point=currentResult(),message=null) {
   const node=document.getElementById('field-resolution-status');if(!node)return;
   const url=safeHref(point?.fields?.full_artifact),error=message||state.fieldErrors.get(url);
   const pending=url&&!state.fullFields.has(url);
+  const sonic=point?.backend==='transonic'&&!point?.fields?.speed_column&&document.getElementById('field-sonic')?.checked;
   node.hidden=!pending&&!error;
-  node.querySelector('span').textContent=error?`Full-resolution field needs attention: ${error}`:pending?'Loading all CFD cells; the preview is decimated. Mach = 1 appears when full data is ready.':'';
+  node.querySelector('span').textContent=error?`Full-resolution field needs attention: ${error}`:pending?`Loading all CFD cells; the preview is decimated.${sonic?' The Mach = 1 contour, where present, uses the full data.':''}`:'';
   node.querySelector('button').hidden=!error;
 }
 document.getElementById('field-resolution-retry')?.addEventListener('click',()=>{
@@ -2017,9 +2037,22 @@ function matchingReference(point) {
   const match = reference.points.find(p => Math.abs(Number(p.alpha_deg) - target) <= tolerance);
   return match ? { reference, match } : null;
 }
+function renderPointDownloads(point){
+  const host=el["point-downloads"];host.replaceChildren();
+  const files=[["vtk_fields","Final flow field (VTU)","Download the final volume field for the selected operating point"],
+    ["native_checkpoint","Restart checkpoint","Download the native continuation state; the driver checks compatibility before restarting"]];
+  for(const [key,label,title] of files){
+    const href=safeHref(point?.artifacts?.[key]);if(!href)continue;
+    const link=document.createElement("a");link.href=href;link.download="";link.textContent=label;link.title=title;
+    link.target="_blank";link.rel="noopener noreferrer";host.append(link);
+  }
+  host.classList.toggle("hidden",!host.children.length);
+  if(host.children.length){const label=document.createElement("strong");label.textContent="Saved solver files";host.prepend(label);}
+}
 function renderPoint() {
   const result = state.result;
   const point = currentResult();
+  renderPointDownloads(point);
   const strip=document.getElementById('selected-coefficients');
   if(strip)strip.innerHTML=point?`<span>C<sub>L</sub> <b>${numberText(point.cl,5)}</b></span><span>C<sub>D</sub> <b>${numberText(point.cd,6)}</b></span><span>C<sub>M,c/4</sub> <b>${numberText(point.cm,5)}</b></span><small>Moment about (0.25c, 0). ${validCfdPolarPoint(point)?'Convergence gate passed':escapeHtml(point.status||'Diagnostic result; convergence unconfirmed')}</small>`:'No computed coefficients yet.';
   renderSelectedGeometry();
@@ -2731,7 +2764,7 @@ function syncSnapshotChoices() {
 function liveFieldEntry() {
   const chosen=document.getElementById('field-snapshot')?.value;
   if(chosen)return (state.result?.saved_snapshots||[]).find(e=>e.artifact===chosen)||null;
-  if(!['queued','running'].includes(state.job?.status))return null;
+  if(!['queued','running','cancelling'].includes(state.job?.status))return null;
   const live=state.result?.live_fields;
   if(!live||typeof live!=="object")return null;
   const entries=Object.values(live).filter(e=>e&&typeof e.artifact==="string"&&Number.isInteger(Number(e.iteration)));
@@ -2837,12 +2870,15 @@ function applySavedRequestToForm(saved) {
     const b=selectedBackends(value);return b.length===backends.length&&b.every((x,i)=>x===backends[i]);});
   if(selection)el.backend.value=selection;
   for(const [key,id] of [["mach","mach"],["reynolds","reynolds"],["alpha_deg","alpha"],["ncrit","ncrit"]])if(finite(Number(flow[key])))el[id].value=String(flow[key]);
-  if(finite(Number(flow.lowspeed_tu)))el["lowspeed-tu"].value=String(Number((100*flow.lowspeed_tu).toPrecision(6)));
-  if(finite(Number(flow.lowspeed_mut_ratio)))el["lowspeed-mut-ratio"].value=String(flow.lowspeed_mut_ratio);
-  if(finite(Number(flow.lowspeed_steady_tol)))el["lowspeed-steady-tol"].value=String(flow.lowspeed_steady_tol);
-  if(finite(Number(flow.lowspeed_turb_steady_tol)))el["lowspeed-turb-steady-tol"].value=String(flow.lowspeed_turb_steady_tol);
+  el["lowspeed-resolution"].value=["demo","standard","fine"].includes(flow.lowspeed_resolution)?flow.lowspeed_resolution:"auto";
+  el["lowspeed-tu"].value=String(Number((100*(flow.lowspeed_tu??0.01)).toPrecision(6)));
+  el["lowspeed-mut-ratio"].value=String(flow.lowspeed_mut_ratio??10);
+  el["lowspeed-steady-tol"].value=String(flow.lowspeed_steady_tol??1e-6);
+  el["lowspeed-turb-steady-tol"].value=String(flow.lowspeed_turb_steady_tol??1e-7);
   el["lowspeed-gpu"].checked=flow.lowspeed_gpu===true;
-  el["lowspeed-ch-baseline"].checked=flow.lowspeed_topology==="ch_native";
+  el["lowspeed-topology"].value=["auto","sharp","ch_native"].includes(flow.lowspeed_topology)?flow.lowspeed_topology:"auto";
+  el["lowspeed-start"].value=["projection","ramp"].includes(flow.lowspeed_start)?flow.lowspeed_start:"auto";
+  el["lowspeed-mut-base"].value=["extrapolated","committed"].includes(flow.lowspeed_turb_mut_base)?flow.lowspeed_turb_mut_base:"auto";
   el["rans-acceleration"].checked=flow.rans_acceleration===true;
   el["rans-method"].value=flow.rans_method||(flow.rans_acceleration===true||flow.cfd_irsj===true?"irsj":"standard");
   for(const [key,id,fallback] of [["cfd_implicit_warmup_steps","implicit-warmup",1000],["cfd_implicit_cfl","implicit-cfl",1],["cfd_implicit_basis","implicit-basis",16],["cfd_implicit_sst_substeps","implicit-sst-substeps",10],["cfd_implicit_nonmonotone_window","implicit-nonmonotone",8],["cfd_implicit_preconditioner","implicit-preconditioner","line"],["cfd_implicit_recovery_steps","implicit-recovery",0]])el[id].value=String(flow[key]??fallback);
@@ -2855,7 +2891,7 @@ function applySavedRequestToForm(saved) {
   el["gurney-enabled"].checked=finite(Number(flow.gurney_height));
   if(el["gurney-enabled"].checked){
     el["gurney-height"].value=String(flow.gurney_height);el["gurney-mode"].value=["symmetric","lower","upper"].includes(flow.gurney_mode)?flow.gurney_mode:"lower";
-    el["gurney-refine"].value=gurneyRules.refineLevels.includes(flow.gurney_refine)?flow.gurney_refine:"off";   // a case saved before the option had none
+    el["gurney-refine"].value=gurneyRules.refineLevels.includes(flow.gurney_refine)?flow.gurney_refine:"auto";
   }
   el["streamline-align"].checked=flow.cfd_streamline_align===true;
   if(el["streamline-align"].checked){el["streamline-mode"].value=flow.cfd_streamline_mode==="inviscid"?"inviscid":"viscous";el["streamline-admission"].value=flow.cfd_streamline_admission==="strict"?"strict":"demo";el["streamline-fallback"].checked=flow.cfd_streamline_fallback===true;}
@@ -2864,6 +2900,7 @@ function applySavedRequestToForm(saved) {
   if(typeof flow.cfd_gpu==="boolean")el["cfd-gpu"].checked=flow.cfd_gpu;
   state.machEdited=true;state.reynoldsEdited=true;
   updateSetup();
+  restoreSavedFlowExtras(flow);
   return true;
 }
 async function openSavedJob(id=el["recent-select"].value,{restoreForm=true,rethrow=false}={}) {
@@ -2892,15 +2929,21 @@ async function openSavedJob(id=el["recent-select"].value,{restoreForm=true,rethr
     resetLog();window.AirfoilBabylon?.hide();el["download-result"].disabled=true;
     renderSelection();renderPolars();renderTable();
     state.finishAnalysis?.();state.finishAnalysis=null;
-    if(["queued","running"].includes(job.status))state.finishAnalysis=beginOperation("analysis","Julia analysis running…",[[el["run-button"],"Analysis running…"]]);
+    if(["queued","running","cancelling"].includes(job.status))state.finishAnalysis=beginOperation("analysis","Julia analysis running…",[[el["run-button"],"Analysis running…"]]);
     state.job=job;state.result=job.result||null;renderSelection();renderPolars();renderTable();jobStatus(job);
     const savedAt=new Date(job.saved_at||job.updated_at||"");
     el["recent-status"].textContent=job.restored?`Reopened saved result${Number.isNaN(savedAt.getTime())?"":` from ${savedAt.toLocaleString([],{hour12:false})}`} (read-only; Run analysis computes it again).`:
-      ["queued","running"].includes(job.status)?"Attached to the running job: live charts continue.":"Opened a job from this server session.";
+      ["queued","running","cancelling"].includes(job.status)?"Attached to the running job: live charts continue.":"Opened a job from this server session.";
     pollTelemetry(id,generation);pollJob(id,generation);return job;
   } catch(err) {displayError(err);if(rethrow)throw err;} finally {done();}
 }
 el["source-kind"].addEventListener("change", sourceChanged);
+el["clear-saved-flow-overrides"].addEventListener("click",()=>{
+  if(!Object.keys(state.studyFlowExtras||{}).length)return;
+  state.studyFlowExtras={};
+  renderSavedFlowOverrides();
+  window.AirfoilStudies?.markDirty();
+});
 el["dat-file"].addEventListener("change",()=>importDatFile(el["dat-file"].files?.[0]));
 el["recent-open"].addEventListener("click",()=>openSavedJob());
 el["recent-refresh"].addEventListener("click",()=>loadRecentResults());
@@ -2946,14 +2989,14 @@ el["airfoil-search"].addEventListener("input", renderAirfoils);
 el["airfoil-select"].addEventListener("change", () => { updateAirfoilMeta(); scheduleGeometryPreview(); });
 el["naca-code"].addEventListener("input", () => {updateSetup();scheduleGeometryPreview();});
 el["trailing-edge-thickness"].addEventListener("input", () => {updateSetup();scheduleGeometryPreview();});
-el["gurney-enabled"].addEventListener("change", () => {if(gurneyEnabled())el["lowspeed-ch-baseline"].checked=false;updateSetup();scheduleGeometryPreview();});
+el["gurney-enabled"].addEventListener("change", () => {if(gurneyEnabled())el["lowspeed-topology"].value="auto";updateSetup();scheduleGeometryPreview();});
 ["gurney-height"].forEach(id=>el[id].addEventListener("input", () => {updateSetup();scheduleGeometryPreview();}));
 el["gurney-mode"].addEventListener("change", () => {updateSetup();scheduleGeometryPreview();});
 el["gurney-refine"].addEventListener("change", () => {updateSetup();});
 ["streamline-align","streamline-mode","streamline-admission","streamline-fallback"].forEach(id=>el[id].addEventListener("change", () => {updateSetup();invalidatePreviewMesh();}));
 el["lowspeed-gpu"].addEventListener("change",()=>updateSetup());
 el["lowspeed-resolution"].addEventListener("change",()=>{updateSetup();invalidatePreviewMesh();});
-el["lowspeed-ch-baseline"].addEventListener("change",()=>{updateSetup();invalidatePreviewMesh();});
+el["lowspeed-topology"].addEventListener("change",()=>{updateSetup();invalidatePreviewMesh();});
 el["rans-acceleration"].addEventListener("change",()=>updateSetup());
 el["rans-method"].addEventListener("change",()=>{
   if(["line_implicit","jfnk_native","jfnk_krylov"].includes(el["rans-method"].value)&&Number(el["cfd-steps"].value)>20000)el["cfd-steps"].value="5000";
@@ -2978,6 +3021,7 @@ el["preview-resolution"].addEventListener("change", () => {el["cfd-resolution"].
 el["cfd-resolution"].addEventListener("change", () => {el["preview-resolution"].value=el["cfd-resolution"].value;invalidatePreviewMesh();});
 ["reynolds","alpha","cfd-n-base"].forEach(id=>el[id].addEventListener("input",invalidatePreviewMesh));
 el["run-button"].addEventListener("click", runAnalysis);
+el["cancel-button"].addEventListener("click", cancelAnalysis);
 el["result-backend"].addEventListener("change", renderAlphaChoices);
 el["result-alpha"].addEventListener("change", renderPoint);
 el["field-kind"].addEventListener("change", () => renderField());

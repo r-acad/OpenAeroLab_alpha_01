@@ -149,12 +149,15 @@ println(PBCav.freeair_config_line(cfg, fs, k))
 const st = PBCav.allocate_state(MESH; backend=BACKEND)
 const w = PBCav.pbwork(MESH, bc, cfg)
 const FOIL_SHA = bytes2hex(sha256(read(CFG["foil"])))
+const SOURCE_SHA=isdefined(PBCav,:freeair_source_signature) ? PBCav.freeair_source_signature() : ""
 function start_state!()
     path = get(CFG, "warm_start", nothing)
+    get(CFG,"require_warm_start",false) && path===nothing && throw(ArgumentError("The required saved initial-flow checkpoint is missing"))
     if path !== nothing
         try
             saved = open(deserialize, path)
             saved["commit"] == CFG["commit"] || error("solver commit differs")
+            isempty(SOURCE_SHA) || get(saved,"source_sha256",nothing)==SOURCE_SHA || error("loaded solver source differs")
             saved["mesh_hashes"] == collect(BLOCKS.hashes) || error("mesh differs")
             saved["foil_sha256"] == FOIL_SHA || error("foil differs")
             saved["reynolds"] == k["PB_RE"] || error("Reynolds number differs")
@@ -186,6 +189,7 @@ function start_state!()
             @printf("PB FREEAIR START: checked warm state from alpha %.3f deg, dt %.5g, Gamma %.6g\n", saved["alpha_deg"], st.dt, G)
             return G, NaN, NaN, String(path)
         catch err
+            get(CFG,"require_warm_start",false) && throw(ArgumentError("Required saved initial flow refused: "*sprint(showerror,err)))
             println("PB FREEAIR START: warm state refused (", sprint(showerror, err), "); using Kutta start")
         end
     end
@@ -196,6 +200,8 @@ function start_state!()
     G, J0, JG, ""
 end
 const G0, J0, JG, WARM_SOURCE = start_state!()
+isempty(WARM_SOURCE) && (st.dt=min(cfg.dt,get(k,"PB_START_DT",cfg.dt)))
+println("PB START STEP: initial dt ",st.dt,"; adaptive ceiling ",cfg.dt)
 flush(stdout)
 const pv = PBCav.PointVortex(; relax=k["PB_VORTEX_RELAX"], every=k["PB_VORTEX_EVERY"], G=G0)
 const MAXS = k["PB_MAX_STEPS"]
@@ -248,21 +254,29 @@ function app_step(s, r, led)
     flush(stdout)
 end
 const hio = open(joinpath(OUT, "loads_history.csv"), "w")
+const CANCEL_FILE=get(ENV,"AIRFOIL_CANCEL_FILE","")
+cancel_requested(s)=!isempty(CANCEL_FILE)&&isfile(CANCEL_FILE)
+const CONTROLLER=Dict{String,Any}()
+const CONTROL_KW=isdefined(PBCav,:write_freeair_checkpoint) ? (;control=CONTROLLER,stop_requested=cancel_requested) : (;)
 const R = try
     PBCav.freeair_run!(st, MESH, bc, cfg, fs; wall_cap=k["PB_WALL_CAP"], vortex=pv, max_steps=MAXS,
                        steady_tol=k["PB_STEADY_TOL"], turb_steady_tol=k["PB_TURB_STEADY_TOL"], history=hio, work=w,
-                       on_step=app_step)
+                       on_step=app_step,CONTROL_KW...)
 finally
     close(hio)
     bio === nothing || close(bio)
     close(rejection_io)
+end
+if isdefined(PBCav,:write_freeair_checkpoint) && R.outcome!=:NOT_REACHED
+    PBCav.write_freeair_checkpoint(joinpath(OUT,"state_checkpoint.pbrestart"),MESH,st,bc,k;control=CONTROLLER,ledger=R.ledger,vortex=pv)
+    get(k,"PB_OUTPUT_FIELDS",:on)===:on && PBCav.write_freeair_vtu(joinpath(OUT,"flow_fields.vtu"),MESH,st,cfg,fs)
 end
 # Keep a complete, mesh-checked restart for the next polar angle and for a longer
 # continuation of an incomplete point. Write atomically so a killed worker cannot
 # pass a partial state to the next point.
 if R.outcome != :NOT_REACHED
     checkpoint = Dict{String,Any}(
-        "commit"=>CFG["commit"], "mesh_hashes"=>collect(BLOCKS.hashes),
+        "commit"=>CFG["commit"], "source_sha256"=>SOURCE_SHA, "mesh_hashes"=>collect(BLOCKS.hashes),
         "foil_sha256"=>FOIL_SHA, "reynolds"=>k["PB_RE"],
         "tu"=>k["PB_SST_TU_INF"], "mut_ratio"=>k["PB_SST_MUT_RATIO"],
         "alpha_deg"=>k["PB_ALPHA"], "gamma"=>pv.G,
@@ -326,6 +340,7 @@ open(joinpath(OUT, "surface_cp.csv"), "w") do io
 end
 const CLp = L.CLp; const CLf = L.CLf
 result = Dict{String,Any}(
+    "source_sha256"=>SOURCE_SHA,
     "solver"=>"PBCav $(PBCav.PBCAV_VERSION)", "commit"=>CFG["commit"], "snapshot"=>SNAP, "threads"=>Threads.nthreads(),
     "rans_acceleration"=>Bool(get(CFG,"rans_acceleration",false)),
     "rans_acceleration_method"=>String(get(CFG,"rans_acceleration_method","standard")),

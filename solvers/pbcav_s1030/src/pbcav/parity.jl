@@ -304,13 +304,15 @@ function _mom_terms(m::PBMesh, w, st::PBState, bc, cfg)
                     if sst
                         sx += mu*(abs(gux[c]*bSx[b]) + abs(gvx[c]*bSy[b])); sy += mu*(abs(guy[c]*bSx[b]) + abs(gvy[c]*bSy[b]))
                     end
-                    if lu >= 1 && phi > 0
+                    if lu >= 1 && phi > 0 && kd != UInt8(BC_FARFIELD)
                         sx += abs(phi)*(abs(ubf[b]) + abs(u[c])); sy += abs(phi)*(abs(vbf[b]) + abs(v[c]))
                     end
                 elseif kd == UInt8(BC_SLIP)
                     sx += G*abs(ubf[b]); sy += G*abs(vbf[b])
                 else
-                    ain = max(-phi, 0.0); sx += ain*abs(u[c]); sy += ain*abs(v[c])
+                    ain = max(-phi, 0.0)
+                    sx += ain*abs(kd == UInt8(BC_FREESTREAM_OUTLET) ? ubf[b] : u[c])
+                    sy += ain*abs(kd == UInt8(BC_FREESTREAM_OUTLET) ? vbf[b] : v[c])
                 end
                 sx += abs(pbf[b]*bSx[b]); sy += abs(pbf[b]*bSy[b])
             else
@@ -443,10 +445,12 @@ end
 (|e_f| + the face increment's parts), F the convected flux (cw.Fconv), e the upwind face increment (`_k_cpl_conv_faces!`:
 e = u_f - u_P with u_f = u_Q + grad u_Q . r; its parts |u_Q| + |du/dx_Q r_x| + |du/dy_Q r_y| + |u_P|), against the registered
 rho sum_f (|F*_f| + |F_f|)|e_f|."""
-function _newton_terms_a1(m::PBMesh, w, st::PBState, cfg, Tf)
+function _newton_terms_a1(m::PBMesh, w, st::PBState, bc, cfg, Tf, Tb)
     H(x) = Array(x); cw = w.cpl
     cf = H(m.cface); own = H(m.own); nei = H(m.nei); nf = m.nf
     Fc = H(cw.Fconv); eox = H(cw.eox); eoy = H(cw.eoy); enx = H(cw.enx); eny = H(cw.eny)
+    Fbc = H(cw.Fbconv); ebox = H(cw.ebox); eboy = H(cw.eboy)
+    bkind = H(bc.kind); ub = H(bc.ub); vb = H(bc.vb)
     u = H(lev(st.ux, 1)); v = H(lev(st.uy, 1)); xf = H(m.xf); yf = H(m.yf); xc = H(m.xc); yc = H(m.yc); ftx = H(m.ftx); fty = H(m.fty)
     lu = cfg.convection === :linear_upwind_unlimited
     gx, gy, hx, hy = (lu && cfg.conv_gradient === :unit) ? (H(w.cux), H(w.cuy), H(w.cvx), H(w.cvy)) : (H(w.gux), H(w.guy), H(w.gvx), H(w.gvy))
@@ -465,6 +469,13 @@ function _newton_terms_a1(m::PBMesh, w, st::PBState, cfg, Tf)
             t = cfg.rho_l*(Tf[code] + abs(Fc[code])); nx[c] += t*(abs(eox[code]) + px[code]); ny[c] += t*(abs(eoy[code]) + py[code])
         elseif code < 0
             f = -code; t = cfg.rho_l*(Tf[f] + abs(Fc[f])); nx[c] += t*(abs(enx[f]) + qx[f]); ny[c] += t*(abs(eny[f]) + qy[f])
+        elseif code > nf
+            b = code - nf
+            if bkind[b] == UInt8(BC_FREESTREAM_OUTLET) && Fbc[b] < 0
+                t = cfg.rho_l*(Tb[b] + abs(Fbc[b]))
+                nx[c] += t*(abs(ebox[b]) + abs(ub[b]) + abs(u[c]))
+                ny[c] += t*(abs(eboy[b]) + abs(vb[b]) + abs(v[c]))
+            end
         end
     end
     nx, ny
@@ -639,9 +650,10 @@ function _parity_ops(cfg::PBConfig; freeair::Bool=false)
             a1 = k12 in (:v3, :ops, :a1)                 # (the term-scale forms; :v2 the |F*| form)
             Tf, Tb = a1 ? _rc_term_scale(m, w, st, bc, cfg; pform=k12) : (nothing, nothing)
             if cfg.cpl_newton && a1
-                nx, ny = _newton_terms_a1(m, w, st, cfg, Tf); tx .+= nx; ty .+= ny
+                nx, ny = _newton_terms_a1(m, w, st, bc, cfg, Tf, Tb); tx .+= nx; ty .+= ny
             elseif cfg.cpl_newton
                 cf = Array(m.cface); nf = m.nf; Fs = Array(w.Fs); Fc = Array(cw.Fconv)
+                Fbs = Array(w.Fbs); Fbc = Array(cw.Fbconv); ebox = Array(cw.ebox); eboy = Array(cw.eboy)
                 eox = Array(cw.eox); eoy = Array(cw.eoy); enx = Array(cw.enx); eny = Array(cw.eny)
                 for c in 1:nc, q in 1:4
                     code = cf[q, c]
@@ -649,14 +661,18 @@ function _parity_ops(cfg::PBConfig; freeair::Bool=false)
                         tx[c] += cfg.rho_l*(abs(Fs[code]) + abs(Fc[code]))*abs(eox[code]); ty[c] += cfg.rho_l*(abs(Fs[code]) + abs(Fc[code]))*abs(eoy[code])
                     elseif code < 0
                         tx[c] += cfg.rho_l*(abs(Fs[-code]) + abs(Fc[-code]))*abs(enx[-code]); ty[c] += cfg.rho_l*(abs(Fs[-code]) + abs(Fc[-code]))*abs(eny[-code])
+                    elseif code > nf
+                        b = code - nf
+                        tx[c] += cfg.rho_l*(abs(Fbs[b]) + abs(Fbc[b]))*abs(ebox[b])
+                        ty[c] += cfg.rho_l*(abs(Fbs[b]) + abs(Fbc[b]))*abs(eboy[b])
                     end
                 end
             end
             SR = vcat(tx, ty, a1 ? _cont_scale_a1(m, w, st, bc, cfg; Tf, Tb) : _cont_scale(m, w, st, cfg))
         end
         out = Any[_po("R (momentum and continuity residual)", cw.R, :resid_w, Wh; cls=:R2, S=SR)]
-        append!(out, [_po(string(n), getfield(cw, n), :value, nothing; cls=(n === :dF0 ? :R3 : :R1))
-                      for n in (:Wt, :Dc, :pdiag, :Fconv, :Fbconv, :eox, :eoy, :enx, :eny, :dF0)])
+        append!(out, [_po(string(n), getfield(cw, n), :value, nothing; cls=(n in (:dF0,:dFb0) ? :R3 : :R1))
+                      for n in (:Wt, :Dc, :pdiag, :Fconv, :Fbconv, :eox, :eoy, :enx, :eny, :dF0, :ebox, :eboy, :dFb0)])
         append!(out, [_po(string(n), getfield(w, n), :value, nothing) for n in (:Fs, :Fbs, :Df, :Db)])
         append!(out, [_po("psys.diag", w.psys.diag, :value, nothing), _po("psys.upper", w.psys.upper, :value, nothing),
                       _po("fj.den", w.fj.den, :value, nothing), _po("fi.den", w.fi.den, :value, nothing),

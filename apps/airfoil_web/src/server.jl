@@ -6,6 +6,9 @@ using Dates
 using Printf
 using SHA
 using JSON3
+include("job_control.jl")
+using .AirfoilJobControl
+include(joinpath("api", "job_progress.jl"))
 
 include("protocol.jl")
 using .AirfoilWire
@@ -56,6 +59,7 @@ const STATIC_FILES = Dict(
     "styles/app.css" => "styles/app.css", "styles/ergonomics.css" => "styles/ergonomics.css",
     "styles/output_controls.css"=>"styles/output_controls.css", "scripts/output_controls.js"=>"scripts/output_controls.js",
     "scripts/studies.js"=>"scripts/studies.js", "scripts/benchmarks.js"=>"scripts/benchmarks.js",
+    "scripts/workflow_help.js"=>"scripts/workflow_help.js",
     "styles/studies.css"=>"styles/studies.css",
     "styles/plots.css"=>"styles/plots.css", "scripts/plot_controls.js"=>"scripts/plot_controls.js",
     "scripts/app.js" => "scripts/app.js", "scripts/lbm.js" => "scripts/lbm.js",
@@ -70,6 +74,7 @@ const RUN_DIR = joinpath(PRIVATE_ROOT, "results", "airfoil_runs")
 const PREVIEW_DIR = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "airfoil_previews")
 const LEGACY_RUN_DIR = joinpath(PRIVATE_ROOT, "apps", "airfoil_web", "runs")
 const JOBS = Dict{String,Dict{String,Any}}()
+const JOB_CONTROLS = Dict{String,AirfoilJobControl.CancellationToken}()
 const JOB_LOGS = Dict{String,Vector{Dict{String,Any}}}()
 const JOB_LOG_SEQ = Dict{String,Int}()
 const JOB_HISTORY = Dict{String,Vector{Dict{String,Any}}}()
@@ -96,6 +101,7 @@ const MIME = Dict(
     ".json"=>"application/json; charset=utf-8", ".pdf"=>"application/pdf",
 )
 include("output_options.jl")
+include("lowspeed_initial_flow.jl")
 include(joinpath(ROOT,"apps","common","NativeDialogs.jl"))
 include(joinpath(ROOT,"apps","common","StaticAssets.jl"))
 include(joinpath("api", "campaign_status.jl"))
@@ -235,6 +241,8 @@ function _validated_case(data; geometry_only::Bool=false)
     "cavitation" in backend_names && CFDBackend.cavitation_configuration(flow_out)
     # Low-speed CFD (PBCav, version 2): incompressible, so Mach is not one of its inputs; its own settings are checked here.
     "lowspeed" in backend_names && CFDBackend.lowspeed_configuration(flow_out)
+    initial_id=_lowspeed_initial_id(flow_out,backend_names)
+    initial_id===nothing || (flow_out["lowspeed_initial_job_id"]=initial_id)
     "lbm" in backend_names && CFDBackend.lbm_configuration(flow_out)
     if haskey(flow_out, "xfoil_geometry")
         String(flow_out["xfoil_geometry"]) in ("same_as_cfd", "native") ||
@@ -360,9 +368,41 @@ end
 function _put_job(id::String, changes::AbstractDict)
     lock(JOB_LOCK) do
         haskey(JOBS, id) || return
-        merge!(JOBS[id], changes)
+        updates=Dict{String,Any}(String(k)=>v for (k,v) in pairs(changes))
+        if get(JOBS[id],"cancel_requested",false) && get(JOBS[id],"status","") in ("cancelling","cancelled") &&
+                get(updates,"status",nothing)!="cancelled"
+            # Late worker events may still publish retained fields, but cannot
+            # replace the cancellation state with running/completed/failed.
+            foreach(key->delete!(updates,key),("status","message","progress"))
+        end
+        merge!(JOBS[id], updates)
         JOBS[id]["updated_at"] = string(now(UTC)) * "Z"
     end
+end
+_public_job(job) = merge(Dict{String,Any}(k=>v for (k,v) in job if k!="case"),
+    Dict("request"=>_job_request(get(job,"case",nothing))))
+
+"Cancel a live job without changing terminal jobs or deleting saved artifacts."
+function _cancel_job!(id::String)
+    changed=lock(JOB_LOCK) do
+        job=get(JOBS,id,nothing)
+        job===nothing && return false
+        get(job,"status","") in ("queued","running","cancelling") || return false
+        job["cancel_requested"]=true
+        job["cancel_requested_at"]=string(now(UTC))*"Z"
+        job["status"]=job["status"]=="queued" ? "cancelled" : "cancelling"
+        job["message"]=job["status"]=="cancelled" ? "Cancelled before starting; saved data retained" :
+            "Cancelling analysis; stopping workers and retaining saved results"
+        job["updated_at"]=string(now(UTC))*"Z"
+        job["status"]=="cancelled" && (job["cancelled_at"]=job["updated_at"])
+        AirfoilJobControl.cancel!(get!(() -> AirfoilJobControl.CancellationToken(marker=joinpath(_safe_job_dir(id),"cancel.requested")),JOB_CONTROLS,id))
+        true
+    end
+    if changed
+        _append_log(id,"server","Cancellation requested; no further operating points will be started. Saved artifacts are retained.")
+        _persist_job(id)
+    end
+    _get_job(id)
 end
 function _get_job(id::String)
     lock(JOB_LOCK) do
@@ -667,6 +707,25 @@ function _point_outcome(results)
     ("partial", "Analysis finished with partial results")
 end
 function _run_job(id::String)
+    job=_get_job(id);job===nothing && return
+    token=lock(() -> get!(() -> AirfoilJobControl.CancellationToken(marker=joinpath(_safe_job_dir(id),"cancel.requested")),JOB_CONTROLS,id),JOB_LOCK)
+    try
+        AirfoilJobControl.with_token(token) do
+            _run_job_controlled(id)
+        end
+    catch err
+        # This handles cancellation before the queued job entered its body.
+        # Other errors in the body are recorded by _run_job_controlled.
+        if err isa AirfoilJobControl.JobCancelled || AirfoilJobControl.requested(token)
+            _put_job(id,Dict("status"=>"cancelled","message"=>"Analysis cancelled; saved results retained",
+                "cancelled_at"=>string(now(UTC))*"Z"))
+            _persist_job(id)
+        else
+            rethrow()
+        end
+    end
+end
+function _run_job_controlled(id::String)
     job = _get_job(id)
     job === nothing && return
     case = job["case"]
@@ -675,7 +734,9 @@ function _run_job(id::String)
     _put_job(id, Dict("status"=>"running", "message"=>"Preparing airfoil geometry", "progress"=>0.02))
     _append_log(id, "server", "Preparing $(case["airfoil"]["kind"]) $(case["airfoil"]["id"]) at Mach $(case["flow"]["mach"]), Re $(case["flow"]["reynolds"]); angles $(join(case["alphas"], ", ")) deg.")
     try
+        AirfoilJobControl.check_cancelled()
         resolved = AirfoilJXBackend.resolve_airfoil(case["airfoil"])
+        AirfoilJobControl.check_cancelled()
         foil = resolved.airfoil
         _append_log(id, "server", "Geometry loaded: $(foil.name), $(length(foil.x)) points.")
         geom = Dict{String,Any}("name"=>foil.name, "x"=>foil.x, "y"=>foil.y,
@@ -684,6 +745,11 @@ function _run_job(id::String)
         geopath = joinpath(outdir, "airfoil.dat")
         _save_geometry(foil, geopath)
         case["airfoil"]["path"] = geopath
+        initial_flow=_resolve_lowspeed_initial(case,geopath,outdir)
+        if initial_flow!==nothing
+            _put_job(id,Dict("initial_flow"=>initial_flow.provenance))
+            _append_log(id,"lowspeed","Checked initial flow offered from saved job $(initial_flow.provenance["job_id"]), alpha $(initial_flow.provenance["source_alpha_deg"]) deg. Pseudo-time and step count reset; this is not exact native continuation.")
+        end
         results = Any[]
         meshes = Dict{String,Any}()
         live_fields = Dict{String,Any}()
@@ -725,6 +791,7 @@ function _run_job(id::String)
                                        "reference"=>reference)
             case["airfoil"]["kind"]=="cavitation_reference" && (payload["reference_case"]=_reference_setup(case))
             payload["saved_snapshots"]=saved_snapshots
+            initial_flow===nothing || (payload["initial_flow"]=initial_flow.provenance)
             # Latest committed fields of running CFD points.
             isempty(live_fields) || (payload["live_fields"]=live_fields)
             isempty(lbm_live) || (payload["lbm_live"]=lbm_live)
@@ -734,6 +801,12 @@ function _run_job(id::String)
         function record_point!(backend, p; publish=false)
             q = Dict{String,Any}(string(k)=>v for (k,v) in pairs(p))
             q["backend"] = backend
+            if initial_flow!==nothing && backend=="lowspeed" && get(q,"alpha_deg",nothing)==first(case["alphas"])
+                q["diagnostics"]=merge(get(q,"diagnostics",Dict{String,Any}()),Dict("initial_flow"=>initial_flow.provenance))
+                notes=[replace(String(note),"previous polar angle's"=>"saved job's","Checked previous-angle state"=>"Checked saved-job initial flow",
+                    "previous angle's circulation"=>"saved initial flow's circulation") for note in get(q,"notes",String[])]
+                q["notes"]=vcat(notes,[initial_flow.provenance["meaning"]*" Source job $(initial_flow.provenance["job_id"]), alpha $(initial_flow.provenance["source_alpha_deg"]) deg."])
+            end
             get(q,"alpha_deg",nothing) isa Real && delete!(live_fields, "$(backend):$(@sprintf("%.6f",Float64(q["alpha_deg"])))")
             if backend == "jxfoil" || (backend=="xfoil" && !haskey(q,"native_geometry"))
                 q["native_geometry"] = Dict{String,Any}("name"=>foil.name,
@@ -790,6 +863,7 @@ function _run_job(id::String)
         end
         publish_results!()
         for (ib, backend) in enumerate(backends)
+            AirfoilJobControl.check_cancelled()
             base = (ib-1)/length(backends)
             span = 1/length(backends)
             _put_job(id, Dict("message"=>"Running $backend", "progress"=>base))
@@ -826,7 +900,10 @@ function _run_job(id::String)
                         _put_job(id,Dict("message"=>"Actual XFOIL at alpha=$angle deg: $(replace(event,'_'=>' '))","progress"=>base+span*fraction))
                     end)
             else
-                CFDBackend.run_case(case, backend, outdir; log=msg->_append_log(id, backend, msg), progress=ev->begin
+                latest_iterations=Dict{Int,Dict{String,Any}}()
+                CFDBackend.run_case(case, backend, outdir;
+                    initial_warmdir=backend=="lowspeed" && initial_flow!==nothing ? initial_flow.dir : nothing,
+                    log=msg->_append_log(id, backend, msg), progress=ev->begin
                     event = string(get(ev, "event", "running"))
                     angle = get(ev, "alpha_deg", nothing)
                     idx = findfirst(==(angle), case["alphas"])
@@ -895,9 +972,11 @@ function _run_job(id::String)
                     else
                         (idx-1)/nangle
                     end
-                    _put_job(id, Dict("message"=>msg, "progress"=>base + span*f))
+                    update=Dict{String,Any}("message"=>msg, "progress"=>base + span*f)
+                    _put_job(id, AirfoilJobProgress.preserve_iteration!(latest_iterations,idx,ev,update))
                 end)
             end
+            AirfoilJobControl.check_cancelled()
             for p in _point_list(output, backend)
                 p isa AbstractDict || continue
                 record_point!(backend, p)
@@ -905,14 +984,22 @@ function _run_job(id::String)
             publish_results!()
             _append_log(id, "server", "Finished $backend.")
         end
+        AirfoilJobControl.check_cancelled()
         _safe_finalize_outputs!(id,case,get(_get_job(id),"result",Dict{String,Any}()),outdir)
+        AirfoilJobControl.check_cancelled()
         status, message = _point_outcome(results)
         _put_job(id, Dict("status"=>status, "message"=>message, "progress"=>1.0))
         _append_log(id, "server", "$message: $(length(results)) point record(s).")
     catch err
-        _safe_finalize_outputs!(id,case,get(_get_job(id),"result",Dict{String,Any}()),outdir)
-        _put_job(id, Dict("status"=>"failed", "message"=>"Analysis failed", "error"=>sprint(showerror,err)))
-        _append_log(id, "server", "Analysis failed: $(sprint(showerror, err))")
+        if err isa AirfoilJobControl.JobCancelled || AirfoilJobControl.requested()
+            _put_job(id,Dict("status"=>"cancelled","message"=>"Analysis cancelled; saved results retained",
+                "cancelled_at"=>string(now(UTC))*"Z"))
+            _append_log(id,"server","Analysis cancelled. Completed points, committed field snapshots and logs remain available.")
+        else
+            _safe_finalize_outputs!(id,case,get(_get_job(id),"result",Dict{String,Any}()),outdir)
+            _put_job(id, Dict("status"=>"failed", "message"=>"Analysis failed", "error"=>sprint(showerror,err)))
+            _append_log(id, "server", "Analysis failed: $(sprint(showerror, err))")
+        end
     end
     _persist_job(id)
 end
@@ -962,7 +1049,7 @@ function _saved_job(id::String)
     record = decode(read(path), :msgpack)
     record isa AbstractDict || return nothing
     record["restored"] = true
-    if get(record,"status","") in ("queued","running")
+    if get(record,"status","") in ("queued","running","cancelling")
         record["status"] = "partial"
         record["message"] = "The server stopped while this job was running; the points saved before the stop are shown."
     end
@@ -990,7 +1077,7 @@ function _recent_jobs(limit::Int=20)
             if live !== nothing
                 summary["status"] = get(live,"status",summary["status"]); summary["message"] = get(live,"message",summary["message"])
                 summary["live"] = true
-            elseif get(summary,"status","") in ("queued","running")
+            elseif get(summary,"status","") in ("queued","running","cancelling")
                 summary["status"] = "interrupted"
             end
             push!(items, summary)
@@ -1087,7 +1174,9 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>23,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>26,"protocols"=>["msgpack","bson"],
+                "job_control"=>Dict("cancel"=>true,"cooperative_grace_seconds"=>30),
+                "lowspeed_initial_flow"=>Dict("checked_job_seed"=>true,"request_key"=>"lowspeed_initial_job_id","exact_continuation"=>false),
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
                 "lbm"=>CFDBackend.lbm_capabilities(), "output_capabilities"=>_output_capabilities(),
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),
@@ -1128,12 +1217,14 @@ function app_handler(req::HTTP.Request)
             fmt = _fmt(req; default=ctype)
             length(req.body) <= AirfoilWire.MAX_BYTES || return _error(413,"payload too large",fmt)
             case = _validated_case(decode(Vector{UInt8}(req.body), ctype))
+            _lowspeed_initial_source(case) # Reject missing/nonterminal/incompatible source jobs before enqueueing.
             id = string(uuid4())
             job = Dict{String,Any}("id"=>id,"status"=>"queued","message"=>"Queued", "progress"=>0.0,
                 "created_at"=>string(now(UTC))*"Z", "case"=>case,"output_settings"=>case["outputs"])
             lock(JOB_LOCK) do
                 length(JOBS) < MAX_JOBS || throw(ArgumentError("job capacity reached; restart after downloading results"))
                 JOBS[id] = job
+                JOB_CONTROLS[id] = AirfoilJobControl.CancellationToken(marker=joinpath(_safe_job_dir(id),"cancel.requested"))
                 JOB_LOGS[id] = Dict{String,Any}[]
                 JOB_LOG_SEQ[id] = 0
                 JOB_HISTORY[id] = Dict{String,Any}[]
@@ -1143,6 +1234,21 @@ function app_handler(req::HTTP.Request)
             _persist_job(id)
             _start_worker(); put!(QUEUE,id)
             return _response(202, Dict("id"=>id,"status"=>"queued","message"=>"Queued"),fmt)
+        elseif method == "POST" && startswith(path,"/api/jobs/")
+            parts=split(path,'/';keepempty=false)
+            length(parts)==4 && parts[4]=="cancel" || return _error(404,"Not found",fmt)
+            id=String(parts[3])
+            occursin(r"^[0-9a-f-]{36}$",id) || return _error(404,"Unknown job",fmt)
+            previous=_get_job(id)
+            accepted=previous!==nothing && get(previous,"status","") in ("queued","running","cancelling")
+            job=_cancel_job!(id)
+            if job===nothing
+                saved=_saved_job(id)
+                saved===nothing && return _error(404,"Unknown job",fmt)
+                return _response(200,saved,fmt)
+            end
+            code=accepted ? 202 : 200
+            return _response(code,_public_job(job),fmt)
         elseif method == "GET" && startswith(path,"/api/jobs/")
             parts = split(path,'/'; keepempty=false)
             length(parts) >= 3 || return _error(404,"Not found",fmt)
@@ -1179,8 +1285,7 @@ function app_handler(req::HTTP.Request)
                 after = parse(Int, String(get(HTTP.queryparams(uri), "after", "0")))
                 return _response(200, _get_history(id, after), fmt)
             elseif length(parts) == 3
-                public = Dict(k=>v for (k,v) in job if k != "case")
-                public["request"] = _job_request(get(job,"case",nothing))
+                public = _public_job(job)
                 # Wind-tunnel lift at nearby conditions (NACA 0012 with the low-speed CFD only; never a matched reference)
                 nearby = AirfoilNearbyReferences.nearby_experiments(public["request"])
                 isempty(nearby) || (public["nearby_experiments"] = nearby)

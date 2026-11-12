@@ -19,10 +19,12 @@ const LOWSPEED_CH_COMMIT_PINNED = LOWSPEED_COMMIT_PINNED
 lowspeed_ch_snapshot() = normpath(get(ENV, "AIRFOIL_LOWSPEED_CH_SNAPSHOT", lowspeed_pin().snapshot))
 "C+H mesh presets: the demo's C-block sizes (PB_MESH), with the base cells set per base height by _lowspeed_ch_knobs."
 const LOWSPEED_CH_MESHES = Dict(
+    "standard"=>(mesh="192,128,3e-5,1.10,80,64", dn1=3e-5,
+             label="Standard C+H: graded base and wake with one nested refinement level; wall spacing about 1.5e-5 c"),
     "demo"=>(mesh="192,72,3e-5,1.20,80,64", dn1=3e-5,
              label="Demo (fast) C+H: 192 foil x 72 normal cells + 2 x 64 wake legs, H block 64 stations x (2 x base cells), first wall spacing 3e-5 c, column remap with the graded strip"),
-    "fine"=>(mesh="192,72,3e-5,1.20,80,64", dn1=3e-5,
-             label="Refined C+H: demo topology subdivided once (PB_MESH_LEVEL=1), including the base and wake; four times as many cells"),
+    "fine"=>(mesh="192,128,3e-5,1.10,80,64", dn1=3e-5,
+             label="Fine C+H: standard topology subdivided once more, including the base and wake; four times standard cells"),
     "smoke"=>(mesh="64,40,1e-3,1.30,40,16", dn1=1e-3,
               label="Smoke test only (C+H): 64 foil x 40 normal cells + 2 x 16 wake, first wall spacing 1e-3 c"))
 """The Gurney flap's start (PB_START=ramp, PB_START_RAMP): the far field is accelerated from r0 U to U over t = T c/U, because the
@@ -34,25 +36,42 @@ const LOWSPEED_CH_RAMP_T = 2.0
 "The base's cross cells grow from the wall spacing at both legs by at most this ratio (the C+H air gate G2k's 1.2)."
 const LOWSPEED_CH_BASE_RATIO = 1.2
 
-_lowspeed_ch_selected(flow::AbstractDict) = gurney_enabled(flow) || String(_get(flow, "lowspeed_topology", "sharp")) == "ch_native"
+function _lowspeed_ch_selected(flow::AbstractDict)
+    topo=String(_get(flow,"lowspeed_topology","auto"))
+    topo in ("auto","sharp","ch_native") || throw(ArgumentError("lowspeed_topology must be auto, sharp or ch_native"))
+    gurney_enabled(flow) && topo=="sharp" && throw(ArgumentError("A Gurney flap needs the C+H mesh; use Automatic topology."))
+    topo!="sharp"
+end
+
+"Resolve automatic topology from the imported section without changing its geometry."
+function _lowspeed_resolve_flow(source::AbstractDict,path::AbstractString,flow::AbstractDict)
+    String(_get(flow,"lowspeed_topology","auto"))=="auto" || return flow
+    af=String(_get(source,"kind",""))=="naca4" ? CMeshGen.naca4_points(parse(Int,String(source["id"]))) : CMeshGen.read_airfoil_dat(path)
+    gap=hypot(af.x[1]-af.x[end],af.y[1]-af.y[end])
+    resolved=Dict{String,Any}(String(k)=>v for (k,v) in flow)
+    resolved["lowspeed_topology"]=gap>1e-6 ? "ch_native" : "sharp"
+    if gurney_enabled(flow) && gap<=1e-6
+        throw(ArgumentError("The imported section has a closed trailing edge. A Gurney baffle currently needs a finite trailing-edge gap; provide the measured finite-edge coordinates. The app preserves your source geometry."))
+    end
+    resolved
+end
 
 """Validated settings of the C+H path: the sharp path's inputs plus the topology. lowspeed_topology may be "sharp" (the
 default) or "ch_native" (the native finite trailing edge on C+H, a like-for-like control for a Gurney flap)."""
 function lowspeed_ch_configuration(flow::AbstractDict)
-    topo = String(_get(flow, "lowspeed_topology", "sharp"))
-    topo in ("sharp", "ch_native") || throw(ArgumentError("lowspeed_topology must be sharp or ch_native"))
-    gurney_enabled(flow) && topo == "ch_native" && throw(ArgumentError("lowspeed_topology=ch_native is the native-base control: remove the Gurney flap or the key"))
+    topo = String(_get(flow, "lowspeed_topology", "auto"))
+    topo in ("auto", "sharp", "ch_native") || throw(ArgumentError("lowspeed_topology must be auto, sharp or ch_native"))
     res = String(_get(flow, "lowspeed_resolution", LOWSPEED_DEFAULTS["lowspeed_resolution"]))
-    haskey(LOWSPEED_CH_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be demo or fine (or smoke for tests)"))
+    haskey(LOWSPEED_CH_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be standard, fine or demo (or smoke for tests)"))
     _number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05) > 0 && throw(ArgumentError(gurney_enabled(flow) ?
         "The Gurney flap and the CFD trailing-edge thickness override both set the trailing edge: clear the CFD trailing-edge thickness (the flap is a baffle on the section's own finite trailing edge, which it keeps)." :
         "the low-speed CFD's C+H path takes the native trailing edge: clear the CFD trailing-edge thickness override"))
     g = gurney_request(flow)
     # the hidden start and mu_t-base controls (C+H path only): defaults are the Gurney flap's (ramp, committed) with a flap and the
     # control's (projection, extrapolated: the solver's defaults, nothing named) without one
-    start = String(_get(flow, "lowspeed_start", g === nothing ? "projection" : "ramp"))
+    start = String(_get(flow, "lowspeed_start", "ramp"))
     start in ("projection", "ramp") || throw(ArgumentError("lowspeed_start must be projection or ramp"))
-    mutb = String(_get(flow, "lowspeed_turb_mut_base", g === nothing ? "extrapolated" : "committed"))
+    mutb = String(_get(flow, "lowspeed_turb_mut_base", "committed"))
     mutb in ("extrapolated", "committed") || throw(ArgumentError("lowspeed_turb_mut_base must be extrapolated or committed"))
     accel = RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),:lowspeed_ch)
     cfgd = Dict{String,Any}("topology"=>"ch", "ch_source"=>g !== nothing ? "gurney" : "native", "resolution"=>res,
@@ -60,11 +79,13 @@ function lowspeed_ch_configuration(flow::AbstractDict)
         "reynolds"=>_number(flow, "reynolds", 3e6; lo=1e4, hi=1e8),
         "tu"=>_number(flow, "lowspeed_tu", LOWSPEED_DEFAULTS["lowspeed_tu"]; lo=1e-6, hi=0.19),
         "mut_ratio"=>_number(flow, "lowspeed_mut_ratio", LOWSPEED_DEFAULTS["lowspeed_mut_ratio"]; lo=1e-4, hi=1e4),
+        "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "steady_tol"=>_number(flow, "lowspeed_steady_tol", LOWSPEED_DEFAULTS["lowspeed_steady_tol"]; lo=1e-9, hi=1e-3),
         "turb_steady_tol"=>_number(flow, "lowspeed_turb_steady_tol", LOWSPEED_DEFAULTS["lowspeed_turb_steady_tol"]; lo=1e-9, hi=1e-3),
         "wall_cap"=>_number(flow, "lowspeed_wall_cap_s", 7200.0; lo=30.0, hi=14400.0),
         "max_steps"=>_integer(flow, "lowspeed_max_steps", LOWSPEED_DEFAULTS["lowspeed_max_steps"]; lo=1, hi=20000),
         "live_every"=>0, "gpu"=>lowspeed_gpu(flow), "start"=>start, "mut_base"=>mutb,
+        "iteration_controls"=>lowspeed_iteration_controls(flow),
         "rans_acceleration"=>accel.enabled, "rans_acceleration_method"=>accel.method, "pseudo_dt"=>accel.pseudo_dt)
     g === nothing || (cfgd["baffle"] = Dict{String,Any}("side"=>g.mode, "h"=>g.height))
     # 30 Oct 2026: the refinement of the plate's free edge and its shear layer (PBCav's PB_BAFFLE_REFINE); named in the
@@ -117,29 +138,31 @@ function _lowspeed_ch_geometry(case, path::AbstractString, dir::AbstractString, 
     f, geometry, gap
 end
 
-"""The PB_* knobs of a C+H point, every one named. Base cells per half: the fewest that let the graded base grow from the
-wall spacing at both legs by at most 1.2 (n = ceil(log(1 + 0.2 (h/2)/dn1)/log 1.2), at least 4), with the trailing-edge
-interval 1.5 h/(2n), inside the generator's G7' range [h/(2n), h/n]; G8' (h/(2n) >= dn1) is checked. `gap` is the section's
-NATIVE trailing-edge gap (never the plate's: the flap is a baffle in the native mesh). A Gurney flap adds PB_BAFFLE, the ramp
-start and PB_TURB_MUT_BASE (the header); the control adds them only when its hidden keys ask."""
+"""Resolve C+H knobs from the native trailing-edge gap. Standard/Fine use the audited common clean/flap profile;
+Demo retains its logarithmic base grading. Both enforce the original base-spacing gates. Clean and flap cases share
+the same ramp, committed viscosity and nonlinear SST damping; a flap adds only its baffle/refinement geometry controls."""
 function _lowspeed_ch_knobs(ls::AbstractDict, gap::Real)
     q = LOWSPEED_CH_BASE_RATIO; dn1 = ls["dn1"]
-    nb = max(4, ceil(Int, log(1 + (q - 1)*(gap/2)/dn1)/log(q)))
+    qualified=ls["resolution"] in ("standard","fine")
+    nb = qualified ? max(4,ceil(Int,gap/(3.9dn1))) : max(4, ceil(Int, log(1 + (q - 1)*(gap/2)/dn1)/log(q)))
     nb <= 256 || throw(ArgumentError(@sprintf("the C+H base of %.4f c needs %d cells per half, above the 256 the app admits", gap, nb)))
     gap/(2nb) >= dn1 || throw(ArgumentError(@sprintf("the C+H base of %.4f c is too short for %d cells per half at the wall spacing %.1e c (G8')", gap, nb, dn1)))
     kn = Dict{String,String}("PB_MESH"=>ls["mesh"], "PB_MESH_LE_DS"=>"0", "PB_MESH_TE_BASE"=>string(nb),
-        "PB_MESH_TE_DS"=>@sprintf("%.6e", 1.5gap/(2nb)), "PB_MESH_TE_TOPOLOGY"=>"strip",
+        "PB_MESH_TE_DS"=>@sprintf("%.12e", (qualified ? 1.01 : 1.5)*gap/(2nb)), "PB_MESH_TE_TOPOLOGY"=>"strip",
         "PB_MESH_REMAP"=>"common", "PB_MESH_REMAP_STRIP"=>"graded",
         "PB_TURBULENCE"=>"sst", "PB_SST_TU_INF"=>string(ls["tu"]), "PB_SST_MUT_RATIO"=>string(ls["mut_ratio"]),
         "PB_DT"=>string(ls["pseudo_dt"]), "PB_STEADY_TOL"=>string(ls["steady_tol"]), "PB_TURB_STEADY_TOL"=>string(ls["turb_steady_tol"]), "PB_MAX_STEPS"=>string(ls["max_steps"]),
         "PB_WALL_CAP"=>string(ls["wall_cap"]), "PB_N_OUTER_MAX"=>"40", "PB_VORTEX"=>"point", "PB_VORTEX_EVERY"=>"10",
         "PB_VORTEX_RELAX"=>"0.5",
-        # W6b's settings, named explicitly (their values are the defaults of d62a577f and of b7a7b29b alike; the sharp path
-        # names the same three, LOWSPEED_W6B_KNOBS): the coupled step's SIMPLEC alpha_u (0.8), the coupled Jacobian with its
-        # viscous non-orthogonal part, and the omega non-orthogonal bound.
-        "PB_CPL_AU"=>"0.8", "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2",
-        "PB_CPU_LAUNCH"=>"balanced")
-    ls["resolution"] == "fine" && (kn["PB_MESH_LEVEL"] = "1")
+        # Matched full-state NACA4412 C+H GPU steps reduced late linear work and rejections at au=0.95.
+        # Only the preconditioner changes; equations, true-residual targets and steady limits stay unchanged.
+        "PB_CPL_AU"=>"0.95", "PB_CPL_RESTART"=>"60", "PB_CPL_MAXIT"=>"300",
+        "PB_CPL_VISC_NONORTH"=>"jacobian", "PB_TURB_OMEGA_BOUND"=>"0.2",
+        "PB_CPU_LAUNCH"=>"balanced", "PB_TURB_STEP_RELAX"=>"0.5")
+    if qualified
+        merge!(kn,Dict("PB_MESH_REMAP_KEEP"=>"2,24","PB_MESH_REMAP_LAW"=>"128,1.10,5",
+            "PB_MESH_REMAP_WAKE"=>"300,500","PB_MESH_LEVEL"=>ls["resolution"]=="fine" ? "2" : "1"))
+    end
     # the ramp start (the Gurney flap's; the control only when asked) and the mu_t base (named whenever it is not the default,
     # and always with a flap, so that a point's receipt shows it)
     get(ls, "start", "projection") == "ramp" && merge!(kn, Dict{String,String}("PB_START"=>"ramp", "PB_START_RAMP"=>LOWSPEED_CH_RAMP))
@@ -150,6 +173,7 @@ function _lowspeed_ch_knobs(ls::AbstractDict, gap::Real)
     haskey(ls, "baffle") && (kn["PB_BAFFLE"] = "gurney:side=" * String(ls["baffle"]["side"]) * ",h=" * string(Float64(ls["baffle"]["h"])))
     haskey(ls, "baffle") && haskey(ls["baffle"], "refine") && (kn["PB_BAFFLE_REFINE"] = GURNEY_REFINE_KNOBS[String(ls["baffle"]["refine"])])
     get(ls, "gpu", false) && merge!(kn, Dict{String,String}(LOWSPEED_GPU_KNOBS))   # the GPU (opt-in; lowspeed_backend.jl)
+    merge!(kn,get(ls,"iteration_controls",Dict{String,String}()))
     kn
 end
 
@@ -157,7 +181,8 @@ function _lowspeed_ch_input(snap, head, foil, ls, knobs, alpha, dir; mesh_only::
     cfg = Dict{String,Any}("snapshot"=>snap, "commit"=>head, "foil"=>replace(String(foil), '\\'=>'/'), "knobs"=>knobs,
         "resolution"=>ls["resolution"], "reynolds"=>ls["reynolds"], "alpha"=>Float64(alpha),
         "outdir"=>replace(String(dir), '\\'=>'/'), "rans_acceleration"=>ls["rans_acceleration"],
-        "rans_acceleration_method"=>ls["rans_acceleration_method"])
+        "rans_acceleration_method"=>ls["rans_acceleration_method"],
+        "snapshot_interval_seconds"=>get(ls,"snapshot_interval_seconds",600.))
     mesh_only && (cfg["mesh_only"] = true)
     # streamline alignment (opt-in, development): the hashed JXfoil path file and the morph (streamline_backend.jl)
     streamline === nothing || (cfg["streamline"] = streamline)
@@ -249,7 +274,7 @@ function preview_lowspeed_ch_mesh(path::AbstractString, flow::AbstractDict, outd
     (mesh=mesh, metadata=metadata)
 end
 
-function _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing)
+function _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing; warm_required::Bool=false)
     ls = lowspeed_ch_configuration(flow)
     snap, head = _lowspeed_ch_snapshot_check(baffle=haskey(ls, "baffle"), refine=haskey(get(ls, "baffle", Dict()), "refine"))
     foil, geometry, gap = _lowspeed_ch_geometry(case, path, dir, flow)
@@ -259,7 +284,9 @@ function _lowspeed_ch_point(case, path, flow, alpha, dir, progress, log, warmdir
     streamline === nothing || _deliver_log(log, "$(STREAMLINE_DEV_LABEL): $(streamline["path_label"]), admission $(streamline["admission"]); the worker morphs its own mesh with the hashed path file.")
     cfg = _lowspeed_ch_input(snap, head, foil, ls, knobs, alpha, dir; streamline)
     warm = warmdir === nothing ? nothing : joinpath(warmdir, "state_checkpoint.jls")
+    warm_required && (warm===nothing || !isfile(warm)) && throw(ArgumentError("The required saved initial-flow checkpoint is missing"))
     warm !== nothing && isfile(warm) && (cfg["warm_start"] = warm)
+    warm_required && (cfg["require_warm_start"]=true)
     cfg_path = joinpath(dir, "input.toml")
     open(io -> TOML.print(io, cfg), cfg_path, "w")
     startword = haskey(cfg,"warm_start") ? "checked previous-angle state offered (worker verifies compatibility)" :
@@ -280,7 +307,7 @@ end
 URANS development point validation/gurney_urans_20261027/README.md, run on the EARLIER reshaped-mesh plate, so it is a statement
 about the physics of this flap, not about this mesh)."""
 const GURNEY_UNSTEADY_CAVEAT = "Steady RANS caveat: a Gurney flap sheds (the trailing-edge wake behind a bluff plate is unsteady, St about 0.15 on the plate height), and this steady pseudo-time march suppresses the shedding: the plate's back-face suction is a bound, not a time average, and the plate's drag increment is a lower bound in that sense. Development evidence (apps/airfoil_web/validation/gurney_urans_20261027/README.md, a 2 %c flap on NACA 0012 at Re 3e6, alpha 4, run time-accurately at small dt on the earlier reshaped-mesh plate): the wake sheds, and the time-mean C_D rose to 22 % above the steady value (a lower bound on the saturated shedding). Development, not validated."
-const GURNEY_RUN_CAVEATS = "One mesh: grid independence is not established; before quoting a Gurney C_D, select Fine in the app (PB_MESH_LEVEL=1, the plate re-placed by the same rule) and run to the steady stop. Near stall, steady branches can depend on the start: run one high-alpha point from both starts (the ramp and the projection) and compare."
+const GURNEY_RUN_CAVEATS = "One mesh: grid independence is not established; before quoting a Gurney C_D, select Fine in the app (one nested level above Standard, PB_MESH_LEVEL=2, the plate re-placed by the same rule) and run to the steady stop. Near stall, steady branches can depend on the start: run one high-alpha point from both starts (the ramp and the projection) and compare."
 
 """The ramp start's record from the loads history (dt column) and the result: the first and smallest dt, the steps below the base
 dt, and the rejections; and, for a flap, the statement that the loads before t = T are not meaningful. Stated limitation of the
@@ -358,7 +385,7 @@ function _collect_lowspeed_ch_output(dir, alpha, geometry, ls, knobs, head, elap
             (ls["rans_acceleration"] ? " Larger pseudo-time ceiling is experimental; compare convergence and wall time before relying on a speedup." : ""),
         "Mesh: $(ls["mesh_label"]); $(knobs["PB_MESH_TE_BASE"]) base cells per half. PBCav audit gates failed: $(isempty(meta["mesh_gate_failures"]) ? "none" : join(meta["mesh_gate_failures"], "; ")); the app's C+H air gates: $(gates["passed"] ? "all pass" : "failed " * join(gates["failed"], "; ")). Grid independence is not established.",
         isempty(geometry["change"]) ? "The CFD geometry is the source section with its native finite trailing edge." : geometry["change"] * ".",
-        "Fields: the 'mach' column holds the speed |U|/U_inf (incompressible); density and temperature are 1; nut is mu_t/mu; no live field snapshots on the C+H path (the final field is shown)."]
+        "Fields: the 'mach' column holds the speed |U|/U_inf (incompressible); density and temperature are 1; nut is mu_t/mu. Full C and H block snapshots follow the selected wall-clock output interval; the final field is saved separately."]
     if baffle !== nothing      # the caveats come right after the first note, the plate's record at the end
         insert!(notes, 2, GURNEY_UNSTEADY_CAVEAT); insert!(notes, 3, GURNEY_RUN_CAVEATS)
         append!(notes, _gurney_baffle_notes(meta, baffle, ls))
@@ -372,12 +399,17 @@ function _collect_lowspeed_ch_output(dir, alpha, geometry, ls, knobs, head, elap
         "geometry"=>geometry, "mesh"=>mesh, "cl"=>fnum(meta["cl"]), "cd"=>fnum(meta["cd"]), "cm"=>fnum(meta["cm"]),
         "iteration_history"=>history, "cp"=>cp, "base_cp"=>base_cp, "fields"=>fields, "notes"=>notes,
         "artifacts"=>merge(Dict("cp_csv"=>joinpath(dir, "surface_cp.csv"), "base_cp_csv"=>joinpath(dir, "base_cp.csv"),
+            "native_checkpoint"=>isfile(joinpath(dir,"state_checkpoint.pbrestart")) ? joinpath(dir,"state_checkpoint.pbrestart") : nothing,
+            "vtk_fields"=>isfile(joinpath(dir,"flow_fields.vtu")) ? joinpath(dir,"flow_fields.vtu") : nothing,
+            "state_checkpoint"=>isfile(joinpath(dir,"state_checkpoint.jls")) ? joinpath(dir,"state_checkpoint.jls") : nothing,
             "surface_csv"=>joinpath(dir, "surface.csv"), "loads_history_csv"=>joinpath(dir, "loads_history.csv"),
+            "rejection_history_csv"=>joinpath(dir,"rejection_history.csv"),
             "mesh_full"=>joinpath(dir, "mesh_full.msgpack"), "mesh_preview"=>joinpath(dir, "mesh_preview.msgpack"),
             "field_preview"=>joinpath(dir, "fields_blocks.msgpack"), "field_full"=>joinpath(dir, "fields_blocks_full.msgpack"),
             "result_toml"=>joinpath(dir, "result.toml"), "input_toml"=>joinpath(dir, "input.toml"), "log"=>joinpath(dir, "solver.log"),
             "section"=>geometry["path"]), baffle === nothing ? Dict{String,Any}() : Dict("baffle_csv"=>joinpath(dir, "baffle.csv"))),
         "diagnostics"=>merge(Dict{String,Any}("solver"=>meta["solver"], "commit"=>meta["commit"], "snapshot"=>meta["snapshot"],
+            "source_sha256"=>get(meta,"source_sha256",""),
             "solver_outcome"=>outcome, "steps"=>meta["steps"], "max_steps"=>meta["max_steps"], "wall_cap_s"=>fnum(meta["wall_cap"]),
             "warm_start_source"=>get(meta,"warm_start_source",""),
             "march_wall_seconds"=>fnum(meta["march_wall_seconds"]), "point_wall_seconds"=>elapsed, "threads"=>meta["threads"],

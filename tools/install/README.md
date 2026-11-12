@@ -23,6 +23,13 @@ There is no requirement for a machine-specific sysimage. First installation may
 take tens of minutes depending on downloads and CPU speed; detailed progress is
 written to the log path printed by setup.
 
+The three CUDA solver environments select the packaged CUDA 12.9 runtime.
+This keeps the pinned CUDA.jl 5.10 build and loaded runtime consistent on Windows,
+where the CUDA 13 runtime can resolve a version from the driver store (the
+[upstream version-detection fix](https://github.com/JuliaGPU/CUDA.jl/pull/3139)).
+Julia installs the runtime artifacts; a separate system CUDA toolkit is unnecessary.
+An explicit `LocalPreferences.toml` runtime selection overrides the project default.
+
 ## Options
 
 Pass these to `setup.cmd`, `bash setup.sh` or `bash setup.command`:
@@ -93,7 +100,7 @@ PowerShell scripts, use the root `setup.cmd` from the latest ZIP. The Visual C++
 installer is checked with an inline Authenticode query. Application browser
 assets are bundled: no npm, pip, browser CDN or build server is required.
 
-GPU solves need an installed NVIDIA driver compatible with CUDA 13.0. Windows
+GPU solves need an installed NVIDIA driver compatible with CUDA 12.9. Windows
 also needs the Microsoft Visual C++ x64 runtime; setup downloads and installs it
 if missing, verifying its Microsoft signature before executing it. Windows may
 request administrator authorization. Drivers remain a system prerequisite;

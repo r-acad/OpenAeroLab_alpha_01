@@ -48,8 +48,8 @@ function _output_capabilities()
         "display_note"=>"Field output follows the exact requested iteration interval; GPU batch depth is reduced when necessary.")),
       "transonic"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>false,"numeric_slices"=>true,"slice_png"=>false,"renders_3d"=>false,
         "timed_snapshots"=>true,"display_note"=>"History updates use iterations. Saved field snapshots use elapsed wall-clock minutes; final fields are always saved.")),
-      "lowspeed"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>false,"numeric_slices"=>true,"slice_png"=>false,"renders_3d"=>false,
-        "timed_snapshots"=>true,"display_note"=>"Sharp C-mesh snapshots use elapsed wall-clock minutes; the pinned low-speed C+H path exposes its final field only.")),
+      "lowspeed"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>true,"numeric_slices"=>true,"slice_png"=>false,"renders_3d"=>false,
+        "timed_snapshots"=>true,"display_note"=>"Sharp C and C+H snapshots use elapsed wall-clock minutes. Final fields, VTU and a checked native checkpoint are retained.")),
       "cavitation"=>merge(common,Dict("surface_vtk"=>true,"surface_lbmp"=>false,"volume_vtk"=>false,"numeric_slices"=>true,"slice_png"=>true,"renders_3d"=>false,
         "display_note"=>"The requested interval controls available history/frame output; final fields remain available.")))
 end
@@ -163,6 +163,7 @@ function _selected_export(path, settings)
     ext in (".vtk",".vtu",".vtp") && return occursin("surface",name) ? settings["surface_vtk"] : settings["volume_vtk"]
     ext==".lbmp" && return settings["surface_lbmp"]
     ext==".lbmslice" && return settings["numeric_slices"]
+    ext==".pbrestart" && return settings["numeric_slices"]
     ext in (".msgpack",".f16") && (occursin("field",name)||occursin("mesh",name)||occursin("num",full)) && return settings["numeric_slices"]
     ext in (".png",".jpg",".jpeg") && return settings["slice_png"]
     ext==".csv" && return settings["csv_history"]

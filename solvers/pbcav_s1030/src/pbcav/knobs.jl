@@ -230,6 +230,10 @@ const PB_KNOBS = [
     PBKnob("PB_TURB_STEP_TOL", "Inf", s -> (x = parse(Float64, s); (x > 0 && !isnan(x)) ||
                                             throw(ArgumentError("PB_TURB_STEP_TOL must be > 0 (Inf: one update per step; got \"$s\")")); x),
            "SST: turb_step_tol, the per-step k-omega tolerance under :step (Inf: one update per step, the steady pseudo-time form)"),
+    PBKnob("PB_TURB_STEP_MAXIT", "20", _parse_int(1,1000;name="PB_TURB_STEP_MAXIT"),
+           "SST: maximum nonlinear k-omega updates within each step when PB_TURB_STEP_TOL is finite"),
+    PBKnob("PB_TURB_STEP_RELAX", "1", _parse_float(1e-3,1.0;name="PB_TURB_STEP_RELAX"),
+           "SST: nonlinear Picard update relaxation within the step; 1 is the original full update, smaller values preserve the equation fixed point"),
     PBKnob("PB_TURB_NONORTH", "1.0", _parse_float(0.0, 1.0; name="PB_TURB_NONORTH"),
            "SST: turb_nonorth, the k-omega non-orthogonal diffusion (1: the full correction with W1b's positivity split)"),
     PBKnob("PB_TURB_OUTER_TOL", "0", _parse_float(0.0, 1.0; name="PB_TURB_OUTER_TOL"),
@@ -270,6 +274,8 @@ const PB_KNOBS = [
            "free air run: the chord Reynolds number rho U c/mu (rho = U = c = 1, so mu = 1/PB_RE; the model is PB_TURBULENCE)"),
     PBKnob("PB_DT", "0.05", _parse_float(1e-8, 1e3; name="PB_DT"),
            "free air run: the step (chords/U), backward Euler; with PB_STEADY_TOL > 0 a pseudo-time step"),
+    PBKnob("PB_START_DT", "0.005", _parse_float(1e-8, 1e3; name="PB_START_DT"),
+           "free air cold start: initial pseudo-time step cap (chords/U); accepted steps regrow toward PB_DT; a checked restart preserves its saved timestep"),
     PBKnob("PB_MAX_STEPS", "2000", _parse_int(1, 10_000_000; name="PB_MAX_STEPS"),
            "free air run: the most committed steps of the one march"),
     PBKnob("PB_STEADY_TOL", "1e-6", _parse_float(0.0, 1.0; name="PB_STEADY_TOL"),
@@ -284,6 +290,10 @@ const PB_KNOBS = [
            "of W6, R2)"),
     PBKnob("PB_CPL_ETA", "0.1", _parse_float(1e-4, 0.999; name="PB_CPL_ETA"),
            "free air coupled run: relative FGMRES forcing term; a larger value may reduce linear work but needs a converged outer solve"),
+    PBKnob("PB_CPL_RESTART", "30", _parse_int(1, 120; name="PB_CPL_RESTART"),
+           "free air coupled run: FGMRES restart basis size; larger bases retain more Krylov directions and require more memory, with the true residual goal unchanged"),
+    PBKnob("PB_CPL_MAXIT", "300", _parse_int(1, 10000; name="PB_CPL_MAXIT"),
+           "free air coupled run: maximum FGMRES iterations per outer solve; reaching this limit does not relax the true residual goal"),
     PBKnob("PB_CPL_SWEEPS", "1", _parse_int(1, 8; name="PB_CPL_SWEEPS"),
            "free air coupled run: alternating j and i momentum line sweeps per block preconditioner application"),
     PBKnob("PB_CPL_VCYCLES", "1", _parse_int(1, 8; name="PB_CPL_VCYCLES"),
@@ -300,6 +310,12 @@ const PB_KNOBS = [
            "free air run, PB_VORTEX=point: committed steps between circulation updates"),
     PBKnob("PB_OUT_DIR", "", s -> String(s),
            "free air run: the directory for the load history and the surface C_p CSVs; empty, none written"),
+    PBKnob("PB_RESTART", "", s -> String(s),
+           "free air run: resume a checked native .pbrestart checkpoint; mesh, physics and numerical settings must match"),
+    PBKnob("PB_OUTPUT_FIELDS", "on", _parse_choice(("off", "on"); name="PB_OUTPUT_FIELDS"),
+           "free air run: save the final committed cell fields as VTU in PB_OUT_DIR"),
+    PBKnob("PB_OUTPUT_CHECKPOINT", "on", _parse_choice(("off", "on"); name="PB_OUTPUT_CHECKPOINT"),
+           "free air run: save the final committed state and continuation controls as PBRestart/1 in PB_OUT_DIR"),
     PBKnob("PB_START", "projection", _parse_choice(("projection", "kutta", "ramp"); name="PB_START"),
            "free air run: the start, projection (the potential flow without circulation from the uniform freestream, the default), " *
            "kutta (the lifting potential flow whose circulation zeroes the velocity jump behind the sharp trailing edge; W6) " *
@@ -550,7 +566,7 @@ W6 (22 Oct 2026) turb_mut, turb_omega_nonorth and turb_outer_tol; since 27 Oct 2
 turbulence_settings(vals::AbstractDict) = (turbulence=vals["PB_TURBULENCE"], sst_tu=vals["PB_SST_TU_INF"],
                                            sst_mut_ratio=vals["PB_SST_MUT_RATIO"], wall_omega=vals["PB_WALL_OMEGA"],
                                            turb_coupling=vals["PB_TURB_COUPLING"], turb_tol=vals["PB_TURB_TOL"],
-                                           turb_step_tol=vals["PB_TURB_STEP_TOL"], turb_nonorth=vals["PB_TURB_NONORTH"],
+                                           turb_step_tol=vals["PB_TURB_STEP_TOL"], turb_step_maxit=vals["PB_TURB_STEP_MAXIT"], turb_step_relax=vals["PB_TURB_STEP_RELAX"], turb_nonorth=vals["PB_TURB_NONORTH"],
                                            turb_outer_ramp=vals["PB_TURB_OUTER_RAMP"], turb_mut=vals["PB_TURB_MUT"],
                                            turb_mut_base=get(vals, "PB_TURB_MUT_BASE", :extrapolated),
                                            turb_omega_nonorth=vals["PB_TURB_OMEGA_NONORTH"], turb_outer_tol=vals["PB_TURB_OUTER_TOL"],
@@ -601,7 +617,7 @@ const W6B_FREEAIR_ONLY_KNOBS = ("PB_TURB_OMEGA_BOUND", "PB_CPL_AU", "PB_CPL_VISC
 records air/mutbase/), and PB_BAFFLE and PB_START_RAMP (27 Oct 2026, the baffle review's F4: the plate's loads and the ramp
 start belong to the free-air run). (The merge of pbcav-baffle into pbcav, 27 Oct 2026: the union of both branches' lists.)"""
 const FREEAIR_ONLY_KNOBS = (W6B_FREEAIR_ONLY_KNOBS..., "PB_TURB_MUT_BASE", "PB_BAFFLE", "PB_START_RAMP", "PB_BAFFLE_REFINE",
-                            "PB_CPL_ETA", "PB_CPL_SWEEPS", "PB_CPL_VCYCLES")
+                            "PB_CPL_ETA", "PB_CPL_RESTART", "PB_CPL_MAXIT", "PB_CPL_SWEEPS", "PB_CPL_VCYCLES", "PB_START_DT")
 
 """
     mesh_call(vals, src=nothing) -> CMeshCall

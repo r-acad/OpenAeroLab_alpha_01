@@ -68,14 +68,14 @@ function write_pbrestart(path::AbstractString, meta::AbstractDict, arrays::Abstr
     line1 = LINE1_PREFIX * lpad(string(length(hb)), 10, '0') * "\n"
     dir = dirname(abspath(path)); isdir(dir) || throw(ArgumentError("PBRestart: directory $dir does not exist"))
     tmp = string(abspath(path), ".partial.", getpid(), ".", time_ns())
-    open(tmp, "w") do io
-        write(io, line1); write(io, hb)
-        for b in blobs; write(io, b); write(io, zeros(UInt8, _pad8(length(b)))); end
-    end
     try
+        open(tmp, "w") do io
+            write(io, line1); write(io, hb)
+            for b in blobs; write(io, b); write(io, zeros(UInt8, _pad8(length(b)))); end
+        end
         mv(tmp, path)                       # refuses if `path` appeared meanwhile
-    catch err
-        rm(tmp; force=true); rethrow(err)
+    finally
+        isfile(tmp) && rm(tmp; force=true)
     end
     String(path)
 end

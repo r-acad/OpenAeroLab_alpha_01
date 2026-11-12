@@ -143,5 +143,6 @@ include("pbrestart.jl")
 include("io.jl")
 include("freeair.jl")
 include("baffle.jl")
+include("freeair_output.jl")
 
 end # module PBCav
