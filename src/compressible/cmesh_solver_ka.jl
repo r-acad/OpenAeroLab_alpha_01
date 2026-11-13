@@ -3273,9 +3273,15 @@ end
     end
 end
 
+# Scope the corrected default to the thermal free-air solver. Existing
+# cavitation, mixture and channel callers retain their legacy metric unless
+# they explicitly select corrected_wall_metric=true.
+_sst_default_wall_metric(s::KSol)=s.cav==Int32(0)&&s.ff_mix==Int32(0)&&s.emix==0&&s.keps==0&&
+    s.outer_mode==Int32(0)&&s.outlet_mode==Int32(0)
+
 function sst_step_ka!(s::KSol; reboud_n=0.0f0, reboud_rhov=0.33f0,
                       wilcox_xi=0.0f0, wilcox_mt0=0.25f0,
-                      corrected_wall_metric::Bool=false,
+                      corrected_wall_metric::Bool=_sst_default_wall_metric(s),
                       nonorth_diffusion::Bool=false, raw_equations::Bool=false)
     s.air_sutherland != Int32(0) && _check_air_sutherland_admission(s)
     s.sst || return

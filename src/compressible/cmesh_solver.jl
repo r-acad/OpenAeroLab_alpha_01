@@ -870,7 +870,11 @@ function set_sst!(s::CSol; tu_inf::Float64=0.001, mu_t_ratio::Float64=0.1)
     nothing
 end
 
-function sst_step!(s::CSol; corrected_wall_metric::Bool=false)
+# External thermal airfoils use the same reflected wall/paired wake metric
+# as the normal web configuration. Channel callers keep their legacy default.
+_sst_default_wall_metric(s::CSol)=s.outer_mode==Int32(0)
+
+function sst_step!(s::CSol; corrected_wall_metric::Bool=_sst_default_wall_metric(s))
     s.sst || return
     g, NI, NJ, NIW, NIF = s.g, s.NI, s.NJ, s.NIW, s.NIF
     tk, tom, nut = s.tk, s.tom, s.nut
@@ -914,7 +918,7 @@ function sst_step!(s::CSol; corrected_wall_metric::Bool=false)
             ia=i+g; ja=j+g
             k0 = tk[ia,ja]; w0 = max(tom[ia,ja], 1.0f-6); d = max(s.wdist[i,j], 1.0f-8)
             # The corrected metric matches the state ghost location at the
-            # inner row; the historical stencil remains the default.
+            # inner row; corrected wall/wake ghost coordinates are the default.
             xxi, yxi, xet, yet = _sst_index_metrics(
                 s.xc, s.yc, s.Sjx, s.Sjy, s.wdist,
                 i, j, NI, NJ, s.NIW, s.NIF, Int32(corrected_wall_metric))

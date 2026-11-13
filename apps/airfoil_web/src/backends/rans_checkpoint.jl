@@ -32,7 +32,7 @@ function _rans_restart_identity(cfg, mesh_path, topology)
                          "cmesh_eos_mix.jl", "cmesh_pressure_outlet.jl", "cmesh_species_sst.jl")),
         "native_sha256"=>Dict(name=>bytes2hex(open(sha256, joinpath(@__DIR__, "..", "runtime", name)))
             for name in ("gas_strip_prototype.jl", "gas_strip_sst_prototype.jl", "gas_strip_sst_steady.jl")),
-        "settings"=>Dict(key=>get(cfg, key, nothing) for key in keys))
+        "settings"=>Dict(key=>(key=="sst_wall_metric_correction" ? Bool(get(cfg,key,true)) : get(cfg,key,nothing)) for key in keys))
 end
 
 function _rans_restart_physical(src, field, solver)

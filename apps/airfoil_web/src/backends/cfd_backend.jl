@@ -421,8 +421,8 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "rk_weight_closure"=>_boolean(flow, "cfd_rk_weight_closure",
                                        _boolean(flow, "cfd_gpu", true) &&
                                        String(_get(flow,"cfd_time_mode","steady"))=="steady"),
-        # Airfoil-only SST wall gradient correction; cavitation solver calls
-        # retain their historical metric unless they opt in explicitly.
+        # Match the SST state ghost with its reflected wall/paired wake center.
+        # Explicit false retains the legacy metric for controlled reproduction.
         "sst_wall_metric_correction"=>_boolean(flow,
             "cfd_sst_wall_metric_correction", true),
         # Validation opt-in: synchronize final flow ghosts before SST.
@@ -1175,7 +1175,7 @@ function _transonic_worker(cfg_path::AbstractString)
     equation_probe && !ka &&
         throw(ArgumentError("equation residual probe requires the KA worker"))
     rk_weight_closure = Bool(get(cfg,"rk_weight_closure",false))
-    sst_wall_metric_correction = Bool(get(cfg,"sst_wall_metric_correction",false))
+    sst_wall_metric_correction = Bool(get(cfg,"sst_wall_metric_correction",true))
     sst_nonorth_correction = Bool(get(cfg,"sst_nonorth_correction",false))
     sst_nonorth_correction && !ka &&
         throw(ArgumentError("sst_nonorth_correction currently requires the KA GPU worker"))

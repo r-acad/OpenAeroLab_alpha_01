@@ -103,6 +103,23 @@ include(joinpath(@__DIR__,"..","..","apps","airfoil_web","src","workers","implic
     @test haskey(cfg,"implicit_workspace_memory")&&haskey(cfg,"implicit_source_sha256")
     _implicit_step!(fake,state,runtime,cfg)
     @test stepped[][:linear_tol]==.02&&stepped[][:linear_maxiter]==120
+    @test stepped[][:corrected_wall_metric]&&!stepped[][:nonorth_diffusion]
+    cfg["sst_wall_metric_correction"]=false
+    _implicit_step!(fake,state,runtime,cfg)
+    @test !stepped[][:corrected_wall_metric]&&!stepped[][:nonorth_diffusion]
+end
+@testset "Line-implicit SST worker uses the effective metric setting" begin
+    settings=Bool[]
+    fake=(;step_implicit_line_ka! = (s,w,cfl;kwargs...)->(;accepted=true,merit_before=2.,merit_after=1.),
+        prepare_dt_ka! = (s,cfl)->nothing,
+        sst_step_ka! = (s;corrected_wall_metric,nonorth_diffusion)->push!(settings,corrected_wall_metric),
+        refresh_raw_residual_ka! = s->nothing,_implicit_merit=s->1.)
+    runtime=(;controller=nothing,workspace=nothing,cfl=Ref(1f0),max_cfl=2f0)
+    _implicit_step!(fake,nothing,runtime,Dict("implicit_sst_substeps"=>2))
+    @test settings==[true,true]
+    empty!(settings)
+    _implicit_step!(fake,nothing,runtime,Dict("implicit_sst_substeps"=>2,"sst_wall_metric_correction"=>false))
+    @test settings==[false,false]
 end
 @testset "Raw SST export availability requires actual finite equation data" begin
     names=_implicit_metric_names()

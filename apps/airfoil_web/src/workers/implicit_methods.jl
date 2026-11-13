@@ -39,7 +39,7 @@ function _implicit_step!(M,s,runtime,cfg)
         return M.step_jfnk_rans_ka!(s,runtime.controller;max_backtracks=16,sst_substeps=substeps,
             linear_tol=Float64(get(cfg,"implicit_linear_tolerance",.01)),
             linear_maxiter=Int(get(cfg,"implicit_linear_maxiter",get(cfg,"implicit_basis",16))),
-            corrected_wall_metric=Bool(get(cfg,"sst_wall_metric_correction",false)),
+            corrected_wall_metric=Bool(get(cfg,"sst_wall_metric_correction",true)),
             nonorth_diffusion=Bool(get(cfg,"sst_nonorth_correction",false)))
     end
     result=nothing;attempts=0;used=runtime.cfl[]
@@ -50,7 +50,7 @@ function _implicit_step!(M,s,runtime,cfg)
         if result.accepted
             for _ in 1:substeps
                 M.prepare_dt_ka!(s,.45f0)
-                M.sst_step_ka!(s;corrected_wall_metric=Bool(get(cfg,"sst_wall_metric_correction",false)),
+                M.sst_step_ka!(s;corrected_wall_metric=Bool(get(cfg,"sst_wall_metric_correction",true)),
                     nonorth_diffusion=Bool(get(cfg,"sst_nonorth_correction",false)))
             end
             runtime.cfl[]=min(runtime.max_cfl,used*1.05f0)

@@ -29,7 +29,7 @@ reference scaling when used as stopping criteria. The probe restores its
 evolved fields and local clock, so recording diagnostics does not march SST.
 """
 function steady_airfoil_diagnostics_ka(s::KSol;probe_sst::Bool=true,
-    corrected_wall_metric::Bool=false,nonorth_diffusion::Bool=false)
+    corrected_wall_metric::Bool=_sst_default_wall_metric(s),nonorth_diffusion::Bool=false)
     refresh_raw_residual_ka!(s)
     vol=s.vol;r=max(Float64(s.rho_inf),1e-12)
     u=max(hypot(Float64(s.uxi),Float64(s.uyi)),1e-3)

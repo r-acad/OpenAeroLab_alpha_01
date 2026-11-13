@@ -73,7 +73,7 @@ function check_sst_step(backend,label; characteristic_i_outlet::Bool=false)
         s.characteristic_i_outlet=Int32(1)
         M.applyBC_ka!(s,Int32(2))
     end
-    @test_throws ArgumentError M.sst_step_ka!(s;nonorth_diffusion=true)
+    @test_throws ArgumentError M.sst_step_ka!(s;corrected_wall_metric=false,nonorth_diffusion=true)
     M.sst_step_ka!(s;corrected_wall_metric=true,nonorth_diffusion=true)
     KernelAbstractions.synchronize(backend)
     @testset "$label full SST opt-in smoke" begin

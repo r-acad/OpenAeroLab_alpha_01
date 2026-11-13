@@ -26,6 +26,18 @@ good=open(deserialize,path)
 cfg["warm_start"]=path
 write_saved(saved)=open(io->serialize(io,saved),path,"w")
 
+@testset "Restart identity records the effective SST metric" begin
+    default_identity=_rans_restart_identity(cfg,mesh,"test")
+    explicit_true=merge(cfg,Dict("sst_wall_metric_correction"=>true))
+    explicit_false=merge(cfg,Dict("sst_wall_metric_correction"=>false))
+    @test default_identity["settings"]["sst_wall_metric_correction"]===true
+    @test _rans_restart_identity(explicit_true,mesh,"test")==default_identity
+    @test _rans_restart_identity(explicit_false,mesh,"test")!=default_identity
+    destination=fixture();destination.ux.=2
+    @test isempty(_rans_load_restart!(explicit_false,mesh,"test",[(name="C",solver=destination)]))
+    @test all(==(2f0),destination.ux)
+end
+
 @testset "Restart identity covers reconstruction and implicit helper sources" begin
     identity=_rans_restart_identity(cfg,mesh,"test")
     helpers=("cmesh_geometric_reconstruction_ka.jl","cmesh_steady_globalization_ka.jl",

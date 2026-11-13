@@ -661,7 +661,7 @@ state. Exceptions also restore it before propagation. The injected advance
 function enables failure-path testing without modifying the solver kernels.
 """
 function _airfoil_coupled_sst!(s::KSol,c::JFNKAirfoilController;
-    corrected_wall_metric::Bool=false,nonorth_diffusion::Bool=false,
+    corrected_wall_metric::Bool=_sst_default_wall_metric(s),nonorth_diffusion::Bool=false,
     sst_substeps::Int=1,advance! = sst_step_ka!,saved_clock=s.last_global_dt)
     accepted=false
     try
@@ -692,7 +692,7 @@ end
 # No recovery event can declare convergence. Failed recovery restores every
 # evolved flow/turbulence field, including auxiliaries updated by SST.
 function _airfoil_explicit_recovery!(s::KSol,c::JFNKAirfoilController;
-    corrected_wall_metric::Bool=false,nonorth_diffusion::Bool=false)
+    corrected_wall_metric::Bool=_sst_default_wall_metric(s),nonorth_diffusion::Bool=false)
     count=min(c.recovery_steps,c.recovery_limit-c.recovery_iterations)
     count>0 || return (accepted=false,recovery_steps=0)
     names=(:rho,:ux,:uy,:T,:tk,:tom,:nut,:tnl,:pvort,:exx,:exy,:eyy)
@@ -733,7 +733,7 @@ acceptance. A rejected result leaves the flow and SST state unchanged."""
 function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     linear_tol::Float64=0.01,linear_cycles::Int=1,
     fd_scale::Float32=1.0f0,fd_scheme::Symbol=:forward,
-    fd_local_cap::Float32=1.0f-3,corrected_wall_metric::Bool=false,
+    fd_local_cap::Float32=1.0f-3,corrected_wall_metric::Bool=_sst_default_wall_metric(s),
     nonorth_diffusion::Bool=false,max_backtracks::Int=8,
     sst_substeps::Int=1,linear_maxiter::Union{Nothing,Int}=nothing,
     _sst_advance! = sst_step_ka!)

@@ -128,6 +128,17 @@ provide an STL file, and edit its `config.yaml`. Copy
 The app's default solver modes are development stage models. Inspect each
 result's convergence and mesh diagnostics before drawing physical conclusions.
 
+The thermal free-air SST APIs now use the reflected wall or paired wake-cell
+coordinates by default, matching the web app's existing setting. The older
+clamped coordinate span could double the first-row wall shear. For controlled
+reproduction, pass `corrected_wall_metric=false` to both SST advancement and
+diagnostics, or set `cfd_sst_wall_metric_correction=false` in the single-block
+web configuration. Channel, mixture and cavitation API defaults retain their
+legacy setting. This correction changes the SST spatial discretization;
+nonorthogonal diffusion remains a separate option that defaults to false.
+Historical results retain their recorded settings, and restart checks reject
+different numerical sources or effective metric settings.
+
 The compressible implicit developer API also provides the optional
 `lagged_component_limiter=true` workspace setting for Float64 thermal MUSCL
 free-air cases with impermeable walls. It holds the reconstruction limiter

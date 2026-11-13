@@ -10,27 +10,28 @@ include(joinpath(@__DIR__, "cmesh_solver.jl"))
 include(joinpath(@__DIR__, "cmesh_solver_ka.jl"))
 
 """Manufactured no-slip tangential shear on a straight or circular foil wall."""
-function couette_fixture(; curved::Bool=false)
+function couette_fixture(; curved::Bool=false, scalar_type::Type{<:AbstractFloat}=Float32)
+    T=scalar_type
     ni, nj, g = 5, 4, 3
-    ds, dn, radius, shear = 0.2f0, 0.1f0, 10.0f0, 0.7f0
-    xn = zeros(Float32, ni + 1, nj + 1)
+    ds, dn, radius, shear = T(0.2), T(0.1), T(10), T(0.7)
+    xn = zeros(T, ni + 1, nj + 1)
     yn = similar(xn)
     for j in 1:nj+1, i in 1:ni+1
-        theta = (Float32(i) - 3.5f0) * ds / radius
-        r = radius + Float32(j - 1) * dn
+        theta = (T(i) - T(3.5)) * ds / radius
+        r = radius + T(j - 1) * dn
         if curved
             xn[i,j] = r * sin(theta)
             yn[i,j] = r * cos(theta) - radius
         else
-            xn[i,j] = (Float32(i) - 3.5f0) * ds
-            yn[i,j] = Float32(j - 1) * dn
+            xn[i,j] = (T(i) - T(3.5)) * ds
+            yn[i,j] = T(j - 1) * dn
         end
     end
-    xc = zeros(Float32, ni, nj)
+    xc = zeros(T, ni, nj)
     yc = similar(xc)
-    sx = zeros(Float32, ni, nj + 1)
+    sx = zeros(T, ni, nj + 1)
     sy = similar(sx)
-    wall_distance = zeros(Float32, ni, nj)
+    wall_distance = zeros(T, ni, nj)
     for j in 1:nj+1, i in 1:ni
         sx[i,j] = -(yn[i+1,j] - yn[i,j])
         sy[i,j] = xn[i+1,j] - xn[i,j]
@@ -45,8 +46,8 @@ function couette_fixture(; curved::Bool=false)
         wall_distance[i,j] = ((xc[i,j] - face_x) * sx[i,1] +
                               (yc[i,j] - face_y) * sy[i,1]) / face_length
     end
-    u = zeros(Float32, ni + 2g, nj + 2g)
-    v = zeros(Float32, size(u))
+    u = zeros(T, ni + 2g, nj + 2g)
+    v = zeros(T, size(u))
     for j in 1:nj, i in 1:ni
         if curved
             theta = atan(xc[i,j], yc[i,j] + radius)
@@ -62,7 +63,7 @@ function couette_fixture(; curved::Bool=false)
         u[i+g,g] = -u[i+g,g+1]
         v[i+g,g] = -v[i+g,g+1]
     end
-    (; ni, nj, g, shear, xc, yc, sx, sy, wall_distance, u, v)
+    (; ni, nj, g, shear, X=xn, Y=yn, xc, yc, sx, sy, wall_distance, u, v)
 end
 
 @testset "wake-cut state and metric share the paired cell" begin
@@ -134,8 +135,8 @@ end
 
 @testset "SST no-slip wall metric and manufactured Couette shear" begin
     for mod in (CMeshSolver, CMeshSolverKA)
-        for curved in (false, true)
-            f = couette_fixture(; curved)
+        for curved in (false, true),scalar_type in (Float32,Float64)
+            f = couette_fixture(; curved,scalar_type)
             wall = recovered_shear(mod, f)
             interior = recovered_shear(mod, f, 3, 2)
             legacy_wall = recovered_shear(mod, f; corrected_wall_metric=false)
@@ -147,6 +148,35 @@ end
             @test legacy_interior.normal_shear == interior.normal_shear
             @test abs(wall.dudx) < 0.006f0
             @test abs(wall.dvdy) < 0.006f0
+            if !curved
+                @test isapprox(wall.normal_shear,f.shear;rtol=100eps(scalar_type))
+            end
         end
+    end
+end
+
+@testset "Paired wake ghost reproduces an independent affine gradient" begin
+    for mod in (CMeshSolver,CMeshSolverKA),T in (Float32,Float64),curved in (false,true)
+        f=couette_fixture(;curved,scalar_type=T)
+        a,b,c=T(.3),T(-.7),T(.2);phi=zeros(T,size(f.u))
+        for j in 1:f.nj,i in 1:f.ni
+            phi[i+f.g,j+f.g]=a*f.xc[i,j]+b*f.yc[i,j]+c
+        end
+        i=2;partner=f.ni+1-i
+        phi[i+f.g,f.g]=phi[partner+f.g,f.g+1]
+        function gradient(corrected)
+            xi,yi,eta,yeta=mod._sst_index_metrics(f.xc,f.yc,f.sx,f.sy,f.wall_distance,
+                i,1,f.ni,f.nj,2,1,Int32(corrected))
+            dxi=T(.5)*(phi[i+f.g+1,f.g+1]-phi[i+f.g-1,f.g+1])
+            deta=T(.5)*(phi[i+f.g,f.g+2]-phi[i+f.g,f.g])
+            jac=xi*yeta-eta*yi
+            ((dxi*yeta-deta*yi)/jac,(-dxi*eta+deta*xi)/jac)
+        end
+        recovered=gradient(true);legacy=gradient(false)
+        @test isapprox(recovered[1],a;rtol=100eps(T),atol=100eps(T))
+        @test isapprox(recovered[2],b;rtol=100eps(T),atol=100eps(T))
+        @test abs(legacy[2]-b)>.1
+        @test mod._sst_index_metrics(f.xc,f.yc,f.sx,f.sy,f.wall_distance,i,2,f.ni,f.nj,2,1,Int32(0))==
+            mod._sst_index_metrics(f.xc,f.yc,f.sx,f.sy,f.wall_distance,i,2,f.ni,f.nj,2,1,Int32(1))
     end
 end
