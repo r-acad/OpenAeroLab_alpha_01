@@ -44,3 +44,21 @@
 @media(max-width:980px){.workspace{grid-template-columns:minmax(285px,310px) minmax(0,1fr)}}
 @media(max-width:680px){.workspace{display:block}.setup-nav{position:sticky;top:0;z-index:6}.setup-groups{scrollbar-gutter:auto}.saved-results-body{max-height:none}}
 @media(max-width:530px){.setup-nav a{padding:8px 3px;font-size:10px}.geometry-options>summary span{font-size:10px}}
+
+/* Airfoil workflow: visible tabs and one related group per pane, no flyouts. */
+.workflow-bar{display:flex;flex-wrap:wrap;gap:5px;padding:8px 10px;align-items:center;overflow:visible}
+.workflow-bar .workflow-tab{flex:1 0 auto;min-height:36px;padding:7px 13px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);font-size:12px;font-weight:700;cursor:pointer}
+.workflow-bar .workflow-tab:hover{border-color:var(--teal);color:var(--teal-dark)}
+.workflow-bar .workflow-tab.is-active{background:var(--teal-dark);border-color:var(--teal-dark);color:#fff}
+.workflow-bar [hidden],.setup-column [hidden],.display-tabs [hidden]{display:none!important}
+.workflow-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.workflow-actions button{flex:1 0 115px;min-height:34px}
+.workflow-section{margin:12px 0;padding:9px 0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
+.workflow-section>h3{margin:0 0 8px;padding:0;font-size:12px;font-weight:750;line-height:1.5;color:var(--ink)}
+.workflow-section.geometry-options>h3{padding:0}.geometry-options-body{padding:0}
+.workflow-section.saved-results{border-top:1px solid var(--line)}.workflow-section .saved-results-body{padding:0;max-height:none}
+.workflow-section.run-status{margin:8px 0;padding:8px 0}.workflow-section.run-status>h3{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.workflow-section.run-status .run-status-body{padding:0}.workflow-steps{padding-left:20px;font-size:12px;line-height:1.8}
+.setup-group[data-airfoil-panel]>.setup-group{padding:0}.setup-group[data-airfoil-panel]>.toolbar-selects{display:flex;flex-wrap:wrap;gap:8px}
+#study-result-location{overflow-wrap:anywhere}#workflow-study>a{display:block;margin-top:12px;font-size:12px}
+#current-run-location{overflow-wrap:anywhere}
+@media(max-width:720px){.workflow-bar .workflow-tab{flex:1 0 70px;padding:7px 9px;font-size:11px}.workflow-bar{gap:4px;padding:6px}}

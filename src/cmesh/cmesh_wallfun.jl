@@ -58,8 +58,7 @@ which is exactly where the re-entrant jet is generated, the pressure gradient is
 Below y+ = 11.81 the viscous sublayer is returned instead of the log law -- not as a fallback but
 because the log law is simply not valid there.
 """
-@inline function wf_utau(u_t::Float32, d1::Float32, nu::Float32,
-                         dpdx::Float32, rho::Float32, larsson::Float32)
+@inline function wf_utau(u_t, d1, nu,dpdx,rho,larsson)
     (u_t <= 1.0f-8 || nu <= 0.0f0 || d1 <= 0.0f0) && return 0.0f0
     # Spalding-like power-law seed
     ut = u_t*(nu/(d1*u_t + 1.0f-10))^(1.0f0/7.0f0)*(2.0f0*8.3f0)^(-1.0f0/7.0f0)
@@ -100,7 +99,7 @@ Reported per run so the mesh's legality for a wall function is VISIBLE rather th
 needs y+ >~ 30; y+ ~ 8 is the buffer layer and is where the campaign's four wall-function attempts
 diverged.
 """
-@inline wf_yplus(u_tau::Float32, d1::Float32, nu::Float32) = u_tau*d1/max(nu, 1.0f-30)
+@inline wf_yplus(u_tau,d1,nu) = u_tau*d1/max(nu, 1.0f-30)
 
 # ============================================================================================
 # ALL-y+ WALL FUNCTION FOR THE PRODUCTION SPECIES PATH  (26 Sep 2026)

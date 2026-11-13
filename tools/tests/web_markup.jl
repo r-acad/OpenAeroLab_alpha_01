@@ -37,8 +37,24 @@ end
     server=read(joinpath(ROOT,"apps/airfoil_web/src/server.jl"),String)
     service_revision=parse(Int,match(r"\"api_revision\"\s*=>\s*(\d+)",server).captures[1])
     client_revision=parse(Int,match(r"const minimumServiceRevision\s*=\s*(\d+)",script).captures[1])
-    @test service_revision==26
+    @test service_revision>=27
     @test client_revision==service_revision
+end
+
+@testset "Visible Airfoil workflow has direct, unique panel destinations" begin
+    html=read(joinpath(ROOT,"apps/airfoil_web/static/index.html"),String)
+    nav=match(r"(?s)<nav\b[^>]*workflow-bar[^>]*>(.*?)</nav>",html)
+    @test nav!==nothing
+    @test !occursin("<details",nav.captures[1])
+    @test !occursin("menu-popover",nav.captures[1])
+    targets=[m.captures[1] for m in eachmatch(r"data-workflow-target=\"([^\"]+)\"",nav.captures[1])]
+    destinations=Set(m.captures[1] for m in eachmatch(r"data-airfoil-panel=\"([^\"]+)\"",html))
+    @test length(targets)>=10
+    @test length(targets)==length(unique(targets))
+    @test isempty(setdiff(targets,destinations))
+    @test occursin("/static/scripts/workflow.js",html)
+    @test occursin("id=\"study-result-location\"",html)
+    @test occursin("id=\"menu-results\"",html)
 end
 
 @testset "Airfoil setup panel nesting" begin

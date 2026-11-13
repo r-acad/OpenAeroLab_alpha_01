@@ -15,6 +15,7 @@
   <script src="/static/scripts/output_controls.js" defer></script>
   <script src="/common-static/boxer_legends.js" defer></script>
   <script src="/static/scripts/plot_controls.js" defer></script>
+  <script src="/static/scripts/research_settings.js" defer></script>
   <script src="/static/scripts/app.js" defer></script>
   <script src="/static/scripts/lbm.js" defer></script>
   <script src="/static/scripts/campaign.js" defer></script>
@@ -25,6 +26,7 @@
   <link rel="stylesheet" href="/static/styles/plots.css">
   <script src="/common-static/workbench.js" defer></script>
   <script src="/static/scripts/workflow_help.js" defer></script>
+  <script src="/static/scripts/workflow.js" defer></script>
 </head>
 <body data-workbench="airfoil">
   <a class="skip-link" href="#results">Skip to results</a>
@@ -44,14 +46,18 @@
       </div>
     </header>
 
-<nav class="menu-bar panel" aria-label="Airfoil Lab menus">
-  <details class="top-menu" id="menu-project"><summary>Project</summary><div class="menu-popover"><button type="button" id="study-new" title="Start a new study">New study</button><button type="button" id="study-open" title="Open a study (Ctrl+O)">Open study...</button><button type="button" id="study-save" title="Save study (Ctrl+S)">Save study</button><button type="button" id="study-save-as" title="Choose a folder and name (Ctrl+Shift+S)">Save study as...</button><a href="/">All workbenches</a></div></details>
-  <details class="top-menu" id="menu-model"><summary>Setup</summary><div class="menu-popover"><button type="button" data-airfoil-parameters="model" data-focus-control="dat-file">Airfoil and flow conditions</button><button type="button" data-airfoil-parameters="sweep" data-focus-control="sweep-enabled">Multiple angles</button><div class="menu-section"><h2>Advanced</h2><button type="button" data-airfoil-parameters="solver" data-focus-control="backend">Solver and numerical settings</button><button type="button" data-airfoil-parameters="outputs">Saved outputs and reports</button><a href="/solvers">Solver methods and maturity</a></div></div></details>
-  <details class="top-menu" id="menu-mesh"><summary>Mesh</summary><div class="menu-popover"><button type="button" data-open-tab="geometry">Inspect airfoil and mesh</button><small>The solver creates its mesh when you run. Use Create mesh in Geometry to inspect it first.</small></div></details>
-  <details class="top-menu" id="menu-results"><summary>Results</summary><div class="menu-popover"><button type="button" id="open-saved-airfoil">Open saved job…</button><button type="button" id="study-load-results" disabled title="Open results linked by this study">Load study results</button><button type="button" id="literature-menu" class="hidden">Published reference distributions</button><button type="button" data-open-tab="results">Surface quantities</button><button type="button" data-open-tab="field">Flow field</button><button type="button" data-open-tab="polar">Polar</button><button type="button" data-open-tab="diagnostics">Convergence and diagnostics</button><button type="button" data-open-tab="log">Run log</button><button type="button" data-open-tab="campaign">Campaign</button></div></details>
-  <details class="top-menu" id="menu-view"><summary>Display</summary><div class="menu-popover"><div class="menu-section"><h2>Colour scale</h2><label class="field"><span>Contour palette</span><select id="results-palette" title="Colours for numeric surface and flow fields"></select><small>Saved images retain their original colours.</small></label></div></div></details>
-  <details class="top-menu" id="menu-validation"><summary>Validation</summary><div class="menu-popover"><button type="button" data-validation="rae2822-case9">RAE 2822 · AGARD Case 9</button><button type="button" data-validation="oat15a-2.5">ONERA OAT15A · DPW steady</button><button type="button" data-validation="naca0012-stall">NACA 0012 · NASA stall polar</button><small>Published conditions and reference data; numerical convergence is assessed separately.</small></div></details>
-  <details class="top-menu" id="menu-help"><summary>Help</summary><div class="menu-popover"><button type="button" data-airfoil-workflow-help>Low-speed quick start</button><a href="/solvers">Solver guide</a></div></details>
+<nav class="menu-bar panel workflow-bar" aria-label="Airfoil Lab workflow" role="tablist">
+  <button id="menu-project" type="button" class="workflow-tab" data-workflow-target="study" role="tab" aria-controls="workflow-study">Study</button>
+  <button id="menu-model" type="button" class="workflow-tab is-active" data-workflow-target="model" role="tab" aria-selected="true">Airfoil</button>
+  <button type="button" class="workflow-tab" data-workflow-target="flow" role="tab">Flow</button>
+  <button type="button" class="workflow-tab" data-workflow-target="flap" role="tab">Flap</button>
+  <button id="menu-mesh" type="button" class="workflow-tab" data-workflow-target="mesh" role="tab">Mesh</button>
+  <button type="button" class="workflow-tab" data-workflow-target="solver" role="tab">Solver</button>
+  <button type="button" class="workflow-tab" data-workflow-target="outputs" role="tab">Files</button>
+  <button id="menu-results" type="button" class="workflow-tab" data-workflow-target="result-controls" role="tab" hidden>Results</button>
+  <button id="menu-view" type="button" class="workflow-tab" data-workflow-target="display" role="tab" hidden>Display</button>
+  <button id="menu-validation" type="button" class="workflow-tab" data-workflow-target="validation" role="tab">Validation</button>
+  <button id="menu-help" type="button" class="workflow-tab" data-workflow-target="help" role="tab">Help</button>
 </nav>
     <div class="study-strip panel" aria-label="Current study"><strong id="study-name">Untitled study</strong><span id="study-status" role="status" aria-live="polite"></span></div>
     <div class="workspace">
@@ -59,6 +65,21 @@
         <div class="setup-title"><span class="eyebrow">Setup</span><strong id="airfoil-parameter-title">Airfoil and flow</strong></div>
         <p class="workflow-intro"><strong id="setup-method">Low-speed 2D CFD</strong><span>Open an airfoil file, set Reynolds number and angle, then Run. Add a Gurney flap if required. Numerical defaults are selected automatically.</span></p>
         <div class="setup-groups">
+          <section id="workflow-study" data-airfoil-panel="study" data-parameter-title="Study" class="setup-group" hidden>
+            <h2>Study and saved runs</h2><div class="workflow-actions"><button type="button" id="study-new" title="Start a new study">New study</button><button type="button" id="study-open" title="Open a study (Ctrl+O)">Open study…</button><button type="button" id="study-save" title="Save study (Ctrl+S)">Save study</button><button type="button" id="study-save-as" title="Choose another folder and filename (Ctrl+Shift+S)">Save study as…</button></div>
+            <p class="hint">Save the study to choose its home folder. New runs go into separate date-and-time folders there. Existing runs are preserved.</p>
+            <p id="study-result-location" class="hint" role="status">Unsaved studies use the private results folder.</p>
+            <button type="button" id="study-load-results" disabled title="Open the result linked by this study">Open linked results</button>
+            <button type="button" id="open-saved-airfoil">Browse saved runs</button>
+            <a href="/">All workbenches</a>
+          </section>
+          <section data-airfoil-panel="flow" data-parameter-title="Flow conditions" class="setup-group" hidden></section>
+          <section data-airfoil-panel="flap" data-parameter-title="Flap" class="setup-group" hidden></section>
+          <section data-airfoil-panel="mesh" data-parameter-title="Mesh" class="setup-group" hidden><h2>Mesh settings</h2><p class="hint">Run creates the mesh automatically. Use Create mesh in the geometry view to inspect it first. Resolution and topology are set here once.</p></section>
+          <section data-airfoil-panel="result-controls" data-parameter-title="Results" class="setup-group" hidden><h2>Saved result</h2><button type="button" id="literature-menu" class="hidden">Published reference distributions</button></section>
+          <section data-airfoil-panel="display" data-parameter-title="Display" class="setup-group" hidden><h2>Display</h2><label class="field"><span>Contour palette</span><select id="results-palette" title="Colours for saved numeric fields"></select><small>Display changes do not change the solver or saved images.</small></label></section>
+          <section data-airfoil-panel="validation" data-parameter-title="Validation" class="setup-group" hidden><h2>Published comparison cases</h2><div class="workflow-actions"><button type="button" data-validation="rae2822-case9">RAE 2822 · AGARD Case 9</button><button type="button" data-validation="oat15a-2.5">ONERA OAT15A · DPW steady</button><button type="button" data-validation="naca0012-stall">NACA 0012 · NASA stall polar</button></div><p class="hint">These cases load published flow conditions and reference data. A reference overlay does not establish mesh independence or convergence.</p></section>
+          <section data-airfoil-panel="help" data-parameter-title="Help" class="setup-group" hidden><h2>Airfoil workflow</h2><ol class="workflow-steps"><li>Airfoil: open the coordinate file.</li><li>Flow: set Reynolds number and angle.</li><li>Flap: enable a Gurney plate if required.</li><li>Run analysis. Mesh and solver defaults are automatic.</li><li>Results: check whether the flow settled before using its forces.</li></ol><button type="button" data-airfoil-workflow-help>Workflow help</button><p><a href="/solvers">Solver methods and limitations</a></p></section>
           <div data-airfoil-panel="model" data-parameter-title="Airfoil and flow"><section class="setup-group" aria-labelledby="airfoil-heading">
             <h2 id="airfoil-heading">1. Airfoil</h2>
             <div class="form-grid">
@@ -151,10 +172,16 @@
             <div id="rans-method-line" class="hidden">
               <label class="field"><span>Steady solution method</span><select id="rans-method" title="Choose how steady compressible CFD approaches a solution. Research methods save diagnostic results even when they stop before convergence."><option value="standard">Standard explicit</option><option value="irsj">Implicit residual smoothing · experimental</option><option value="line_implicit">Line implicit · research</option><option value="jfnk_native">Newton–Krylov · native · research</option><option value="jfnk_krylov">Newton–Krylov · Krylov.jl · research</option></select></label>
               <p id="rans-method-note" class="experimental-note" role="status"></p>
+              <p id="research-settings-note" class="experimental-note" role="status" hidden></p>
               <details id="implicit-method-options" class="hidden"><summary>Implicit method settings</summary><div class="form-grid">
                 <label class="field"><span>Explicit startup iterations</span><input id="implicit-warmup" type="number" min="0" max="100000" step="1" value="1000" title="Initialize the flow using the standard method, then switch to the selected implicit method. Included in the total iteration limit."></label>
                 <label class="field"><span>Initial pseudo CFL</span><input id="implicit-cfl" type="number" min="0.01" max="10" step="0.1" value="1" title="Controls the attempted steady update size; rejected steps are reduced automatically. This is not physical time."></label>
-                <label class="field"><span>Krylov basis size</span><input id="implicit-basis" type="number" min="2" max="24" step="1" value="16" title="Larger bases use more memory and work per iteration. They do not guarantee better convergence."></label>
+                <label class="field"><span>Krylov basis size</span><input id="implicit-basis" type="number" min="2" max="96" step="1" value="16" title="Larger bases use more memory and work per iteration. They do not guarantee better convergence; the solver checks the workspace budget."></label>
+                <label class="field"><span>Update acceptance method</span><select id="implicit-globalization" title="Optional research setting for Newton–Krylov. Automatic retains the solver's steady update. Backward Euler adds a pseudo-time term; it does not relax the final equation checks."><option value="">Automatic · steady update</option><option value="steady">Steady update · explicit setting</option><option value="pseudo_transient">Backward Euler · research</option></select></label>
+                <label class="field"><span>Maximum linear iterations</span><input id="implicit-linear-maxiter" type="number" min="1" max="10000" step="1" placeholder="Automatic · basis size" title="Optional limit for the linear solve within each Newton update. Blank uses the basis size. A larger total limit can restart the basis without increasing its stored size."></label>
+                <label class="field"><span>Maximum pseudo CFL</span><input id="implicit-max-cfl" type="number" min="0.01" max="10" step="0.1" placeholder="Automatic" title="Optional upper limit for the attempted pseudo-time update. It must be at least the initial pseudo CFL. The backward-Euler research method allows a larger ceiling."></label>
+                <label class="field"><span>Physical update fraction</span><input id="implicit-physical-fraction" type="number" min="0.01" max="0.5" step="0.01" placeholder="Automatic · 0.2" title="Optional Newton–Krylov research limit on each physical state update. Smaller fractions can reduce the risk of unphysical trial states but may need more iterations."></label>
+                <label class="field"><span>Linear relative tolerance</span><input id="implicit-linear-tolerance" type="number" min="0.000001" max="0.9" step="0.01" placeholder="Automatic · 0.01" title="Optional relative tolerance of the inner linear solve. This is separate from the final flow-equation convergence checks."></label>
                 <label class="field"><span>Turbulence updates per flow step</span><input id="implicit-sst-substeps" type="number" min="1" max="100" step="1" value="10" title="Advance turbulence using its stable step while the flow is held fixed."></label>
                 <label class="field"><span>Acceptance history window</span><input id="implicit-nonmonotone" type="number" min="0" max="20" step="1" value="8" title="Allow temporary increases relative to recent equation errors. Zero requires each flow update to reduce the error. This does not relax final convergence checks."></label>
                 <label class="field"><span>Recovery iterations after a rejected Newton step</span><input id="implicit-recovery" type="number" min="0" max="100" step="1" value="0" title="Experimental Newton–Krylov option: try a bounded burst of ordinary explicit steps after rejection. Zero disables recovery; at most 200 explicit recovery steps are allowed per run. Final convergence checks remain unchanged."></label>
@@ -217,7 +244,7 @@
               </div>
               <p id="cfd-time-note" class="hint">Smart stop checks residuals and load history over two windows, then waits 20,000 more iterations.</p>
               <label id="gas-mesh-field" class="field"><span id="gas-mesh-label">CFD mesh profile</span>
-                <select id="cfd-mesh" title="TE topology selects C+H for finite edges or C for sharp edges. Legacy spacing profiles apply to Legacy A-plus."><option value="aplus_nested_refined" selected>Refined shared mesh</option><option value="cavitation_aplus_farfield">Legacy A-plus spacing</option><option value="legacy_sharp_cmesh">Legacy sharp C mesh</option></select>
+                <select id="cfd-mesh" title="Automatic topology selects C+H for finite edges or C for sharp edges. The uniform research profiles select their own A+ topology; they are not recommended defaults."><option value="aplus_nested_refined" selected>Refined shared mesh</option><option value="cavitation_aplus_farfield">Legacy A-plus spacing</option><option value="legacy_sharp_cmesh">Legacy sharp C mesh</option><option value="aplus_uniform_quality" hidden>Uniform A+ · quality · research</option><option value="aplus_uniform_fixed" hidden>Uniform A+ · fixed spacing · research</option></select>
               </label>
                 <label class="field"><span>Mesh resolution</span><select id="cfd-resolution" title="Standard uses curvature-aware leading-edge spacing. Actual block dimensions and total cells appear after Create mesh."><option value="standard">Standard</option><option value="fine">Fine</option><option value="very_fine">Very fine</option></select></label>
               <label id="base-faces-field" class="field"><span>Trailing-edge base faces per side</span><input id="cfd-n-base" type="number" value="4" min="1" max="8" step="1"></label>
@@ -292,7 +319,7 @@
           <button id="run-button" type="button" class="primary-button" title="Build the mesh and solve the current airfoil and flow conditions">Run analysis <span aria-hidden="true">&#8599;</span></button><button id="cancel-button" type="button" class="secondary-button" title="Stop the current job; completed results and files are retained" disabled>Cancel run</button>
           <details id="run-status" class="run-status" aria-live="polite">
             <summary><span id="job-title">Ready to analyze</span><span id="job-percent">0%</span></summary>
-            <div class="run-status-body"><p id="job-message">Select an airfoil and flow conditions, then run the Julia solvers.</p><span id="job-id" class="mono"></span></div>
+            <div class="run-status-body"><p id="job-message">Select an airfoil and flow conditions, then run the Julia solvers.</p><span id="job-id" class="mono"></span><p id="current-run-location" class="hint" hidden></p></div>
           </details>
           <div id="job-progress" class="progress-track" role="progressbar" aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-bar"></div></div>
           <p id="form-error" class="error-message hidden" role="alert"></p>

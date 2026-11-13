@@ -34,8 +34,8 @@ end
 @kernel function _k_implicit_line_coeffs!(lamS,lamN,d0,
     @Const(rho),@Const(ux),@Const(uy),@Const(T),@Const(nut),
     @Const(Six),@Const(Siy),@Const(Sjx),@Const(Sjy),@Const(vol),
-    nu::Float32,rho_inf::Float32,suth::Float32,air_sutherland::Int32,
-    sst_on::Int32,cfl::Float32,NI::Int32,NJ::Int32,g::Int32)
+    nu,rho_inf,suth,air_sutherland::Int32,
+    sst_on::Int32,cfl,NI::Int32,NJ::Int32,g::Int32)
     i,j = @index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
         ia=i+g; ja=j+g
@@ -136,8 +136,8 @@ end
 # those ends remain on the diagonal; the nonlinear residual supplies their BC.
 @kernel function _k_implicit_i_coeffs!(lamW,lamE,
     @Const(rho),@Const(ux),@Const(uy),@Const(T),@Const(nut),
-    @Const(Six),@Const(Siy),@Const(vol),nu::Float32,
-    rho_inf::Float32,suth::Float32,air_sutherland::Int32,
+    @Const(Six),@Const(Siy),@Const(vol),nu,
+    rho_inf,suth,air_sutherland::Int32,
     sst_on::Int32,NI::Int32,NJ::Int32,g::Int32)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
@@ -170,18 +170,18 @@ end
             hi=i<last_i ? F(lamE[i,j]) : zero(F)
             den=F(d0[i,j])+F(lamW[i,j])+F(lamE[i,j])-lo*cprev
             cp[i,j]=hi/den
-            x[i,j]=Float32((F(rhs[i,j])+(i==first_i ? zero(F) : lo*F(x[i-1,j])))/den)
+            x[i,j]=eltype(x)((F(rhs[i,j])+(i==first_i ? zero(F) : lo*F(x[i-1,j])))/den)
             cprev=cp[i,j]
         end
         for i in last_i-Int32(1):Int32(-1):first_i
-            x[i,j]=Float32(F(x[i,j])+cp[i,j]*F(x[i+1,j]))
+            x[i,j]=eltype(x)(F(x[i,j])+cp[i,j]*F(x[i+1,j]))
         end
     end
 end
 
 @kernel function _k_implicit_line_trial!(rho,ux,uy,T,@Const(rho0),
     @Const(ux0),@Const(uy0),@Const(T0),@Const(dr),@Const(dmx),
-    @Const(dmy),@Const(dE),eint::Float32,alpha::Float32,
+    @Const(dmy),@Const(dE),eint,alpha,
     NI::Int32,NJ::Int32,g::Int32)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
@@ -207,7 +207,7 @@ end
 # when the array's actual KernelAbstractions backend is the CPU.
 @inline _implicit_cpu_strided(a) = a isa StridedArray && KA.get_backend(a) isa KA.CPU
 
-function _implicit_merit_cpu(raw,vr,inv_r::Float32,inv_m::Float32,inv_e::Float32)
+function _implicit_merit_cpu(raw,vr,inv_r,inv_m,inv_e)
     dr,dmx,dmy,de=raw
     total=0.0
     @inbounds @simd for i in eachindex(vr,dr,dmx,dmy,de)
@@ -226,9 +226,9 @@ function _implicit_merit(s::KSol)
     u=max(hypot(Float64(s.uxi),Float64(s.uyi)),1e-3)
     e=max(Float64(s.eint*s.T_inf),u*u)
     n=length(vr)
-    inv_r=Float32(1/r)
-    inv_m=Float32(1/(r*u))
-    inv_e=Float32(1/(r*e))
+    inv_r=eltype(vr)(1/r)
+    inv_m=eltype(vr)(1/(r*u))
+    inv_e=eltype(vr)(1/(r*e))
     if _implicit_cpu_strided(vr) && _implicit_cpu_strided(s.dc_r)
         return _implicit_merit_cpu((s.dc_r,s.dc_mx,s.dc_my,s.dc_e),
                                    vr,inv_r,inv_m,inv_e)
@@ -248,9 +248,9 @@ function _airfoil_physical_state(rho,ux,uy,T)
               &,rho,ux,uy,T)
 end
 
-function _implicit_admit(s::KSol,cfl::Float32)
-    isfinite(cfl) && 0.0f0<cfl<=10.0f0 ||
-        throw(ArgumentError("implicit pseudo CFL must be in (0,10]"))
+function _implicit_admit(s::KSol,cfl;max_cfl=10.0f0)
+    isfinite(cfl) && 0.0f0<cfl<=max_cfl ||
+        throw(ArgumentError("implicit pseudo CFL must be in (0,$max_cfl]"))
     GLOBAL_DT[]==0 || throw(ArgumentError("implicit steady step requires local pseudo-time"))
     s.cav==0 && s.outer_mode==0 && s.outlet_mode==0 && s.ff_mix==0 ||
         throw(ArgumentError("implicit line step supports single-phase free-air C meshes only"))
@@ -265,7 +265,7 @@ end
 """Try one steady flow iteration. Returns `(accepted, alpha, merit_before, merit_after)`.
 An unaccepted trial restores the exact primitive state. The caller controls
 SST separately and must use `prepare_dt_ka!` with a stable SST clock."""
-function step_implicit_line_ka!(s::KSol,w::ImplicitLineWorkspace,cfl::Float32;
+function step_implicit_line_ka!(s::KSol,w::ImplicitLineWorkspace,cfl;
                                 max_backtracks::Int=8)
     _implicit_admit(s,cfl)
     1<=max_backtracks<=16 || throw(ArgumentError("max_backtracks must be 1:16"))

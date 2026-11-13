@@ -34,7 +34,14 @@ let ap = Base.active_project()
     ap !== nothing && normpath(ap) == normpath(joinpath(SNAP, "src", "pbcav", "Project.toml")) ||
         error("lowspeed_ch_worker.jl runs in the snapshot's PBCav environment only (active project: $(ap))")
 end
-include(joinpath(SNAP, "src", "pbcav", "PBCav.jl")); using .PBCav
+include(joinpath(@__DIR__, "..", "lowspeed_native_loader.jl"))
+const NATIVE_LOAD_CLOCK=time()
+const NATIVE_LOAD=AirfoilLowSpeedNative.load_native(SNAP)
+const PBCav=NATIVE_LOAD.native
+using .PBCav
+println("PB NATIVE LOAD: ",NATIVE_LOAD.mode,"; ",round(time()-NATIVE_LOAD_CLOCK;digits=3)," s; source ",NATIVE_LOAD.provenance.native_sha256,
+    "; host bundle ",NATIVE_LOAD.provenance.bundle_sha256)
+flush(stdout)
 using KernelAbstractions
 using Printf
 using SHA
@@ -466,7 +473,7 @@ if isdefined(PBCav,:write_freeair_checkpoint) && R.outcome!=:NOT_REACHED
 end
 if R.outcome != :NOT_REACHED
     checkpoint = Dict{String,Any}(
-        "topology"=>"conformal_C_H_v1", "commit"=>CFG["commit"], "source_sha256"=>SOURCE_SHA,
+        "topology"=>"conformal_C_H_v1", "commit"=>CFG["commit"], "source_sha256"=>SOURCE_SHA, "native_load_mode"=>NATIVE_LOAD.mode, "native_host_bundle_sha256"=>NATIVE_LOAD.provenance.bundle_sha256,
         "mesh_hashes"=>collect(MESH_HASHES),
         "strip_hashes"=>[MESH_RESULT["strip_x_sha256"], MESH_RESULT["strip_y_sha256"]],
         "foil_sha256"=>FOIL_SHA, "baffle"=>get(ENVK, "PB_BAFFLE", ""),
@@ -559,7 +566,7 @@ const CPB = isempty(BASEQ) ? NaN : sum(SD.Cp[q]*SD.ds[q] for q in BASEQ)/sum(SD.
 const START_TEXT = RAMP === nothing ? "projection (plain; Kutta refuses a base)" :
     @sprintf("ramp (the far field accelerated from %.4g U to U over t = %.4g c/U; Kutta refuses a base and a baffle)", RAMP.r0, RAMP.T)
 result = merge(MESH_RESULT, Dict{String,Any}(
-    "source_sha256"=>SOURCE_SHA,
+    "source_sha256"=>SOURCE_SHA, "native_load_mode"=>NATIVE_LOAD.mode, "native_host_bundle_sha256"=>NATIVE_LOAD.provenance.bundle_sha256,
     "solver"=>"PBCav $(PBCav.PBCAV_VERSION)", "snapshot"=>SNAP, "threads"=>Threads.nthreads(), "topology"=>"conformal_C_H_v1",
     "rans_acceleration"=>Bool(get(CFG,"rans_acceleration",false)),
     "rans_acceleration_method"=>String(get(CFG,"rans_acceleration_method","standard")),

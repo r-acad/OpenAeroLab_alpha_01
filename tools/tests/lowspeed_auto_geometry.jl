@@ -1,5 +1,5 @@
 using Test,Printf
-const ROOT=normpath(joinpath(@__DIR__,"..",".."))
+const ROOT=dirname(dirname(@__DIR__))
 include(joinpath(ROOT,"apps","airfoil_web","src","backends","cfd_backend.jl"))
 const B=CFDBackend
 const SCRATCH=joinpath(get(ENV,"LUDWIG_PRIVATE_ROOT",joinpath(dirname(ROOT),"02_PRIVATE_PROJECT_DEVELOPMENT")),"TEMP_DELETEABLE","lowspeed_auto_tests")

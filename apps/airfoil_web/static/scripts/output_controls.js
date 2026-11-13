@@ -16,7 +16,7 @@
       <label class="field"><span>Export profile</span><select id="output-profile"><option value="standard">Standard files</option><option value="all">All available files</option><option value="minimal">Coefficients only</option><option value="custom">Custom selection</option></select></label>
       <div class="output-file-options">${kinds.map(key=>`<label class="output-check"><input id="output-${key}" type="checkbox" ${defaults[key]?'checked':''}><span>${labels[key]}</span></label>`).join('')}</div>
       <p id="output-capability-note" class="hint">Only formats supported by the selected solver are exported. Internal GUI data remains available.</p>
-      <label class="field"><span>Output folder</span><div class="output-folder-row"><input id="output-folder" type="text" placeholder="Default private exports folder" autocomplete="off" spellcheck="false"><button id="output-browse" type="button" class="secondary-button">Browse…</button></div><small>Each job creates its own folder. Existing files are preserved.</small></label>
+      <label class="field"><span>${document.body.dataset.workbench==='airfoil'?'Results parent folder (optional)':'Output folder'}</span><div class="output-folder-row"><input id="output-folder" type="text" placeholder="${document.body.dataset.workbench==='airfoil'?'Study folder (automatic)':'Default private exports folder'}" autocomplete="off" spellcheck="false"><button id="output-browse" type="button" class="secondary-button">Browse…</button></div><small>${document.body.dataset.workbench==='airfoil'?'Leave empty to save beside the study. Each run creates a unique date-and-time folder (UTC), including its native fields and reports.':'Each job creates its own folder. Existing files are preserved.'}</small></label>
       <details class="output-makie-options"><summary>Reports, charts and 3D renders</summary>
         <label class="field"><span>Report</span><select id="output-report"><option value="none">Do not generate</option><option value="html">HTML report</option></select></label>
         <label class="field"><span>Makie charts</span><select id="output-charts"><option value="none">Do not generate</option><option value="png">PNG charts</option><option value="svg">SVG charts</option><option value="pdf">PDF charts</option></select></label>
@@ -30,6 +30,7 @@
       for(const key of kinds) $('output-'+key).checked=profile==='all'||(profile==='standard'&&defaults[key])||(profile==='minimal'&&key==='csv_history');
     });
     for(const key of kinds) $('output-'+key).addEventListener('change',()=>{$('output-profile').value='custom';});
+    for(const id of ['output-report','output-charts','output-render'])$(id).addEventListener('change',updatePresentation);
     $('output-browse').addEventListener('click',openBrowser);
     render(null);
   }
@@ -64,6 +65,7 @@
     $('output-render').value=options.renders_3d?'png':'none'; $('output-quantity').value=options.surface_quantity||'cp'; $('output-camera').value=options.camera||'perspective';
     const size=`${options.image_width||1600}x${options.image_height||1000}`;
     if(Array.from($('output-image-size').options).some(option=>option.value===size))$('output-image-size').value=size;
+    updatePresentation();
   }
   function setCapabilities(value, selected) {
     if(value)capabilities=value; if(selected)backends=selected;
@@ -74,14 +76,22 @@
     $('snapshot-interval-minutes').disabled=!timed;
     for(const key of [...kinds,'renders_3d']){
       const available=active.some(item=>item[key]!==false),node=key==='renders_3d'?$('output-render'):$('output-'+key);
-      if(node){node.disabled=!available;node.title=available?'':'Not available for the selected solver';}
+      if(node){node.disabled=!available;node.title=available?'':'Not available for the selected solver';if(document.body.dataset.workbench==='airfoil')node.closest('label').hidden=!available;}
     }
     const notices=active.flatMap(item=>[...(Array.isArray(item.notices)?item.notices:[]),...(item.display_note?[item.display_note]:[])]);
     if($('output-capability-note'))$('output-capability-note').textContent=notices.join(' ')||'Selected exports use the formats supported by this solver. Internal GUI data remains available.';
+    updatePresentation();
+  }
+  function updatePresentation(){
+    if(document.body.dataset.workbench!=='airfoil')return;
+    const render=!$('output-render').disabled&&$('output-render').value!=='none',charts=$('output-charts').value!=='none';
+    $('output-quantity').closest('.output-two-fields').hidden=!render;
+    $('output-image-size').closest('label').hidden=!render&&!charts;
   }
   function render(job) {
     const host=$('output-results');if(!host)return;host.replaceChildren();
     const exports=job?.exports||job?.output_exports;
+    host.dataset.available=String(Boolean(exports));
     const line=document.createElement('p');line.className='hint';
     line.textContent=exports?`Exports: ${exports.status||'pending'}`:'Selected exports and Makie reports appear here after a run.';host.appendChild(line);
     if(!exports)return;

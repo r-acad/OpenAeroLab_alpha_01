@@ -2,7 +2,7 @@
 
 julia_version = "1.13.2"
 manifest_format = "2.1"
-project_hash = "ddced9a74c1d7ddfad5835090ec2d5fbbec7e7ed"
+project_hash = "aba1c66e60be57012112c0b1cf37e0d091a718e2"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -386,6 +386,12 @@ git-tree-sha1 = "05868e21324cede2207c6f0f466b4bfef6d5e7ee"
 registries = "General"
 uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 version = "1.8.1"
+
+[[deps.PBCavNativeCache]]
+deps = ["Adapt", "Atomix", "CUDA", "KernelAbstractions", "LinearAlgebra", "PrecompileTools", "Printf", "SHA", "StaticArrays", "TOML"]
+path = "."
+uuid = "6f0a2905-8233-4ec0-9ceb-66eb6ae42f8a"
+version = "0.1.0"
 
 [[deps.PCRE2_jll]]
 deps = ["Artifacts", "Libdl"]

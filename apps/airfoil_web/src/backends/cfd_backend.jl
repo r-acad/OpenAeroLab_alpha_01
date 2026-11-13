@@ -9,6 +9,8 @@ end
 using ..AirfoilJobControl
 include(joinpath(@__DIR__, "rans_acceleration.jl"))
 using .RANSAcceleration
+include(joinpath(@__DIR__, "cfd_result_qualification.jl"))
+using .CFDResultQualification
 include(joinpath(@__DIR__, "..", "workers", "implicit_methods.jl"))
 include(joinpath(@__DIR__, "rans_convergence.jl"))
 include(joinpath(@__DIR__, "rans_checkpoint.jl"))
@@ -348,6 +350,13 @@ end
 @inline _aerodynamic_cm(xwall, ywall, fx, fy, q) =
     -((xwall-0.25)*fy-ywall*fx)/q
 
+_strict_aplus_profile(mode)=mode in ("aplus_uniform_quality","aplus_uniform_fixed")
+function _transonic_mesh_angle(mode,flow,default_angle)
+    value=_number(flow,"cfd_farfield_angle_deg",mode=="aplus_uniform_fixed" ? 0. : default_angle;lo=-90,hi=90)
+    mode=="aplus_uniform_fixed"&&value!=0 && throw(ArgumentError("The fixed A+ mesh requires contour angle zero; flow alpha remains independent"))
+    value
+end
+
 function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing;
                           species_backend::Bool=false, mesh_anchor=nothing)
     if _auto_ch_selected(case,path,flow)
@@ -356,8 +365,8 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
     end
     streamline_enabled(flow) && throw(ArgumentError(STREAMLINE_CH_ONLY))
     mesh_mode = String(_get(flow, "cfd_mesh", "cavitation_aplus_farfield"))
-    mesh_mode in ("cavitation_aplus_farfield", "aplus_nested_refined", "legacy_sharp_cmesh") ||
-        throw(ArgumentError("cfd_mesh must be cavitation_aplus_farfield, aplus_nested_refined, or legacy_sharp_cmesh"))
+    mesh_mode in ("cavitation_aplus_farfield", "aplus_nested_refined", "aplus_uniform_quality", "aplus_uniform_fixed", "legacy_sharp_cmesh") ||
+        throw(ArgumentError("Unknown CFD mesh family"))
     mesh_mode == "legacy_sharp_cmesh" && _number(flow,"cfd_te_thickness",0.0) > 0 &&
         throw(ArgumentError("finite trailing-edge thickness requires an A-plus mesh"))
     cfd_path, geometry = if mesh_mode == "legacy_sharp_cmesh"
@@ -375,6 +384,7 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
                           "fine"=>(384,96,144),
                           "very_fine"=>(512,128,176)), resolution, nothing)
     mesh_sizes === nothing && throw(ArgumentError("cfd_resolution must be standard, fine, or very_fine"))
+    _strict_aplus_profile(mesh_mode) && (mesh_sizes=(384,64,112))
     cfg = Dict{String,Any}(
         "geometry"=>cfd_path, "source_geometry"=>String(path),
         "mesh_mode"=>mesh_mode, "outdir"=>dir,
@@ -398,9 +408,8 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "force_sample_dt_ctu"=>_number(flow,"cfd_force_sample_dt_ctu",0.1;lo=0.001,hi=1.0),
         # Validation-only outer-frame orientation; freestream remains at alpha_deg.
-        "cfd_farfield_angle_deg"=>_number(flow, "cfd_farfield_angle_deg",
-                                            mesh_anchor === nothing ? alpha : mesh_anchor;
-                                            lo=-90.0, hi=90.0),
+        "cfd_farfield_angle_deg"=>_transonic_mesh_angle(mesh_mode,flow,
+                                            mesh_anchor === nothing ? alpha : mesh_anchor),
         # The earlier web defaults (20k steps, 96 wall-normal cells, bare reconstruction)
         # were startup transients. The clean-foil validation in the repository uses a
         # wall-resolved mesh, WENO/full viscous stress, and >=400k steps with SFD at 150k.
@@ -453,7 +462,7 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "n_foil"=>_integer(flow, "cfd_n_foil", mesh_sizes[1]; lo=32, hi=2048),
         "n_wake"=>_integer(flow, "cfd_n_wake", mesh_sizes[2]; lo=8, hi=512),
         "n_normal"=>_integer(flow, "cfd_n_normal", mesh_sizes[3]; lo=16, hi=512),
-        "n_base"=>_integer(flow, "cfd_n_base", 4; lo=1, hi=8),
+        "n_base"=>_integer(flow, "cfd_n_base", _strict_aplus_profile(mesh_mode) ? 2 : 4; lo=1, hi=8),
         "cfd_te_thickness"=>_number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05),
         # Hidden validation knob; growth=1 follows the archived generator path.
         "wake_first_spacing_growth"=>_number(flow,
@@ -582,7 +591,7 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
     time_statistics=get(meta,"time_statistics",Dict{String,Any}())
     physical_status=!get(time_statistics,"sampling_adequate",false) ? "insufficient_sampling" :
         (get(time_statistics,"physical_mean_eligible",false) ? "completed" : "unqualified_physical_mean")
-    Dict{String,Any}(
+    point=Dict{String,Any}(
         "backend"=>"transonic", "alpha_deg"=>alpha,
         "status"=>physical_time ? physical_status :
             (guard_status == "stalled_stop" ? "stopped_without_convergence" :
@@ -615,8 +624,11 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
                           "log"=>joinpath(dir, "solver.log")),
         "diagnostics"=>Dict("steps"=>meta["steps"], "max_steps"=>get(meta,"max_steps",meta["steps"]),
                             "rans_method"=>get(meta,"rans_method","standard"),
+                            "implicit_method"=>get(meta,"implicit_method",false),
                             "rans_acceleration_method"=>get(meta,"rans_acceleration_method","standard"),
                             "implicit_maturity"=>get(meta,"implicit_maturity",""),
+                            "implicit_numerical_controls"=>get(meta,"implicit_numerical_controls",Dict{String,Any}()),
+                            "implicit_raw_sst_residuals"=>get(meta,"implicit_raw_sst_residuals",Dict{String,Any}()),
                             "implicit_accepted_steps"=>get(meta,"implicit_accepted_steps",0),
                             "implicit_stop_reason"=>get(meta,"implicit_stop_reason",""),
                             "steady_assessment"=>get(meta,"steady_assessment",Dict()),
@@ -711,6 +723,7 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
                     "A completed iteration count is not a convergence certificate. The far-field correction is subsonic.",
                     physical_sanity ? "Loose force bounds passed; compare Cp and loads with XFoil/reference data." :
                                       "Loose force bounds failed; do not use these coefficients as a polar datum."])
+    qualify_result_point(point)
 end
 
 """Build the same external-flow mesh as the CFD worker, without loading a solver.
@@ -731,6 +744,7 @@ function preview_mesh(path::AbstractString, flow::AbstractDict, outdir::Abstract
     cf = 0.026*re^(-1/7)
     dn1 = 0.7/(re*sqrt(cf/2))
     mode = String(_get(flow,"cfd_mesh","cavitation_aplus_farfield"))
+    _strict_aplus_profile(mode) && (sizes=(384,64,112))
     mode == "legacy_sharp_cmesh" && _number(flow,"cfd_te_thickness",0.0) > 0 &&
         throw(ArgumentError("finite trailing-edge thickness requires an A-plus mesh"))
     equation_naca = _get(source,"kind","") == "naca4" && mode != "legacy_sharp_cmesh"
@@ -769,19 +783,20 @@ function preview_mesh(path::AbstractString, flow::AbstractDict, outdir::Abstract
         metadata["leading_edge_max_curvature"] = sharp.le_kappa
         metadata["quality_report"] = _transonic_quality_report(mesh)
     else
-        mode in ("cavitation_aplus_farfield","aplus_nested_refined") ||
+        mode in ("cavitation_aplus_farfield","aplus_nested_refined","aplus_uniform_quality","aplus_uniform_fixed") ||
             throw(ArgumentError("unknown CFD mesh family"))
         built = _build_transonic_mesh(af;n_foil,n_wake,n_normal,dn1,
             alpha_deg=alpha,
             trip_upper=_number(flow,"trip_upper",0.03;lo=0,hi=1),
             trip_lower=_number(flow,"trip_lower",0.05;lo=0,hi=1),
-            n_base=_integer(flow,"cfd_n_base",4;lo=1,hi=8),
+            n_base=_integer(flow,"cfd_n_base",_strict_aplus_profile(mode) ? 2 : 4;lo=1,hi=8),
             cfd_te_thickness=_number(flow,"cfd_te_thickness",0.0;lo=0,hi=0.05),
-            mesh_refinement=mode == "aplus_nested_refined" ? :aplus_nested_refined : :none,
+            mesh_refinement=_strict_aplus_profile(mode) ? Symbol(mode) : mode == "aplus_nested_refined" ? :aplus_nested_refined : :none,
+            normal_collar=!_strict_aplus_profile(mode),shock_layer=!_strict_aplus_profile(mode),
             wake_first_spacing_growth=_number(flow,"cfd_wake_first_spacing_growth",1.0;lo=1,hi=2),
             wake_first_spacing_max=_number(flow,"cfd_wake_first_spacing_max",0.01;lo=0,hi=0.1),
             wake_first_spacing_delay_cells=_integer(flow,"cfd_wake_first_spacing_delay_cells",0;lo=0,hi=511),
-            farfield_angle_deg=_number(flow,"cfd_farfield_angle_deg",alpha;lo=-90,hi=90),
+            farfield_angle_deg=_transonic_mesh_angle(mode,flow,alpha),
             stall_layer=_boolean(flow,"cfd_stall_layer",false),
             le_ds_scale=_number(flow,"cfd_le_ds_scale",1.0;lo=0.1,hi=1.0))
         mesh = built.mesh
@@ -1092,7 +1107,7 @@ function _transonic_worker(cfg_path::AbstractString)
     # y+ ~= 1.1 mesh was marginal for wall-resolved SST at low Reynolds number.
     dn1 = 0.7/(re*sqrt(cf/2))
     mesh_mode = get(cfg, "mesh_mode", "legacy_sharp_cmesh")
-    if mesh_mode in ("cavitation_aplus_farfield", "aplus_nested_refined")
+    if mesh_mode in ("cavitation_aplus_farfield", "aplus_nested_refined", "aplus_uniform_quality", "aplus_uniform_fixed")
         built = _build_transonic_mesh(af;
             n_foil=cfg["n_foil"], n_wake=cfg["n_wake"],
             n_normal=cfg["n_normal"], dn1=dn1,
@@ -1100,12 +1115,13 @@ function _transonic_worker(cfg_path::AbstractString)
             trip_upper=cfg["trip_upper"], trip_lower=cfg["trip_lower"],
             n_base=get(cfg, "n_base", 4),
             cfd_te_thickness=get(cfg,"cfd_te_thickness",0.0),
-            mesh_refinement=mesh_mode == "aplus_nested_refined" ?
-                :aplus_nested_refined : :none,
+            mesh_refinement=_strict_aplus_profile(mesh_mode) ? Symbol(mesh_mode) :
+                mesh_mode == "aplus_nested_refined" ? :aplus_nested_refined : :none,
+            normal_collar=!_strict_aplus_profile(mesh_mode),shock_layer=!_strict_aplus_profile(mesh_mode),
             wake_first_spacing_growth=get(cfg,"wake_first_spacing_growth",1.0),
             wake_first_spacing_max=get(cfg,"wake_first_spacing_max",0.01),
             wake_first_spacing_delay_cells=get(cfg,"wake_first_spacing_delay_cells",0),
-            farfield_angle_deg=get(cfg, "cfd_farfield_angle_deg", cfg["alpha_deg"]),
+            farfield_angle_deg=get(cfg, "cfd_farfield_angle_deg", mesh_mode=="aplus_uniform_fixed" ? 0. : cfg["alpha_deg"]),
             stall_layer=Bool(get(cfg, "stall_layer", false)),
             le_ds_scale=Float64(get(cfg, "le_ds_scale", 1.0)))
         mesh = built.mesh; met = built.metrics
@@ -1323,8 +1339,7 @@ function _transonic_worker(cfg_path::AbstractString)
     equation_vol = equation_probe ? Array(s.vol) : nothing
     implicit_rows=Dict{String,Any}[]
     implicit_metrics_io=implicit ? open(joinpath(cfg["outdir"],"steady_assessment_history.csv"),"w") : nothing
-    implicit_metric_names=("iteration","mass_l2","momentum_x_l2","momentum_y_l2","energy_l2",
-        "turb_k_update_defect","turb_omega_update_defect","mass_net_frac","cl","cd","cm")
+    implicit_metric_names=_implicit_metric_names()
     implicit && (println(implicit_metrics_io,join(implicit_metric_names,','));flush(implicit_metrics_io))
     function implicit_assessment()
         RANSConvergence.assess(implicit_rows;
@@ -1332,7 +1347,7 @@ function _transonic_worker(cfg_path::AbstractString)
             update_limits=Dict("turb_k_update_defect"=>1e-4,"turb_omega_update_defect"=>1e-4),
             config=RANSConvergence.Config(window_samples=20,mass_limit=mass_net_limit),
             phase_start=implicit_warmup+1,equation_coverage_complete=false,
-            scope="All four convection-scaled flow RMS errors, fixed-safe-clock turbulence update defects, mass closure and CL/CD/CM stability. Turbulence defects are not raw SST equation residuals; limits remain provisional.")
+            scope="Four convection-scaled flow RMS errors, safe-clock turbulence update defects, raw SST transport residuals, prescribed-wall omega constraint, mass and force history are recorded. Qualified raw-SST stopping limits are not yet configured; the existing experimental limits remain provisional.")
     end
     if equation_io !== nothing
         println(equation_io,EquationResidualProbe.history_header())
@@ -1554,8 +1569,7 @@ function _transonic_worker(cfg_path::AbstractString)
                 if implicit
                     metrics=CMeshSolverKA.steady_airfoil_diagnostics_ka(s;
                         corrected_wall_metric=sst_wall_metric_correction,nonorth_diffusion=sst_nonorth_correction)
-                    values=(n,metrics.flow_l2_convective...,metrics.turb_k_update_defect,
-                        metrics.turb_omega_update_defect,mass_net,cl,cd,cm_sample)
+                    values=_implicit_metric_values(n,metrics,mass_net,cl,cd,cm_sample)
                     push!(implicit_rows,Dict{String,Any}(zip(implicit_metric_names,values)))
                     println(implicit_metrics_io,join(values,','));flush(implicit_metrics_io)
                 end
@@ -1905,7 +1919,12 @@ function _transonic_worker(cfg_path::AbstractString)
         "rans_method"=>method,"implicit_method"=>implicit,"implicit_accepted_steps"=>implicit_accepted,
         "implicit_warmup_steps"=>implicit_warmup,"implicit_stop_reason"=>implicit_failure,
         "implicit_history_csv"=>implicit ? "implicit_history.csv" : "",
+        "implicit_numerical_controls"=>implicit ? Dict(k=>v for (k,v) in cfg if startswith(k,"implicit_")) : Dict{String,Any}(),
         "steady_assessment"=>final_assessment,"implicit_maturity"=>get(cfg,"implicit_maturity",""),
+        "implicit_raw_sst_residuals"=>Dict("available"=>implicit && s.sst && s.keps==0.0f0 && _implicit_raw_sst_available(implicit_rows),
+            "csv_columns"=>collect(_IMPLICIT_RAW_SST_METRICS),"qualified_stopping_limits"=>false,
+            "omega_prescribed_cells"=>s.keps==0.0f0 ? min(2,s.NJ)*s.NIF : 0,
+            "scope"=>"Unscaled primitive transport residuals before clipping; omega transport excludes the exact two prescribed wall rows, which have a separate relative constraint defect. The unmasked omega PDE is diagnostic only."),
         "rans_acceleration"=>Bool(get(cfg,"rans_acceleration",false)),
         "rans_acceleration_method"=>String(get(cfg,"rans_acceleration_method","standard")),
         "irsj"=>s.irsj==Int32(1),

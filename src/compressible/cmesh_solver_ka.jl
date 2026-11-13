@@ -36,7 +36,7 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_pressure_outlet.jl"))
 using .CMeshPressureOutlet: set_pressure_outlet!, clear_pressure_outlet!, pressure_outlet_bc!, pressure_outlet_flux!
 export set_pressure_outlet!, clear_pressure_outlet!
 
-mutable struct KSol{A2, V, M, S2}
+mutable struct KSol{A2, V, M, S2, R<:AbstractFloat}
     NI::Int; NJ::Int; NIW::Int; NIF::Int; g::Int
     Six::A2; Siy::A2; Sjx::A2; Sjy::A2; vol::A2; xc::A2; yc::A2
     rho::A2; ux::A2; uy::A2; T::A2
@@ -46,33 +46,33 @@ mutable struct KSol{A2, V, M, S2}
     dc_r::A2; dc_mx::A2; dc_my::A2; dc_e::A2
     dtf::A2
     cxa::V; cya::V; cza::V; wa::V
-    drot::Float32; eint::Float32
-    rho_inf::Float32; uxi::Float32; uyi::Float32; T_inf::Float32
-    gam::Float32; xv::Float32; yv::Float32
-    m2::Float32; beta::Float32; ca::Float32; sa::Float32
-    wall_flux::Bool; nu_lam::Float32
+    drot::R; eint::R
+    rho_inf::R; uxi::R; uyi::R; T_inf::R
+    gam::R; xv::R; yv::R
+    m2::R; beta::R; ca::R; sa::R
+    wall_flux::Bool; nu_lam::R
     tk::A2; tom::A2; nut::A2
     tnl::A2                                        # LAGGED eddy viscosity (Olsen-Coakley; lag==1)
-    sst::Bool; k_inf::Float32; w_inf::Float32
+    sst::Bool; k_inf::R; w_inf::R
     lag::Int32                                     # 1 = nu_t lag equation drives the stresses
-    lag_a0::Float32                                # lag rate coefficient (Olsen-Coakley 0.35)
+    lag_a0::R                                # lag rate coefficient (Olsen-Coakley 0.35)
     # ★ FBM (Johansen/Wu/Shyy 2004) filter-based hybrid RANS-LES coefficient C_Delta. <=0 disables it
     # (bitwise legacy). Published value is 1.0. See _fbm_factor for the rationale and the warning against
     # tuning it. Added 2026-07-27 after grid convergence showed URANS shedding does not survive refinement.
-    fbm_cdelta::Float32
+    fbm_cdelta::R
     # ★ PANS (Girimaji 2006) with a PRESCRIBED CONSTANT f_k = k_u/k. <=0 disables it (bitwise legacy).
     # Published bracket for cavitating hydrofoils (Ji/Luo/Huang/Wang): f_k = 0.2-0.5. See _pans_factor
     # for the derivation, the REDUCED-FORM caveat that must travel with any result, and the warning
     # against sweeping f_k. Added 2026-07-27 after FBM was measured INERT inside the cavity.
-    pans_fk::Float32
+    pans_fk::R
     earsm::Int32                                   # 1 = WJ-EARSM: effective nu_t + extra anisotropy stress
     exx::A2; exy::A2; eyy::A2                      # EARSM extra stress tau_extra (interior-sized)
     wdist::A2; gammat::A2
     recon::Int32
     fullvisc::Int32                                # 0 = thin-layer (legacy bitwise), 1 = full stress tensor (A2c)
-    sponge_sigma::Float32                          # far-field acoustic sponge strength (0 = off, bitwise legacy)
-    sponge_j0f::Float32                            # sponge start as fraction of NJ (default 0.75)
-    suth::Float32                                  # Sutherland S/T_inf (0 for legacy or constant dynamic)
+    sponge_sigma::R                          # far-field acoustic sponge strength (0 = off, bitwise legacy)
+    sponge_j0f::R                            # sponge start as fraction of NJ (default 0.75)
+    suth::R                                  # Sutherland S/T_inf (0 for legacy or constant dynamic)
     rhok::Int32                                    # 1 = include -2/3 rho k in the turbulent stress
     gux::A2; guy::A2; gvx::A2; gvy::A2; gTx::A2; gTy::A2   # Green-Gauss cell gradients (interior-sized)
     # dual-time BDF2 history (conservative, interior-sized): U^n and U^(n-1); inert unless step gets dtp>0
@@ -93,7 +93,7 @@ mutable struct KSol{A2, V, M, S2}
     # preserving (M*dc_smoothed = dc_raw => dc_smoothed=0 iff dc_raw=0; the tau FAS source is OFF in the
     # single-grid cavitation runs so this holds exactly). 0 = off (bitwise legacy).
     irs_ac::Int32
-    irs_eps0::Float32                              # void-targeted IRS strength (ε = irs_eps0*relu(1-a_m/a_ref))
+    irs_eps0::R                              # void-targeted IRS strength (ε = irs_eps0*relu(1-a_m/a_ref))
     # ★ ACOUSTIC FILTER (2026-07-25, the implicit-flow cure for the split-pexc NEGATIVE-COMPRESSIBILITY
     # divergence). A post-step, Delta-form, ADI line-implicit (Thomas) LOW-PASS of the pseudo-time DENSITY
     # INCREMENT delta = rho - rk_r, gated to the railed negative-compressibility core (gap = cs2*T - a_m^2 > 0),
@@ -105,12 +105,12 @@ mutable struct KSol{A2, V, M, S2}
     # preconditioner not a step-cut (dtf untouched, unlike the CFL cut). Neumann/zero-row-sum => mass-conserving
     # in the core. Derived + cross-checked (3-way judge panel) 2026-07-25. 0 = off (bitwise legacy).
     acou::Int32
-    acou_kfac::Float32                             # filter strength multiplier (bracket {0.5,1,2}); 1.0 nominal
+    acou_kfac::R                             # filter strength multiplier (bracket {0.5,1,2}); 1.0 nominal
     acou_d::A2                                     # scratch: density increment delta (dedicated so dc_r stays valid)
     # Selective Frequency Damping (converges UNSTABLE steady states; the fine-mesh steady enabler)
     sfd::Int32
-    sfd_chi::Float32
-    sfd_alpha::Float32
+    sfd_chi::R
+    sfd_alpha::R
     sb_r::S2; sb_u::S2; sb_v::S2; sb_T::S2
     # PDP-KFVS pressure-split: p_mix = rho*cs2*T_band + pexc. T carries the in-band pedestal
     # T_band=clamp(p_mix/(rho*cs2),0.3,3) on the untouched quadrature; the EXCESS pexc is injected as a
@@ -128,8 +128,8 @@ mutable struct KSol{A2, V, M, S2}
     # floor cav_cfl, using the physically-appropriate a_m signal. dtf is a pseudo-time/LTS step, so the
     # physical-time (BDF2) fixed point is UNCHANGED -- only the convergence path in the cavity. cav_cfl=0
     # => bitwise legacy. am_ref = liquid a_m (set from tem_ambient).
-    cav_cfl::Float32
-    am_ref::Float32
+    cav_cfl::R
+    am_ref::R
     # STAGE 1e — mixture-aware far field. The legacy _k_bc_farfield! is a characteristic BC built on the
     # ideal-gas CARRIER eos referenced to T_inf. Under the PDP split the interior T is a RAILED in-band
     # pedestal (clamped to Tmin across the whole liquid once ambient p_mix < rho*cs2*Tmin), NOT a
@@ -139,12 +139,12 @@ mutable struct KSol{A2, V, M, S2}
     # ff_mix=1 switches to barotropic characteristics on the mixture sound speed, holding the ambient at
     # ff_p_ref. 0 = bitwise legacy.
     ff_mix::Int32
-    ff_p_ref::Float32                               # ambient mixture pressure p_mix(rho_inf, alpha=0)
-    ff_a2m::Float32                                 # dp_mix/drho at that ambient state
-    ff_Tmin::Float32; ff_Tmax::Float32              # pedestal band (must match the TEM's)
+    ff_p_ref::R                               # ambient mixture pressure p_mix(rho_inf, alpha=0)
+    ff_a2m::R                                 # dp_mix/drho at that ambient state
+    ff_Tmin::R; ff_Tmax::R              # pedestal band (must match the TEM's)
     # host mirrors of the wall-row metrics (loads/Cp without device scalar reads)
-    Sjx1_h::Vector{Float32}; Sjy1_h::Vector{Float32}; vol1_h::Vector{Float32}
-    xc1_h::Vector{Float32};  yc1_h::Vector{Float32}
+    Sjx1_h::Vector{R}; Sjy1_h::Vector{R}; vol1_h::Vector{R}
+    xc1_h::Vector{R};  yc1_h::Vector{R}
     backend::Any
     # ★ S3i EQUILIBRIUM LOG-LAW WALL FUNCTION (src/cmesh/cmesh_wallfun.jl). 0 = bitwise legacy
     # no-slip resolved-gradient shear; >0 substitutes tau_w = rho u_tau^2 in the wall viscous flux.
@@ -153,7 +153,7 @@ mutable struct KSol{A2, V, M, S2}
     # APPENDED AT THE END: KSol has a POSITIONAL constructor, so a mid-struct insertion silently
     # misassigns every following field. I made exactly that mistake writing this and caught it
     # before it ran -- the same trap cmesh_cav_tem.jl warns about four times.
-    wallfun::Float32; wf_larsson::Float32
+    wallfun::R; wf_larsson::R
     # ★ S3f BUBBLE-INDUCED TURBULENT KINETIC ENERGY. Precomputed per cell by the TEM sweep (which is
     # the only place alpha, Rdot and R exist together) and simply ADDED to the SST k-production.
     #
@@ -188,9 +188,9 @@ mutable struct KSol{A2, V, M, S2}
     # emix = 0 => yvf is never read, Y == 0, eint_loc == eint, the latent term vanishes, and every
     # energy expression collapses to the legacy one BITWISE.
     yvf::A2
-    emix::Float32; eint_v::Float32; latent::Float32
+    emix::R; eint_v::R; latent::R
     # ★ S3j k-eps RNG. 0 = SST (bitwise legacy); >0 reinterprets `tom` as epsilon.
-    keps::Float32
+    keps::R
     # ★★★ S3k -- VORTEX THRESHOLD PRESSURE (Le & Tran, JAFM 15(2) 2022, Eq. 14), 2026-08-02.
     #
     #     p_v* = p_v + C_v * mu_eff * |dv/dx - du/dy|
@@ -221,18 +221,18 @@ mutable struct KSol{A2, V, M, S2}
     # Discrete freestream-preservation correction for the channel operator. Channel-only full-size
     # arrays; legacy states receive 1x1 stubs and never launch the subtraction kernel.
     outer_ref_r::A2; outer_ref_mx::A2; outer_ref_my::A2; outer_ref_e::A2
-    outer_ref_rho::Float32; outer_ref_ux::Float32; outer_ref_uy::Float32; outer_ref_T::Float32
+    outer_ref_rho::R; outer_ref_ux::R; outer_ref_uy::R; outer_ref_T::R
     outer_ref_ready::Int32
     outer_ref_signature::UInt64
     # Opt-in fixed-static-pressure channel outlet. The alpha array aliases the attached TEM;
     # legacy states retain 1x1 stubs and never access them. Append-only positional constructor.
     outlet_mode::Int32
-    outlet_p::Float32
-    outlet_eos::NTuple{7,Float32}
+    outlet_p::R
+    outlet_eos::NTuple{7,R}
     outlet_alpha::A2
     outlet_status::A2
     # Actual globally applied step. Zero denotes local stepping (no physical clock).
-    last_global_dt::Float32
+    last_global_dt::R
 
     # Airfoil-only air transport: 0 legacy, 1 Sutherland dynamic, 2 constant dynamic.
     air_sutherland::Int32
@@ -297,21 +297,33 @@ function _outer_boundary_contract_ka(met, NI::Int)
     kinds, Int32(1)
 end
 
-function build_sol_ka(backend, met; drot::Float32=2.0f0, cxv, cyv, czv, wv,
-                      sfd_storage_type::Type{<:AbstractFloat}=Float32)
+_ksol_precision_scalar(::Type{R},x::Float32) where R=R(x)
+_ksol_precision_scalar(::Type{R},x::Tuple) where R=map(y->_ksol_precision_scalar(R,y),x)
+_ksol_precision_scalar(::Type{R},x) where R=x
+_ksol_precision(::Type{R},args...) where R=KSol(map(x->_ksol_precision_scalar(R,x),args)...)
+
+function build_sol_ka(backend, met; drot=2.0f0, cxv, cyv, czv, wv,
+                      sfd_storage_type::Type{<:AbstractFloat}=Float32,
+                      scalar_type::Type{<:AbstractFloat}=Float32)
+    scalar_type in (Float32,Float64)||throw(ArgumentError("scalar_type must be Float32 or Float64"))
     sfd_storage_type in (Float32, Float64) ||
         throw(ArgumentError("sfd_storage_type must be Float32 or Float64"))
     NI, NJ, g = met.NI, met.NJ, 3
     dev(x) = _dev(backend, x)
-    z(nx, ny) = _dev(backend, zeros(Float32, nx, ny))
+    z(nx, ny) = _dev(backend, zeros(scalar_type, nx, ny))
+    all(a->eltype(a)===scalar_type,(met.Six,met.Siy,met.Sjx,met.Sjy,met.vol,met.xc,met.yc,met.wdist,met.gammat))||
+        throw(ArgumentError("Solver precision requires metrics built in the same scalar_type from original nodes"))
+    scalar_type===Float64&&eltype(wv)!==Float64&&throw(ArgumentError("Float64 thermal solver requires original Float64 quadrature weights"))
     # The default calls the original allocator so all existing runs retain
     # Float32 SFD state and its bitwise numerical path. The opt-in Float64
     # accumulator avoids a frozen low-alpha filter on tiny pseudo-time steps.
-    zsfd(nx, ny) = sfd_storage_type === Float32 ? z(nx, ny) :
-                    dev(zeros(Float64, nx, ny))
+    zsfd(nx, ny) = sfd_storage_type === scalar_type ? z(nx, ny) :
+                    dev(zeros(sfd_storage_type, nx, ny))
     outer_face_kind_h, outer_mode = _outer_boundary_contract_ka(met, NI)
     zr() = outer_mode == Int32(0) ? z(1, 1) : z(NI, NJ)
-    KSol(NI, NJ, met.NIW, met.NIF, g,
+    scalar_type===Float64&&outer_mode!=0&&throw(ArgumentError("Float64 thermal precision currently supports free-air C/A+ only"))
+    cv=scalar_type===Float32 ? 0.5f0*(3.0f0+drot)*CS2 : scalar_type(.5)*(scalar_type(3)+scalar_type(drot))*_gas_cs2(scalar_type)
+    _ksol_precision(scalar_type,NI, NJ, met.NIW, met.NIF, g,
         dev(met.Six), dev(met.Siy), dev(met.Sjx), dev(met.Sjy), dev(met.vol), dev(met.xc), dev(met.yc),
         z(NI+2g, NJ+2g), z(NI+2g, NJ+2g), z(NI+2g, NJ+2g), z(NI+2g, NJ+2g),
         z(NI+2g, NJ+2g), z(NI+2g, NJ+2g), z(NI+2g, NJ+2g), z(NI+2g, NJ+2g),
@@ -319,8 +331,8 @@ function build_sol_ka(backend, met; drot::Float32=2.0f0, cxv, cyv, czv, wv,
         z(NI, NJ+1), z(NI, NJ+1), z(NI, NJ+1), z(NI, NJ+1),
         z(NI, NJ), z(NI, NJ), z(NI, NJ), z(NI, NJ),
         z(NI, NJ),
-        dev(collect(Float32.(cxv))), dev(collect(Float32.(cyv))), dev(collect(Float32.(czv))), dev(collect(Float32.(wv))),   # collect: SVector→Vector (CuArray copyto! from SVector scalar-iterates)
-        drot, 0.5f0*(3.0f0+drot)*CS2,
+        dev(collect(scalar_type.(cxv))), dev(collect(scalar_type.(cyv))), dev(collect(scalar_type.(czv))), dev(collect(scalar_type.(wv))),   # collect: SVector→Vector (CuArray copyto! from SVector scalar-iterates)
+        scalar_type(drot), cv,
         1.0f0, 0.0f0, 0.0f0, 1.0f0,
         0.0f0, 0.25f0, 0.0f0,
         0.0f0, 1.0f0, 1.0f0, 0.0f0, false, 0.0f0,
@@ -359,7 +371,7 @@ function build_sol_ka(backend, met; drot::Float32=2.0f0, cxv, cyv, czv, wv,
         z(1,1), z(1,1), z(1,1), z(1,1))
 end
 
-@inline _channel_sigword(x::Float32) = UInt64(reinterpret(UInt32, x))
+@inline _channel_sigword(x) = UInt64(reinterpret(UInt32, x))
 @inline _channel_sigword(x::Int32) = UInt64(reinterpret(UInt32, x))
 @inline _channel_sigword(x::Int) = UInt64(x)
 @inline _channel_sigword(x::Bool) = x ? UInt64(1) : UInt64(0)
@@ -433,13 +445,14 @@ function _channel_reference_ambient_ka(s::KSol)
 end
 
 function set_freestream_ka!(s::KSol, mach::Float64, alpha_deg::Float64; pg_correction::Bool=true)
+    F=eltype(s.rho);CS2=_gas_cs2(F)
     a = sqrt((1 + 2/(3+s.drot)) * CS2)
-    U = Float32(mach*a)
-    s.ca = Float32(cosd(alpha_deg)); s.sa = Float32(sind(alpha_deg))
+    U = F(mach*a)
+    s.ca = F(cosd(alpha_deg)); s.sa = F(sind(alpha_deg))
     s.uxi = U*s.ca; s.uyi = U*s.sa
     s.rho_inf = 1.0f0; s.T_inf = 1.0f0
-    s.m2 = pg_correction ? Float32(mach^2) : 0.0f0
-    s.beta = pg_correction ? Float32(sqrt(max(1 - mach^2, 1e-6))) : 1.0f0
+    s.m2 = pg_correction ? F(mach^2) : 0.0f0
+    s.beta = pg_correction ? F(sqrt(max(1 - mach^2, 1e-6))) : 1.0f0
     fill!(s.rho, s.rho_inf); fill!(s.ux, s.uxi); fill!(s.uy, s.uyi); fill!(s.T, s.T_inf)
     clear_channel_reference_ka!(s)
     nothing
@@ -460,7 +473,7 @@ function set_air_sutherland_ka!(s::KSol, temperature_inf_k::Real;
         throw(ArgumentError("freestream static temperature must be finite and positive"))
     isfinite(S) && S > 0.0 ||
         throw(ArgumentError("Sutherland constant must be finite and positive"))
-    sr = Float32(S/Tinf)
+    sr = eltype(s.rho)(S/Tinf)
     isfinite(sr) && sr > 0.0f0 ||
         throw(ArgumentError("Sutherland ratio is outside Float32 range"))
     _check_air_sutherland_admission(s)
@@ -480,8 +493,8 @@ function set_air_constant_dynamic_ka!(s::KSol)
     nothing
 end
 
-@inline function _air_nu_local(rho::Float32, T::Float32, nu_inf::Float32,
-                               rho_inf::Float32, Sr::Float32, mode::Int32)
+@inline function _air_nu_local(rho, T, nu_inf,
+                               rho_inf, Sr, mode::Int32)
     mode != Int32(0) ? rho_inf*nu_inf*_mufac(T,Sr)/rho : nu_inf
 end
 
@@ -507,7 +520,7 @@ carrier-entropy reconstruction returns densities off by ~5x and the domain press
 `sigma_eff ~ 3`. Structurally unavoidable: `p_ref/p_inf = sigma*(1+eps)*gamma*Ma^2/2 = 0.031` at Ma 0.2,
 sigma 1 -- and that ratio is invariant under `T_inf`."""
 function set_farfield_mixture!(s::KSol; p_ref::Float64, a2m::Float64,
-                               Tmin::Float32=0.3f0, Tmax::Float32=3.0f0)
+                               Tmin=0.3f0, Tmax=3.0f0)
     a2m > 0.0 || error("set_farfield_mixture!: a2m must be > 0 (got $a2m)")
     p_ref > 0.0 || error("set_farfield_mixture!: p_ref must be > 0 (got $p_ref)")
     s.ff_mix = Int32(1); s.ff_p_ref = Float32(p_ref); s.ff_a2m = Float32(a2m)
@@ -518,8 +531,8 @@ end
 
 function set_sst_ka!(s::KSol; tu_inf::Float64=0.001, mu_t_ratio::Float64=0.1)
     U = sqrt(Float64(s.uxi)^2 + Float64(s.uyi)^2)
-    s.k_inf = Float32(1.5*(tu_inf*U)^2)
-    s.w_inf = Float32(max(s.k_inf/(mu_t_ratio*Float64(s.nu_lam)), 1e-6))
+    s.k_inf = eltype(s.rho)(1.5*(tu_inf*U)^2)
+    s.w_inf = eltype(s.rho)(max(s.k_inf/(mu_t_ratio*Float64(s.nu_lam)), 1e-6))
     fill!(s.tk, s.k_inf); fill!(s.tom, s.w_inf); fill!(s.nut, s.k_inf/s.w_inf)
     fill!(s.tnl, s.k_inf/s.w_inf)
     s.sst = true
@@ -575,8 +588,8 @@ end
 # transported alpha to 1.4% in the field probe, so no alpha plumbing is needed in the BC.
 # cavslip = 0 => the branch is not taken and every legacy path is bitwise.
 @kernel function _k_bc_wake_wall!(rho, ux, uy, T, @Const(Sjx), @Const(Sjy),
-                                  wallmode::Int32, cavslip::Float32, cavslip_p::Float32,
-                                  rls::Float32, rvs::Float32,
+                                  wallmode::Int32, cavslip, cavslip_p,
+                                  rls, rvs,
                                   NI::Int32, NIW::Int32, NIF::Int32, g::Int32)
     i, k = @index(Global, NTuple)                     # i in 1..NI, k in 1..g
     @inbounds if i <= NI && k <= g
@@ -614,12 +627,13 @@ end
 end
 
 @kernel function _k_bc_farfield!(rho, ux, uy, T, @Const(xc), @Const(yc), @Const(Sjx), @Const(Sjy),
-                                 rho_inf::Float32, uxi::Float32, uyi::Float32, T_inf::Float32,
-                                 gam_v::Float32, xv::Float32, yv::Float32, m2::Float32, betav::Float32,
-                                 ca::Float32, sa::Float32, drot::Float32,
-                                 @Const(pexc), ff_mix::Int32, ff_p_ref::Float32, ff_a2m::Float32,
-                                 ff_Tmin::Float32, ff_Tmax::Float32,
+                                 rho_inf, uxi, uyi, T_inf,
+                                 gam_v, xv, yv, m2, betav,
+                                 ca, sa, drot,
+                                 @Const(pexc), ff_mix::Int32, ff_p_ref, ff_a2m,
+                                 ff_Tmin, ff_Tmax,
                                  NI::Int32, NJ::Int32, g::Int32)
+    CS2=_gas_cs2(eltype(rho))
     i = @index(Global, Linear)
     @inbounds if i <= NI
         # PG vortex increment at the j=NJ interior center (freestream-frame angular form)
@@ -716,8 +730,8 @@ end
 @kernel function _k_bc_channel_aux_j!(pexc, am, @Const(rho), @Const(ux), @Const(uy),
                                       @Const(T), @Const(Sjx), @Const(Sjy),
                                       @Const(outer_face_kind),
-                                      ff_mix::Int32, ff_p_ref::Float32, ff_a2m::Float32,
-                                      rho_inf::Float32,
+                                      ff_mix::Int32, ff_p_ref, ff_a2m,
+                                      rho_inf,
                                       NI::Int32, NIW::Int32, NIF::Int32,
                                       NJ::Int32, g::Int32)
     i, k = @index(Global, NTuple)
@@ -791,10 +805,11 @@ end
 # outflow. This kernel is opt-in and overrides only physical-row i ghosts.
 @kernel function _k_bc_characteristic_i_outlet!(rho, ux, uy, T,
         @Const(xc), @Const(yc), @Const(Six), @Const(Siy),
-        rho_inf::Float32, uxi::Float32, uyi::Float32, T_inf::Float32,
-        gam_v::Float32, xv::Float32, yv::Float32, m2::Float32,
-        betav::Float32, ca::Float32, sa::Float32, drot::Float32,
+        rho_inf, uxi, uyi, T_inf,
+        gam_v, xv, yv, m2,
+        betav, ca, sa, drot,
         NI::Int32, NJ::Int32, g::Int32)
+    CS2=_gas_cs2(eltype(rho))
     j, side = @index(Global, NTuple)
     @inbounds if j <= NJ && side <= Int32(2)
         face = side == Int32(1) ? Int32(1) : NI+Int32(1)
@@ -854,7 +869,7 @@ end
 end
 
 # far-field corners of the outlet ghost columns (small fixed fill)
-@kernel function _k_bc_corners!(rho, ux, uy, T, rho_inf::Float32, uxi::Float32, uyi::Float32, T_inf::Float32,
+@kernel function _k_bc_corners!(rho, ux, uy, T, rho_inf, uxi, uyi, T_inf,
                                 NI::Int32, NJ::Int32, g::Int32)
     kk, k = @index(Global, NTuple)
     @inbounds if kk <= g && k <= g
@@ -863,8 +878,8 @@ end
     end
 end
 
-function applyBC_ka!(s::KSol, wallmode::Int32; cavslip::Float32=0.0f0, cavslip_p::Float32=1.0f0,
-                     cavslip_rls::Float32=1.0f0, cavslip_rvs::Float32=0.0f0,
+function applyBC_ka!(s::KSol, wallmode::Int32; cavslip=0.0f0, cavslip_p=1.0f0,
+                     cavslip_rls=1.0f0, cavslip_rvs=0.0f0,
                      defer_pressure_outlet::Bool=false)
     # Strip topology (5 Oct 2026, plan sections 4.1 and 4.5; critique A 3 and 9): this legacy row/column sequence would
     # write an outlet copy on the strip's base-wall side, a far-field state on its upper-interface rows and a within-block
@@ -942,11 +957,12 @@ end
                             @Const(exx), @Const(exy), @Const(eyy),
                             @Const(gux), @Const(guy), @Const(gvx), @Const(gvy), @Const(gTx), @Const(gTy),
                             @Const(cxa), @Const(cya), @Const(cza), @Const(wa),
-                            drot::Float32, nu_lam::Float32, sst_on::Int32, recon::Int32, fullvisc::Int32,
-                            suth::Float32, rho_inf::Float32, air_sutherland::Int32,
+                            drot, nu_lam, sst_on::Int32, recon::Int32, fullvisc::Int32,
+                            suth, rho_inf, air_sutherland::Int32,
                             rhok::Int32, earsm::Int32, @Const(pexc), @Const(am), cav::Int32,
-                            eint::Float32, minf2::Float32, pc::Int32, @Const(pmix), direct_p::Int32, face_states,
+                            eint, minf2, pc::Int32, @Const(pmix), direct_p::Int32, face_states,air_geometry,
                             half, rate, NI::Int32, NJ::Int32, g::Int32, ctx)
+    CS2=_gas_cs2(eltype(rho))
     i, j = @index(Global, NTuple)                     # i in 1..NI+1, j in 1..NJ
     @inbounds if i <= NI+1 && j <= NJ
         # Strip topology (5 Oct 2026, plan section 4.1, the i-face wall family): `ctx` is nothing on every carrier but a
@@ -959,11 +975,15 @@ end
         nxr = Six[i,j]; nyr = Siy[i,j]; S = sqrt(nxr*nxr + nyr*nyr)
         nx = nxr/S; ny = nyr/S
         ia = i+g; ja = j+g
-        local Fr::Float32, Fmx::Float32, Fmy::Float32, Fe::Float32
+        local Fr, Fmx, Fmy, Fe
         # `half`/`rate` non-nothing selects the common-gauge KINETIC (KFVS) face on the same
         # admitted direct-pressure states (2026-09-10): half masses M+/M- (area-integrated) and
         # the operational face clock are published for the Species vapor transport and cap.
-        if face_states!==nothing && 2<=i<=NI
+        if air_geometry!==nothing
+            air_left=i==1 ? _airfoil_air_z(rho,ux,uy,T,ia-1,ja) : _airfoil_trace4(face_states,i-1,j,2)
+            air_right=i==NI+1 ? _airfoil_air_z(rho,ux,uy,T,ia,ja) : _airfoil_trace4(face_states,i,j,1)
+            Fr,Fmx,Fmy,Fe=_airfoil_thermal_face_flux(air_left,air_right,nx,ny,S,cxa,cya,cza,wa,drot)
+        elseif face_states!==nothing && 2<=i<=NI
             l=ntuple(k->face_states[i-1,j,k,2],Val(7))
             r=ntuple(k->face_states[i,j,k,1],Val(7))
             if half!==nothing
@@ -1022,7 +1042,9 @@ end
                 nx, ny, S, cxa, cya, cza, wa, drot, recon)
         end
         if nu_lam > 0.0f0 && i >= 2 && i <= NI        # viscous (interior i-faces)
-            dxc = xc[i,j]-xc[i-1,j]; dyc = yc[i,j]-yc[i-1,j]; dn = sqrt(dxc*dxc+dyc*dyc)+1.0f-30
+            dxc = air_geometry===nothing ? xc[i,j]-xc[i-1,j] : -air_geometry[i,j,1,1]
+            dyc = air_geometry===nothing ? yc[i,j]-yc[i-1,j] : -air_geometry[i,j,2,1]
+            dn = sqrt(dxc*dxc+dyc*dyc)+1.0f-30
             nut_f = sst_on == Int32(1) ? 0.5f0*(nut[ia-1,ja]+nut[ia,ja]) : 0.0f0
             rf = 0.5f0*(rho[ia-1,ja]+rho[ia,ja])
             fmu = _mufac(0.5f0*(T[ia-1,ja]+T[ia,ja]), suth)   # Sutherland mu(T)
@@ -1103,8 +1125,9 @@ end
 # the Stokes traction with d1 = 0.5 vol[1,j]/|S|. The stored normal (Six, Siy) of an i = 1 face points into the fluid, as
 # the j = 1 normal does, and both enter the divergence with a minus sign, so the same expressions hold. Kept out of line
 # (noinline): a large inline branch inside a kernel once broke GPU compilation.
-@noinline function _strip_iwall_flux(rho,ux,uy,T,pexc,pmix,vol,Six,Siy,j::Int32,g::Int32,nu_lam::Float32,suth::Float32,
-                                     rho_inf::Float32,air_sutherland::Int32,cav::Int32,direct_p::Int32,wallmode::Int32,fullvisc::Int32=Int32(0))
+@noinline function _strip_iwall_flux(rho,ux,uy,T,pexc,pmix,vol,Six,Siy,j::Int32,g::Int32,nu_lam,suth,
+                                     rho_inf,air_sutherland::Int32,cav::Int32,direct_p::Int32,wallmode::Int32,fullvisc::Int32=Int32(0))
+    CS2=_gas_cs2(eltype(rho))
     @inbounds begin
         nxr=Six[1,j]; nyr=Siy[1,j]; S=sqrt(nxr*nxr+nyr*nyr)
         nx=nxr/S; ny=nyr/S
@@ -1192,12 +1215,13 @@ end
                             @Const(exx), @Const(exy), @Const(eyy),
                             @Const(gux), @Const(guy), @Const(gvx), @Const(gvy), @Const(gTx), @Const(gTy),
                             @Const(cxa), @Const(cya), @Const(cza), @Const(wa),
-                            drot::Float32, nu_lam::Float32, sst_on::Int32, wallflux::Int32, recon::Int32, fullvisc::Int32,
-                            suth::Float32, rho_inf::Float32, air_sutherland::Int32,
+                            drot, nu_lam, sst_on::Int32, wallflux::Int32, recon::Int32, fullvisc::Int32,
+                            suth, rho_inf, air_sutherland::Int32,
                             rhok::Int32, earsm::Int32, @Const(pexc), @Const(am), cav::Int32,
-                            wallfun::Float32, wf_larsson::Float32, eint::Float32, minf2::Float32, pc::Int32,
-                            @Const(pmix), direct_p::Int32, wallmode::Int32, face_states,
+                            wallfun, wf_larsson, eint, minf2, pc::Int32,
+                            @Const(pmix), direct_p::Int32, wallmode::Int32, face_states,air_geometry,
                             half, rate, NI::Int32, NJ::Int32, NIW::Int32, NIF::Int32, g::Int32, ctx)
+    CS2=_gas_cs2(eltype(rho))
     i, j = @index(Global, NTuple)                     # i in 1..NI, j in 1..NJ+1
     @inbounds if i <= NI && j <= NJ+1
         nxr = Sjx[i,j]; nyr = Sjy[i,j]; S = sqrt(nxr*nxr + nyr*nyr)
@@ -1207,7 +1231,7 @@ end
             # analytic impermeable-wall flux + no-slip shear (adiabatic)
             pw = rho[ia, g+1]*CS2*T[ia, g+1] + (cav >= Int32(1) ? pexc[ia, g+1] : 0.0f0)   # PDP: wall carries p_mix (plateau)
             direct_p==Int32(1) && (pw=pmix[ia,g+1])
-            Fr = 0.0f0; Fmx = pw*nxr; Fmy = pw*nyr; Fe = 0.0f0
+            Fr = zero(nx); Fmx = pw*nxr; Fmy = pw*nyr; Fe = zero(nx)
             if half!==nothing
                 # No kinetic transport through the impermeable wall. The clock keeps the
                 # same-state kinetic rate of the wall cell (acoustic reflection allowance).
@@ -1274,8 +1298,19 @@ end
             end
             Fj_r[i,j]=Fr; Fj_mx[i,j]=Fmx; Fj_my[i,j]=Fmy; Fj_e[i,j]=Fe
         else
-            local Fr::Float32, Fmx::Float32, Fmy::Float32, Fe::Float32
-            if face_states!==nothing && 2<=j<=NJ
+            local Fr, Fmx, Fmy, Fe
+            if air_geometry!==nothing
+                if j==1
+                    air_partner=NI+Int32(1)-i
+                    air_left=(i<=NIW||i>NIW+NIF) ? _airfoil_trace4(face_states,air_partner,1,3) :
+                        _airfoil_air_z(rho,ux,uy,T,ia,ja-1)
+                    air_right=_airfoil_trace4(face_states,i,1,3)
+                else
+                    air_left=_airfoil_trace4(face_states,i,j-1,4)
+                    air_right=j==NJ+1 ? _airfoil_air_z(rho,ux,uy,T,ia,ja) : _airfoil_trace4(face_states,i,j,3)
+                end
+                Fr,Fmx,Fmy,Fe=_airfoil_thermal_face_flux(air_left,air_right,nx,ny,S,cxa,cya,cza,wa,drot)
+            elseif face_states!==nothing && 2<=j<=NJ
                 l=ntuple(k->face_states[i,j-1,k,4],Val(7))
                 r=ntuple(k->face_states[i,j,k,3],Val(7))
                 if half!==nothing
@@ -1341,8 +1376,11 @@ end
             if nu_lam > 0.0f0 && ((j >= 2 && j <= NJ) || (j == 1 && (i <= NIW || i > NIW+NIF)) || top_iface)
                 # j=1 wake columns = the WAKE-CUT faces: previously zero viscous flux — the wake sheet
                 # could kink at the cut = a TE acoustic dipole radiating upstream ripples (user report)
-                local dxc::Float32, dyc::Float32, dn::Float32
-                if j == 1
+                local dxc, dyc, dn
+                if air_geometry!==nothing
+                    dxc=-air_geometry[i,j,1,3];dyc=-air_geometry[i,j,2,3]
+                    dn=sqrt(dxc*dxc+dyc*dyc)+1f-30
+                elseif j == 1
                     # The two representations of a wake-cut face need the same
                     # viscous conductance even if their first-row volumes differ.
                     # This also applies to the ideal-gas (direct_p=0) path.
@@ -1436,6 +1474,7 @@ end
                                      @Const(Sjx), @Const(Sjy), @Const(outer_face_kind),
                                      cav::Int32, @Const(pmix), direct_p::Int32, half,
                                      NI::Int32, NJ::Int32, g::Int32)
+    CS2=_gas_cs2(eltype(rho))
     i = @index(Global, Linear)
     @inbounds if i <= NI && outer_face_kind[i] >= 0x02
         ia = i + g; ja = NJ + g
@@ -1493,10 +1532,10 @@ end
 
 @kernel function _k_dtfield!(dtf, @Const(rho), @Const(ux), @Const(uy), @Const(T), @Const(nut),
                              @Const(Six), @Const(Siy), @Const(Sjx), @Const(Sjy), @Const(vol),
-                             cfl::Float32, nu_lam::Float32, rho_inf::Float32,
-                             suth::Float32, air_sutherland::Int32,
+                             cfl, nu_lam, rho_inf,
+                             suth, air_sutherland::Int32,
                              sst_on::Int32, irsj::Int32,
-                             @Const(am), cav::Int32, cav_cfl::Float32, am_ref::Float32,
+                             @Const(am), cav::Int32, cav_cfl, am_ref,
                              NI::Int32, NJ::Int32, g::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
@@ -1541,7 +1580,7 @@ end
         lam_j = (abs(u*Sjx[i,j]+v*Sjy[i,j]) + abs(u*Sjx[i,j+1]+v*Sjy[i,j+1]))*0.5f0 + c*0.5f0*(SjN+SjS)
         nueff = _air_nu_local(rho[ia,ja],T[ia,ja],nu_lam,rho_inf,suth,air_sutherland) +
                 (sst_on == Int32(1) ? nut[ia,ja] : 0.0f0)
-        local dt::Float32
+        local dt
         if irsj == Int32(1)
             dt = cfl*vol[i,j]/max(lam_i, 1.0f-30)   # streamwise restriction only (j implicit)
             if nueff > 0.0f0
@@ -1572,8 +1611,8 @@ end
 # i-column, sequential j sweeps; aN per row in irs_d, Thomas b-prime in irs_c, d-prime in dc.
 @kernel function _k_irsj!(dc, bp, an, @Const(ux), @Const(uy), @Const(T), @Const(nut),
                           @Const(Sjx), @Const(Sjy), @Const(vol), @Const(dtf),
-                          nu_lam::Float32, sst_on::Int32, @Const(am), irs_ac::Int32,
-                          am_ref::Float32, irs_eps0::Float32, NI::Int32, NJ::Int32, g::Int32)
+                          nu_lam, sst_on::Int32, @Const(am), irs_ac::Int32,
+                          am_ref, irs_eps0, NI::Int32, NJ::Int32, g::Int32)
     i = @index(Global, Linear)
     @inbounds if i <= NI
         ia = i + g
@@ -1631,8 +1670,8 @@ end
 # when irs_ac==1). Same variable-coefficient IRS (ε=0.25 max(0, ν²-1)) as the J version, streamwise.
 @kernel function _k_irsi!(dc, bp, an, @Const(ux), @Const(uy), @Const(T), @Const(nut),
                           @Const(Six), @Const(Siy), @Const(vol), @Const(dtf),
-                          nu_lam::Float32, sst_on::Int32, @Const(am), irs_ac::Int32,
-                          am_ref::Float32, irs_eps0::Float32, NI::Int32, NJ::Int32, g::Int32)
+                          nu_lam, sst_on::Int32, @Const(am), irs_ac::Int32,
+                          am_ref, irs_eps0, NI::Int32, NJ::Int32, g::Int32)
     j = @index(Global, Linear)
     @inbounds if j <= NJ
         ja = j + g
@@ -1690,7 +1729,7 @@ end
 # hold momentum invariant (u,v *= rho_pre/rho_new). i-sweep then j-sweep (ADI). CS2 = 2/3 = TEM_CS2 (verified).
 @kernel function _k_acou_i!(rho, ux, uy, @Const(rk_r), @Const(am), @Const(T),
                             @Const(Six), @Const(Siy), @Const(vol), @Const(dtf),
-                            delta, aE, bp, kfac::Float32, NI::Int32, NJ::Int32, g::Int32)
+                            delta, aE, bp, kfac, NI::Int32, NJ::Int32, g::Int32)
     j = @index(Global, Linear)
     @inbounds if j <= NJ
         ja = j + g
@@ -1737,7 +1776,7 @@ end
 
 @kernel function _k_acou_j!(rho, ux, uy, @Const(rk_r), @Const(am), @Const(T),
                             @Const(Sjx), @Const(Sjy), @Const(vol), @Const(dtf),
-                            delta, aN, bp, kfac::Float32, NI::Int32, NJ::Int32, g::Int32)
+                            delta, aN, bp, kfac, NI::Int32, NJ::Int32, g::Int32)
     i = @index(Global, Linear)
     @inbounds if i <= NI
         ia = i + g
@@ -1809,7 +1848,7 @@ duplicated EOS and its two realised-state banners.
 
 `emix <= 0` returns `(eint, 0)` so every caller collapses to the legacy single-cv expression BITWISE.
 """
-@inline function _emix_state(yvf, ia::Int, ja::Int, emix::Float32, eint::Float32, eint_v::Float32)
+@inline function _emix_state(yvf, ia::Int, ja::Int, emix, eint, eint_v)
     emix <= 0.0f0 && return (eint, 0.0f0)
     y = yvf[ia, ja]
     y = y < 0.0f0 ? 0.0f0 : (y > 1.0f0 ? 1.0f0 : y)
@@ -1817,8 +1856,8 @@ duplicated EOS and its two realised-state banners.
 end
 
 @kernel function _k_snapshot!(rk_r, rk_mx, rk_my, rk_E, @Const(rho), @Const(ux), @Const(uy), @Const(T),
-                              eint::Float32, @Const(yvf), emix::Float32, eint_v::Float32,
-                              latent::Float32, NI::Int32, NJ::Int32, g::Int32)
+                              eint, @Const(yvf), emix, eint_v,
+                              latent, NI::Int32, NJ::Int32, g::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
         ia=i+g; ja=j+g
@@ -1835,14 +1874,14 @@ end
                             @Const(um_r), @Const(um_mx), @Const(um_my), @Const(um_E),
                             @Const(tau_r), @Const(tau_mx), @Const(tau_my), @Const(tau_e),
                             @Const(dtf), @Const(vol), @Const(xc), @Const(yc),
-                            eint::Float32, @Const(yvf), emix::Float32, eint_v::Float32,
-                            latent::Float32, wst::Float32, bst::Float32, dtp::Float32,
+                            eint, @Const(yvf), emix, eint_v,
+                            latent, wst, bst, dtp,
                             use_tau::Int32, rk_incremental::Int32,
-                            spg::Float32, j0f::Float32, gam::Float32, xv::Float32, yv::Float32,
-                            m2::Float32, bet::Float32, ca::Float32, sa::Float32,
-                            uxi::Float32, uyi::Float32, rho_inf::Float32, T_inf::Float32,
-                            preserve_ref::Int32, ref_rho::Float32, ref_ux::Float32,
-                            ref_uy::Float32, ref_T::Float32,
+                            spg, j0f, gam, xv, yv,
+                            m2, bet, ca, sa,
+                            uxi, uyi, rho_inf, T_inf,
+                            preserve_ref::Int32, ref_rho, ref_ux,
+                            ref_uy, ref_T,
                             checked_mixture::Int32,
                             NI::Int32, NJ::Int32, g::Int32)
     i, j = @index(Global, NTuple)
@@ -1937,14 +1976,14 @@ end
 # never converges 100x): out = dtl·[dc_r/vol + (3ρ - 4ρ^n + ρ^(n-1))/(2 dtp)] = the per-pseudo-step
 # density update magnitude. Driver takes maximum(abs, out).
 @kernel function _k_rstar!(out, @Const(rho), @Const(dc_r), @Const(un_r), @Const(um_r), @Const(vol),
-                           @Const(dtf), dtp::Float32, NI::Int32, NJ::Int32, g::Int32)
+                           @Const(dtf), dtp, NI::Int32, NJ::Int32, g::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
         out[i,j] = dtf[i,j]*(dc_r[i,j]/vol[i,j] + (3.0f0*rho[i+g,j+g] - 4.0f0*un_r[i,j] + um_r[i,j])/(2.0f0*dtp))
     end
 end
 
-function rstar_linf_ka(s::KSol, dtp::Float32)
+function rstar_linf_ka(s::KSol, dtp)
     NI, NJ, g = Int32(s.NI), Int32(s.NJ), Int32(s.g)
     _k_rstar!(s.backend)(s.gTx, s.rho, s.dc_r, s.un_r, s.um_r, s.vol, s.dtf, dtp, NI, NJ, g; ndrange=(s.NI, s.NJ))
     maximum(abs, s.gTx)      # gTx is free scratch when fullvisc == 0 (asserted by callers)
@@ -1955,7 +1994,7 @@ end
 # residual is owned by a SINGLE near-wall cell. If the inner loop is well-converged in L2 and only one
 # cell plateaus, the forward path (look for shedding elsewhere) is completely different from a genuine
 # field-wide non-convergence (build a preconditioner first). Returns (linf, l2, frac_at_max, imax, jmax).
-function rstar_report_ka(s::KSol, dtp::Float32)
+function rstar_report_ka(s::KSol, dtp)
     NI, NJ, g = Int32(s.NI), Int32(s.NJ), Int32(s.g)
     _k_rstar!(s.backend)(s.gTx, s.rho, s.dc_r, s.un_r, s.um_r, s.vol, s.dtf, dtp, NI, NJ, g; ndrange=(s.NI, s.NJ))
     KA.synchronize(s.backend)
@@ -1967,8 +2006,8 @@ end
 
 @kernel function _k_histcycle!(un_r, un_mx, un_my, un_E, um_r, um_mx, um_my, um_E,
                                @Const(rho), @Const(ux), @Const(uy), @Const(T),
-                               eint::Float32, @Const(yvf), emix::Float32, eint_v::Float32,
-                               latent::Float32, NI::Int32, NJ::Int32, g::Int32)
+                               eint, @Const(yvf), emix, eint_v,
+                               latent, NI::Int32, NJ::Int32, g::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
         ia=i+g; ja=j+g
@@ -1988,7 +2027,7 @@ function hist_cycle_ka!(s::KSol)
 end
 
 @kernel function _k_sfd!(rho, ux, uy, T, sb_r, sb_u, sb_v, sb_T,
-                         chi::Float32, alpha::Float32, NI::Int32, NJ::Int32, g::Int32)
+                         chi, alpha, NI::Int32, NJ::Int32, g::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
         ia=i+g; ja=j+g
@@ -2072,7 +2111,7 @@ end
 # (rebuild, 22 Sep 2026) the projection kernel's EOS, factored VERBATIM so the fused boundary kernel below can
 # recompute a cell's pressure/sound in another thread with bit-identical results.
 @inline function _mixture_eos_from_U(r::Float64,q::Float64,ep::NTuple{7,Float32},single::Int32)
-    local pressure::Float32; local sound::Float32
+    local pressure; local sound
     if single==Int32(1)
         pv32,A32,rl32,rv32,psm32,lq32,afloor32=ep
         y32=Float32(q)/Float32(r);a32=y32*rl32/(rv32*(1.0f0-y32)+y32*rl32)
@@ -2093,7 +2132,7 @@ end
     end
     (pressure,sound)
 end
-@inline function _mixture_eos_from_alpha(a::Float32,r::Float32,ep::NTuple{7,Float32})
+@inline function _mixture_eos_from_alpha(a,r,ep::NTuple{7,Float32})
     pv,A,rl,rv,psm,lq,afloor=ep
     raw,dr,_=CMeshEOSMix._pmix_vl(pv,a,r,rl*(1.0f0-a)+rv*a,A,rl,rv,lq)
     sq=sqrt(raw*raw+psm*psm)
@@ -2101,7 +2140,7 @@ end
 end
 
 @kernel function _k_mixture_pressure!(p,am,T,pexc,@Const(rho),@Const(alpha),ep::NTuple{7,Float32},
-                                      conserved,single::Int32,@Const(kinds),Tmin::Float32,Tmax::Float32,
+                                      conserved,single::Int32,@Const(kinds),Tmin,Tmax,
                                       NI::Int32,NJ::Int32,NIW::Int32,NIF::Int32,g::Int32,
                                       NX::Int32,NY::Int32)
     i,j=@index(Global,NTuple)
@@ -2112,7 +2151,7 @@ end
             # Promoting ep cannot recover material-reference bits already lost
             # at setup. It preserves the admitted state through EOS evaluation.
             r=conserved[ii,jj,1];q=conserved[ii,jj,4]
-            local pressure::Float32; local sound::Float32
+            local pressure; local sound
             if single==Int32(1)
                 # Single-precision EOS arithmetic (2026-09-12): the liquid density
                 # excess over saturation is formed in Float64, the rest in Float32.
@@ -2162,8 +2201,8 @@ end
 # No thread reads p, am, T or pexc written by another thread of the launch; rho/ux/uy/alpha are read only where
 # an earlier launch wrote them. The result matches the three-launch sequence bit for bit (parity test).
 @kernel function _k_species_pressure_ghosts!(p,am,T,pexc,rho,ux,uy,alpha,status,conserved,single::Int32,
-        @Const(kinds),@Const(Six),@Const(Siy),@Const(Sjx),@Const(Sjy),ep::NTuple{7,Float32},Tmin::Float32,Tmax::Float32,
-        ri::Float32,ui::Float32,vi::Float32,pinf::Float32,ci::Float32,pb::Float32,
+        @Const(kinds),@Const(Six),@Const(Siy),@Const(Sjx),@Const(Sjy),ep::NTuple{7,Float32},Tmin,Tmax,
+        ri,ui,vi,pinf,ci,pb,
         inlet_on::Int32,outlet_on::Int32,sst_on::Int32,NI::Int32,NJ::Int32,NIW::Int32,NIF::Int32,g::Int32,NX::Int32,NY::Int32,ctx)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NX && j<=NY
@@ -2214,7 +2253,7 @@ end
                 # the source cell (is,j) as the three-launch sequence leaves it, recomputed
                 rd=rho[is,j];ud=ux[is,j];vd=uy[is,j];ad=alpha[is,j];td=T[is,j]
                 di,dj,dsrc=_donor3(is,j,kinds,NI,NJ,NIW,NIF,g,ctx)
-                local pd::Float32; local cd::Float32
+                local pd; local cd
                 if ctx!==nothing && dsrc!=Int32(0)
                     # a corner beside an interface row: the source is the neighbour block's cell, taken whole from the pair's
                     # buffer U_nb (one exchange late) as the state check derives it from U (_k_species_check!; the commit's
@@ -2326,8 +2365,8 @@ function _mixture_pressure_bc!(s,p;conservative_sst::Bool=false,conserved=nothin
 end
 
 function _raw_residual_ka!(s::KSol, wallmode::Int32, wallflux::Int32;
-                           cavslip::Float32=0.0f0, cavslip_p::Float32=1.0f0,
-                           cavslip_rls::Float32=1.0f0, cavslip_rvs::Float32=0.0f0,
+                           cavslip=0.0f0, cavslip_p=1.0f0,
+                           cavslip_rls=1.0f0, cavslip_rvs=0.0f0,
                            cav_first_order::Bool=false, mixture_pressure=nothing,
                            conservative_sst::Bool=false,conserved=nothing,kinetic=nothing,eos_single::Bool=false,
                            inlet_present=nothing,bc_pressure_slot=nothing,outlet_status_slot=nothing,
@@ -2414,10 +2453,20 @@ function _raw_residual_body_ka!(s::KSol,wallmode::Int32,wallflux::Int32,
     # the pressure-outlet sides (the strip's outlet is its i = NI+1 side only). Defaults: nothing and both sides, today's.
     (s.outer_mode==Int32(2) && strip_ctx===nothing) && throw(ArgumentError(
         "the strip carrier (outer_mode 2, CMeshSpeciesStripTopologyV1) evaluates its residual only with its pair's context (strip_ctx)"))
+    air_geometry=nothing
+    if s.recon==_AIRFOIL_MUSCL_RECON
+        s.cav==0&&s.outer_mode==0&&s.outlet_mode==0&&s.ff_mix==0&&s.emix==0&&
+            strip_ctx===nothing&&face_states===nothing&&kinetic===nothing&&mixture_pressure===nothing ||
+            throw(ArgumentError("Geometric thermal MUSCL is separate from Species/mixture/strip reconstruction"))
+        w=get(_AIRFOIL_MUSCL,s,nothing)
+        w===nothing&&throw(ArgumentError("MUSCL requires its original-node workspace; configure it explicitly after restart"))
+        face_states=_airfoil_muscl_prepare!(s,w)
+        air_geometry=w.geometry.displacements
+    end
     if face_states!==nothing
-        cav_first_order && s.cav==Int32(4) && mixture_pressure!==nothing ||
+        (air_geometry!==nothing || (cav_first_order && s.cav==Int32(4) && mixture_pressure!==nothing)) ||
             throw(ArgumentError("prepared face states require admitted direct-pressure cav4 states"))
-        eltype(face_states)==Float32 && size(face_states)==(s.NI,s.NJ,7,4) &&
+        eltype(face_states)==(air_geometry===nothing ? Float32 : eltype(s.rho)) && size(face_states)==(s.NI,s.NJ,7,4) &&
             KA.get_backend(face_states)==s.backend ||
             throw(ArgumentError("prepared face-state shape, type or backend mismatch"))
     end
@@ -2438,7 +2487,7 @@ function _raw_residual_body_ka!(s::KSol,wallmode::Int32,wallflux::Int32,
     sston = s.sst ? Int32(1) : Int32(0)
     direct_p=mixture_pressure!==nothing
     pmix=direct_p ? mixture_pressure : s.pexc
-    if s.nu_lam > 0.0f0 && s.fullvisc == Int32(1)
+    if s.nu_lam > 0.0f0 && s.fullvisc == Int32(1) && air_geometry===nothing
         _k_gradients!(b)(s.gux, s.guy, s.gvx, s.gvy, s.gTx, s.gTy, s.ux, s.uy, s.T,
                          s.Six, s.Siy, s.Sjx, s.Sjy, s.vol, NI, NJ, g, strip_ctx; ndrange=(s.NI, s.NJ))
     end
@@ -2453,7 +2502,7 @@ function _raw_residual_body_ka!(s::KSol,wallmode::Int32,wallflux::Int32,
                   s.drot, s.nu_lam, sston, s.recon >= Int32(1) ? Int32(1) : Int32(0), s.fullvisc,
                   s.suth, s.rho_inf, s.air_sutherland,
                   s.rhok, s.earsm, s.pexc, s.am, s.cav, s.eint, minf2, Int32(cav_first_order),
-                  pmix,Int32(direct_p),face_states,half_i,rate_i,
+                  pmix,Int32(direct_p),face_states,air_geometry,half_i,rate_i,
                   NI, NJ, g, strip_ctx; ndrange=(s.NI+1, s.NJ))
     _k_flux_j!(b)(s.Fj_r, s.Fj_mx, s.Fj_my, s.Fj_e, s.rho, s.ux, s.uy, s.T,
                   s.Sjx, s.Sjy, s.xc, s.yc, s.nut, s.vol, s.tk,
@@ -2464,8 +2513,12 @@ function _raw_residual_body_ka!(s::KSol,wallmode::Int32,wallflux::Int32,
                   s.suth, s.rho_inf, s.air_sutherland,
                   s.rhok, s.earsm, s.pexc, s.am, s.cav,
                   s.wallfun, s.wf_larsson, s.eint, minf2, Int32(cav_first_order),
-                  pmix,Int32(direct_p),wallmode,face_states,half_j,rate_j,
+                  pmix,Int32(direct_p),wallmode,face_states,air_geometry,half_j,rate_j,
                   NI, NJ, Int32(s.NIW), Int32(s.NIF), g, strip_ctx; ndrange=(s.NI, s.NJ+1))
+    if air_geometry!==nothing&&s.NIW>0
+        _k_airfoil_shared_wake_flux!(b)(s.Fj_r,s.Fj_mx,s.Fj_my,s.Fj_e,
+            NI,Int32(s.NIW);ndrange=s.NIW)
+    end
     outer_flux_override_ka!(s;mixture_pressure,half=half_j)
     direct_p && CMeshPressureOutlet.mixture_inlet_flux!(s,mixture_pressure;half=half_j,inlet_present,pressure_slot)
     pressure_outlet_flux!(s;mixture_pressure,half=half_i,sides=outlet_sides)
@@ -2605,7 +2658,7 @@ the exact Float32 value applied to every cell. It must be accumulated by a calle
 since velocity, temperature and eddy viscosity can change this limit each step.
 Local stepping records zero, because it has no single physical elapsed time.
 """
-function prepare_dt_ka!(s::KSol, cfl::Float32; max_dt::Float32=Inf32, slot=nothing)
+function prepare_dt_ka!(s::KSol, cfl; max_dt=Inf32, slot=nothing)
     s.air_sutherland != Int32(0) && _check_air_sutherland_admission(s)
     max_dt > 0 || throw(ArgumentError("max_dt must be positive (or +Inf)"))
     (GLOBAL_DT[] == 1 || max_dt == Inf32) ||
@@ -2644,7 +2697,7 @@ function prepare_dt_ka!(s::KSol, cfl::Float32; max_dt::Float32=Inf32, slot=nothi
     nothing
 end
 
-function _check_rk_incremental(global_dt::Integer, dtp::Float32, tau,
+function _check_rk_incremental(global_dt::Integer, dtp, tau,
                                irsj::Int32, irs_ac::Int32, sfd::Int32, acou::Int32)
     global_dt == 1 || throw(ArgumentError("rk_incremental requires the global physical timestep"))
     dtp == 0.0f0 || throw(ArgumentError("rk_incremental does not support dual-time stepping"))
@@ -2658,11 +2711,11 @@ end
 # rk_incremental is an opt-in arithmetic change for the explicit global march.
 # It retains the SSPRK formula while reducing cancellation around the saved state;
 # it does not change the temporal order of TEM/SST or remove primitive-recovery rounding.
-function step_ka!(s::KSol, cfl::Float32; wallmode::Int32=Int32(2), dtp::Float32=0.0f0,
+function step_ka!(s::KSol, cfl; wallmode::Int32=Int32(2), dtp=0.0f0,
                   tau=nothing,     # optional 4-tuple of (NI,NJ) FAS defect-correction sources
-                  cavslip::Float32=0.0f0, cavslip_p::Float32=1.0f0,
-                  cavslip_rls::Float32=1.0f0, cavslip_rvs::Float32=0.0f0,
-                  max_dt::Float32=Inf32, rk_incremental::Bool=false,
+                  cavslip=0.0f0, cavslip_p=1.0f0,
+                  cavslip_rls=1.0f0, cavslip_rvs=0.0f0,
+                  max_dt=Inf32, rk_incremental::Bool=false,
                   rk_weight_closure::Bool=false,
                   probe_after_rk=nothing, probe_after_sfd=nothing)
     if s.air_sutherland != Int32(0)
@@ -2743,7 +2796,7 @@ function step_ka!(s::KSol, cfl::Float32; wallmode::Int32=Int32(2), dtp::Float32=
 end
 
 # ---- SST kernels -------------------------------------------------------------------------------
-@kernel function _k_sst_bc!(tk, tom, nut, tnl, k_inf::Float32, w_inf::Float32, keps::Float32,
+@kernel function _k_sst_bc!(tk, tom, nut, tnl, k_inf, w_inf, keps,
                             NI::Int32, NJ::Int32, NIW::Int32, NIF::Int32, g::Int32)
     i, k = @index(Global, NTuple)
     @inbounds if i <= NI && k <= g
@@ -2799,18 +2852,20 @@ const KE_BETA  = 0.012f0
 
 include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
 
+@inline _sst_wall_constraint_cell(i,j,NIW,NIF) = j <= 2 && NIW < i <= NIW+NIF
+
 @kernel function _k_sst_sweep!(knew, wnew, nutl, tnlnew, @Const(tk), @Const(tom), @Const(nut), @Const(tnl),
                                @Const(rho), @Const(T), @Const(ux), @Const(uy), @Const(xc), @Const(yc),
                                @Const(Six), @Const(Siy), @Const(Sjx), @Const(Sjy), @Const(vol),
                                @Const(wdist), @Const(gammat), @Const(dtf), @Const(amarr), @Const(btke_src),
                                pvortl,
-                               nu_inf::Float32, rho_inf::Float32, suth::Float32,
+                               nu_inf, rho_inf, suth,
                                air_sutherland::Int32,
-                               k_inf::Float32, w_inf::Float32, lag::Int32, lag_a0::Float32,
-                               wilcox_xi::Float32, wilcox_mt0::Float32, keps::Float32,
+                               k_inf, w_inf, lag::Int32, lag_a0,
+                               wilcox_xi, wilcox_mt0, keps,
                                irsj::Int32, NI::Int32, NJ::Int32, NIW::Int32, NIF::Int32, g::Int32,
                                corrected_wall_metric::Int32, nonorth::Int32,
-                               @Const(Fik), @Const(Fiw), @Const(Fjk), @Const(Fjw))
+                               @Const(Fik), @Const(Fiw), @Const(Fjk), @Const(Fjw), raw_equations::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
         βs=0.09f0; a1=0.31f0
@@ -2865,7 +2920,7 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
         # exactly where the re-entrant jet forms. That is the same qualitative effect the Reboud
         # correction applies by hand, but derived rather than tuned, and keyed on STRAIN rather than
         # on void fraction.
-        local nut_t::Float32, pkcap::Float32
+        local nut_t, pkcap
         if keps > 0.0f0
             e0    = w0                                    # `tom` holds epsilon in this branch
             nut_t = KE_CMU*k0*k0/max(e0, 1.0f-12)
@@ -2977,7 +3032,7 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
         kn = keps > 0.0f0 ?
              (k0 + dtl*(Pk - advk + Dk)) / (1.0f0 + dtl*w0/max(k0, 1.0f-12)) :
              (k0 + dtl*(Pk - advk + Dk)) / (1.0f0 + dtl*βs_eff*w0)
-        local wn::Float32
+        local wn
         if keps > 0.0f0
             # epsilon equation:  D(eps)/Dt = C1 (eps/k) Pk - C2* eps^2/k + diffusion
             # RNG strain correction, Yakhot-Orszag 1992 / Yakhot et al. 1992:
@@ -2998,7 +3053,21 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
         kn = clamp(kn, 1.0f-12, 1.0f0)
         wn = max(wn, 1.0f-6)
         if !(isfinite(kn) && isfinite(wn)); kn = k_inf; wn = w_inf; end
-        knew[ia,ja] = kn; wnew[ia,ja] = wn
+        if raw_equations == Int32(1)
+            # Original primitive transport equations, before the point-implicit
+            # update and positivity clipping. This diagnostic must not infer a
+            # residual by subtracting rounded or clipped updated states.
+            knew[ia,ja] = keps > 0.0f0 ?
+                w0 + advk - Dk - Pk : βs_eff*k0*w0 + advk - Dk - Pk
+            if keps > 0.0f0
+                wnew[ia,ja] = C2s*w0*w0/kk + advw - Dw - KE_C1*w0/kk*Pk
+            else
+                wnew[ia,ja] = βc*w0*w0 + advw - Dw -
+                    γc/max(nut_t,1.0f-10)*Pk - 2.0f0*(1.0f0-F1)*σw2/w0*gkw
+            end
+        else
+            knew[ia,ja] = kn; wnew[ia,ja] = wn
+        end
         # Menter SST eddy-viscosity DEFINITION nut = a1·k/max(a1·ω, S·F2) — the limiter must gate
         # the EXPORTED nut, not just production (mirrors the plain solver line-for-line)
         nueq = a1*kn/max(a1*wn, Ssr*F2)
@@ -3012,6 +3081,17 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
             wnc = max(wn, 1.0f-6)
             tn = (t0v + dtl*(lag_a0*wnc*nueq - advt)) / (1.0f0 + dtl*lag_a0*wnc)
             tnlnew[ia,ja] = clamp(tn, 0.0f0, 0.15f0)
+        end
+        if raw_equations == Int32(1)
+            # Commit prescribes omega in these exact two interior wall rows.
+            # There the discrete equation is the wall constraint, not the
+            # transport PDE that the ordinary sweep subsequently discards.
+            tnlnew[ia,ja] = wnew[ia,ja] # retain the unmasked PDE as a diagnostic
+            wall_constraint = keps <= 0.0f0 && _sst_wall_constraint_cell(i,j,NIW,NIF)
+            wall_omega = 6.0f0*nu/(β1*d*d)
+            nutl[ia,ja] = wall_constraint ?
+                (tom[ia,ja]-wall_omega)/max(abs(wall_omega),1.0f-6) : 0.0f0
+            wall_constraint && (wnew[ia,ja] = 0.0f0)
         end
     end
 end
@@ -3041,7 +3121,7 @@ end
 # sigma-scan the URANS closure just failed. Do NOT tune C_Delta to produce shedding -- that would replace
 # a coarse-mesh artifact with a model-tuning artifact.
 # fbm_cdelta <= 0 disables it entirely => bitwise-identical to the pre-FBM solver.
-@inline function _fbm_factor(kn::Float32, wn::Float32, vol_ij::Float32, cdelta::Float32)
+@inline function _fbm_factor(kn, wn, vol_ij, cdelta)
     cdelta <= 0.0f0 && return 1.0f0
     Lt = sqrt(max(kn, 0.0f0))/max(0.09f0*wn, 1.0f-12)      # k^(1/2)/(beta* omega)
     Lt <= 1.0f-12 && return 1.0f0                           # no turbulence length scale => RANS
@@ -3095,7 +3175,7 @@ end
 # Sweeping f_k until shedding appears would swap a coarse-mesh artifact for a model-tuning artifact and
 # the result would be worthless.
 # pans_fk <= 0 disables it entirely => bitwise-identical to the pre-PANS solver.
-@inline function _pans_factor(fk::Float32)
+@inline function _pans_factor(fk)
     fk <= 0.0f0 && return 1.0f0                             # OFF => RANS, bitwise legacy
     f = fk >= 1.0f0 ? 1.0f0 : fk                            # f_k = 1 IS RANS by definition
     return f*f                                              # nu_t <- nu_t * f_k^2/f_eps, f_eps = 1
@@ -3103,10 +3183,10 @@ end
 
 @kernel function _k_sst_commit!(tk, tom, nut, tnl, @Const(knew), @Const(wnew), @Const(nutl), @Const(tnlnew),
                                 @Const(wdist), @Const(rho), @Const(T), @Const(vol),
-                                nu_inf::Float32, rho_inf::Float32, suth::Float32,
+                                nu_inf, rho_inf, suth,
                                 air_sutherland::Int32,
-                                lag::Int32, keps::Float32, reboud_n::Float32, reboud_rhov::Float32,
-                                fbm_cdelta::Float32, pans_fk::Float32,
+                                lag::Int32, keps, reboud_n, reboud_rhov,
+                                fbm_cdelta, pans_fk,
                                 NI::Int32, NJ::Int32, NIW::Int32, NIF::Int32, g::Int32)
     i, j = @index(Global, NTuple)
     @inbounds if i <= NI && j <= NJ
@@ -3114,7 +3194,7 @@ end
         ia=i+g; ja=j+g
         nu = _air_nu_local(rho[ia,ja],T[ia,ja],nu_inf,rho_inf,suth,air_sutherland)
         kn = knew[ia,ja]; wn = wnew[ia,ja]
-        wallrow = j <= 2 && NIW < i <= NIW+NIF
+        wallrow = _sst_wall_constraint_cell(i,j,NIW,NIF)
         if keps > 0.0f0
             # ★ S3j: nu_t = Cmu k^2/eps. `wn` holds epsilon here, so the SST wall-row analytic omega
             # and the a1 limiter (both omega-specific) do not apply and are bypassed. The near-wall
@@ -3164,7 +3244,7 @@ end
 @kernel function _k_earsm!(nut, exx, exy, eyy, @Const(tk), @Const(tom), @Const(rho),
                            @Const(ux), @Const(uy), @Const(xc), @Const(yc),
                            @Const(Sjx), @Const(Sjy), @Const(wdist),
-                           nu::Float32, NI::Int32, NJ::Int32,
+                           nu, NI::Int32, NJ::Int32,
                            NIW::Int32, NIF::Int32, g::Int32,
                            corrected_wall_metric::Int32)
     i, j = @index(Global, NTuple)
@@ -3190,10 +3270,10 @@ end
     end
 end
 
-function sst_step_ka!(s::KSol; reboud_n::Float32=0.0f0, reboud_rhov::Float32=0.33f0,
-                      wilcox_xi::Float32=0.0f0, wilcox_mt0::Float32=0.25f0,
+function sst_step_ka!(s::KSol; reboud_n=0.0f0, reboud_rhov=0.33f0,
+                      wilcox_xi=0.0f0, wilcox_mt0=0.25f0,
                       corrected_wall_metric::Bool=false,
-                      nonorth_diffusion::Bool=false)
+                      nonorth_diffusion::Bool=false, raw_equations::Bool=false)
     s.air_sutherland != Int32(0) && _check_air_sutherland_admission(s)
     s.sst || return
     nonorth_diffusion && !corrected_wall_metric &&
@@ -3230,8 +3310,10 @@ function sst_step_ka!(s::KSol; reboud_n::Float32=0.0f0, reboud_rhov::Float32=0.3
                      s.k_inf, s.w_inf, s.lag, s.lag_a0, wilcox_xi, wilcox_mt0, s.keps,
                      s.irsj, NI, NJ, Int32(s.NIW), Int32(s.NIF), g,
                      Int32(corrected_wall_metric),Int32(nonorth_diffusion),
-                     s.sst_Fik,s.sst_Fiw,s.sst_Fjk,s.sst_Fjw;
+                     s.sst_Fik,s.sst_Fiw,s.sst_Fjk,s.sst_Fjw,Int32(raw_equations);
                      ndrange=(s.NI, s.NJ))
+    raw_equations && return (k=s.rk_r,omega=s.rk_mx,
+        omega_wall_constraint_relative=s.rk_my,omega_all_transport=s.rk_E)
     _k_sst_commit!(b)(s.tk, s.tom, s.nut, s.tnl, s.rk_r, s.rk_mx, s.rk_my, s.rk_E,
                       s.wdist, s.rho, s.T, s.vol,
                       s.nu_lam, s.rho_inf, s.suth, s.air_sutherland,
@@ -3247,6 +3329,7 @@ end
 
 # ---- host-side loads (small row pulls; sync happens inside Array copies) -----------------------
 function loads_ka(s::KSol;mixture_pressure=nothing,wallmode::Int32=Int32(2))
+    CS2=_gas_cs2(eltype(s.rho))
     if s.air_sutherland != Int32(0)
         _check_air_sutherland_admission(s)
         (mixture_pressure === nothing && wallmode == Int32(2)) ||
@@ -3354,6 +3437,7 @@ end
 
 # Experimental steady airfoil flow iteration. Kept separate from the explicit
 # physical-time and cavitation entry points.
+include(joinpath(@__DIR__, "cmesh_geometric_reconstruction_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_implicit_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_jfnk_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_krylov_ka.jl"))

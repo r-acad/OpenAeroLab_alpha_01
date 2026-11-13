@@ -170,13 +170,30 @@ function _selected_export(path, settings)
     false
 end
 
+"Wait for an optional postprocessor under the current job's exact process ownership."
+function _run_airfoil_postprocess(launch::Function,request,log_path)
+    AirfoilJobControl.check_cancelled()
+    process=Base.invokelatest(launch,request;log_path,wait=false,
+        prepare_command=AirfoilJobControl.process_command)
+    owned=AirfoilJobControl.track!(process)
+    try
+        Base.wait(process)
+        AirfoilJobControl.check_cancelled()
+        success(process)
+    finally
+        AirfoilJobControl.finish!(owned)
+    end
+end
+
 function _finalize_outputs!(id, case, payload, outdir)
     settings=get(case,"outputs",Dict{String,Any}());get(settings,"requested",false) || return
+    AirfoilJobControl.check_cancelled()
     _put_job(id,Dict("message"=>"Preparing selected output files and reports"))
     exportdir=joinpath(outdir,"exports");mkpath(exportdir);warnings=String[]
     for (directory,dirs,files) in walkdir(outdir)
         filter!(name->name!="exports" && !islink(joinpath(directory,name)),dirs)
         for name in files
+            AirfoilJobControl.check_cancelled()
             file=joinpath(directory,name);islink(file) && continue
             _selected_export(file,settings) || continue
             relative=relpath(file,outdir);target=joinpath(exportdir,relative);mkpath(dirname(target));cp(file,target;force=true)
@@ -193,9 +210,11 @@ function _finalize_outputs!(id, case, payload, outdir)
                 "render_3d"=>settings["renders_3d"],"chart_format"=>settings["chart_format"],"render_format"=>settings["render_format"],
                 "surface_quantity"=>settings["surface_quantity"],"camera"=>settings["camera"],"image_width"=>settings["image_width"],
                 "image_height"=>settings["image_height"],"airfoil_results"=>chartfile,"metadata"=>Dict("display_every"=>get(case,"display_every",nothing)))
-            process=Base.invokelatest(LudwigPostprocess.launch,request;log_path=joinpath(outdir,"postprocess.log"),wait=true)
-            success(process) || push!(warnings,"Makie postprocessing reported a failure; inspect postprocess.log")
+            _run_airfoil_postprocess(LudwigPostprocess.launch,request,joinpath(outdir,"postprocess.log")) ||
+                push!(warnings,"Makie postprocessing reported a failure; inspect postprocess.log")
         catch error
+            error isa AirfoilJobControl.JobCancelled && rethrow()
+            AirfoilJobControl.check_cancelled()
             push!(warnings,"Makie output: "*sprint(showerror,error))
         end
     end
@@ -213,18 +232,9 @@ function _finalize_outputs!(id, case, payload, outdir)
     for (key,extensions) in (("surface_vtk",(".vtk",".vtu",".vtp")),("surface_lbmp",(".lbmp",)),("volume_vtk",(".vtu",".vtk")),("numeric_slices",(".lbmslice",".msgpack",".f16")),("slice_png",(".png",)))
         settings[key] && !any(f->any(ext->endswith(lowercase(f["name"]),ext),extensions),files) && push!(warnings,"No $key artifact was produced by the selected solver path.")
     end
+    # The complete native job already lives in the selected, timestamped result
+    # folder. Keep exports alongside it instead of making a second partial copy.
     destination=exportdir
-    if !isempty(settings["folder"])
-        try
-            mkpath(settings["folder"]);destination=joinpath(realpath(settings["folder"]),"airfoil_"*id)
-            source_root=lowercase(abspath(exportdir))*(Sys.iswindows() ? "\\" : "/")
-            startswith(lowercase(abspath(destination)),source_root) && throw(ArgumentError("The selected folder cannot be inside this job's export directory"))
-            ispath(destination) && throw(ArgumentError("Refusing to replace an existing output job folder"))
-            cp(exportdir,destination;force=false)
-        catch error
-            destination=exportdir;push!(warnings,"Output folder copy: "*sprint(showerror,error)*". Files remain downloadable in the private job folder.")
-        end
-    end
     output_settings=merge(settings,Dict("display_every_requested"=>get(case,"display_every",nothing)))
     _put_job(id,Dict("exports"=>Dict("status"=>isempty(warnings) ? "completed" : "partial","folder"=>destination,"files"=>files,"warnings"=>warnings),"output_settings"=>output_settings))
 end
@@ -233,6 +243,8 @@ function _safe_finalize_outputs!(id,case,payload,outdir)
     try
         _finalize_outputs!(id,case,payload,outdir)
     catch error
+        error isa AirfoilJobControl.JobCancelled && rethrow()
+        AirfoilJobControl.check_cancelled()
         message=sprint(showerror,error)
         _put_job(id,Dict("exports"=>Dict("status"=>"failed","folder"=>outdir,"files"=>Any[],"warnings"=>[message])))
         _append_log(id,"outputs","Optional file export failed: "*message)

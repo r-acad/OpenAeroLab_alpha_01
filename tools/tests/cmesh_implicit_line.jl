@@ -437,7 +437,9 @@ function airfoil_recovery_and_diagnostics(backend)
     @test isapprox(residual_sum,report.mass_outer_net-inner_sum;
                    atol=1e-5*max(1,report.mass_outer_abs_flux))
     @test isfinite(report.turb_k_update_defect) && isfinite(report.turb_omega_update_defect)
-    @test !report.all_six_equation_residuals_available
+    @test report.all_six_equation_residuals_available
+    @test all(isfinite,(report.turb_k_equation_l2,report.turb_omega_equation_l2,
+                       report.turb_k_equation_linf,report.turb_omega_equation_linf))
     for (name,copy) in zip(names,saved)
         @test Array(getproperty(s,name))==copy
     end

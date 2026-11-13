@@ -8,6 +8,7 @@ using SHA
 using JSON3
 include("job_control.jl")
 using .AirfoilJobControl
+include("result_locations.jl")
 include(joinpath("api", "job_progress.jl"))
 
 include("protocol.jl")
@@ -20,6 +21,7 @@ include(joinpath("references", "reference_data.jl"))
 using .AirfoilReferenceData
 include(joinpath("backends", "cfd_backend.jl"))
 using .CFDBackend
+const ResultQualification=CFDBackend.CFDResultQualification
 include(joinpath("references", "nearby_references.jl"))
 using .AirfoilNearbyReferences
 # Streamline-aligned meshes (development, 24 Oct 2026): the JXfoil paths are computed here (CFDBackend's workers never
@@ -60,6 +62,8 @@ const STATIC_FILES = Dict(
     "styles/output_controls.css"=>"styles/output_controls.css", "scripts/output_controls.js"=>"scripts/output_controls.js",
     "scripts/studies.js"=>"scripts/studies.js", "scripts/benchmarks.js"=>"scripts/benchmarks.js",
     "scripts/workflow_help.js"=>"scripts/workflow_help.js",
+    "scripts/workflow.js"=>"scripts/workflow.js",
+    "scripts/research_settings.js"=>"scripts/research_settings.js",
     "styles/studies.css"=>"styles/studies.css",
     "styles/plots.css"=>"styles/plots.css", "scripts/plot_controls.js"=>"scripts/plot_controls.js",
     "scripts/app.js" => "scripts/app.js", "scripts/lbm.js" => "scripts/lbm.js",
@@ -313,9 +317,13 @@ function _validated_case(data; geometry_only::Bool=false)
     if haskey(flow_out, "cfd_mesh")
         flow_out["cfd_mesh"] isa AbstractString || throw(ArgumentError("cfd_mesh must be a string"))
         mesh = String(flow_out["cfd_mesh"])
-        mesh in ("cavitation_aplus_farfield", "aplus_nested_refined", "legacy_sharp_cmesh") ||
-            throw(ArgumentError("cfd_mesh must be cavitation_aplus_farfield, aplus_nested_refined, or legacy_sharp_cmesh"))
+        mesh in ("cavitation_aplus_farfield", "aplus_nested_refined", "aplus_uniform_quality", "aplus_uniform_fixed", "legacy_sharp_cmesh") ||
+            throw(ArgumentError("Unknown cfd_mesh profile; use an available shared or experimental A-plus profile"))
         flow_out["cfd_mesh"] = mesh
+        # An explicit experimental A-plus profile is a complete mesh choice;
+        # avoid a second topology switch that would otherwise select C+H first.
+        mesh in ("aplus_uniform_quality", "aplus_uniform_fixed") &&
+            (flow_out["cfd_te_topology"] = "aplus")
         mesh == "legacy_sharp_cmesh" && get(flow_out,"cfd_te_thickness",0.0) > 0 &&
             throw(ArgumentError("finite trailing-edge thickness requires an A-plus mesh"))
     end
@@ -379,8 +387,27 @@ function _put_job(id::String, changes::AbstractDict)
         JOBS[id]["updated_at"] = string(now(UTC)) * "Z"
     end
 end
-_public_job(job) = merge(Dict{String,Any}(k=>v for (k,v) in job if k!="case"),
-    Dict("request"=>_job_request(get(job,"case",nothing))))
+function _qualification_job_view(job)
+    visible=Dict{String,Any}(string(k)=>v for (k,v) in job)
+    result=get(job,"result",nothing)
+    result isa AbstractDict || return visible
+    rows=get(result,"results",nothing)
+    rows isa AbstractVector || return visible
+    result_view=Dict{String,Any}(string(k)=>v for (k,v) in result)
+    result_view["results"]=[p isa AbstractDict ? ResultQualification.qualify_result_point(p) : p for p in rows]
+    visible["result"]=result_view
+    unverified=any(p->p isa AbstractDict && ResultQualification.unverified_implicit_point(p),rows)
+    if unverified && get(job,"status","") in ("completed","partial","failed") && get(job,"error",nothing)===nothing
+        visible["engine_job_status"]=get(job,"engine_job_status",get(job,"status",""))
+        visible["engine_job_message"]=get(job,"engine_job_message",get(job,"message",""))
+        visible["status"],visible["message"]=_point_outcome(result_view["results"])
+        occursin("server stopped",lowercase(string(get(job,"message","")))) &&
+            (visible["message"]=string(job["message"]," ",visible["message"]))
+    end
+    visible
+end
+_public_job(job) = _qualification_job_view(merge(Dict{String,Any}(k=>v for (k,v) in job if k!="case"),
+    Dict("request"=>_job_request(get(job,"case",get(job,"request",nothing))))))
 
 "Cancel a live job without changing terminal jobs or deleting saved artifacts."
 function _cancel_job!(id::String)
@@ -637,6 +664,8 @@ function _reference_setup(case)
 end
 function _safe_job_dir(id::String)
     occursin(r"^[0-9a-f-]{36}$", id) || throw(ArgumentError("invalid job id"))
+    registered=AirfoilResultLocations.registered_directory(RUN_DIR,id)
+    registered===nothing || return registered
     current=joinpath(RUN_DIR,id)
     preview=joinpath(PREVIEW_DIR,id)
     isdir(preview) && !isdir(current) && return preview
@@ -684,6 +713,12 @@ function _point_outcome(results)
     n = length(results)
     experimental=count(p->get(p,"status","")=="experimental_physical_state",results)
     experimental>0 && return ("partial","Experimental physical states saved; startup coefficients are unqualified")
+    unverified=filter(ResultQualification.unverified_implicit_point,results)
+    if !isempty(unverified)
+        stopped=all(p->ResultQualification.implicit_flow_qualification(get(p,"diagnostics",Dict()))["solver_stop_reached"],unverified)
+        return ("partial",(stopped ? "Solver stop reached; " : "Implicit results saved; ")*
+            "full flow checks unverified. Fields and forces remain diagnostic; inspect the raw turbulence and wall-constraint checks.")
+    end
     completed = count(p -> lowercase(string(get(p,"status","completed"))) in
                              ("completed","converged","ok"), results)
     n > 0 && completed == n && return ("completed", "Analysis complete")
@@ -1016,16 +1051,21 @@ _job_request(case) = case isa AbstractDict ? Dict{String,Any}(
     "backends"=>get(case,"backends",String[]),"alphas"=>get(case,"alphas",Float64[]),
     "outputs"=>get(case,"outputs",Dict{String,Any}()),"display_every"=>get(case,"display_every",nothing)) : nothing
 function _job_summary(job)
-    request = _job_request(get(job,"case",nothing))
-    results = get(get(job,"result",Dict()),"results",Any[])
+    visible=_qualification_job_view(job)
+    request = _job_request(get(job,"case",get(job,"request",nothing)))
+    results = get(get(visible,"result",Dict()),"results",Any[])
     results isa AbstractVector || (results = Any[])
     flow = request === nothing ? Dict{String,Any}() : request["flow"]
-    Dict{String,Any}("id"=>job["id"],"status"=>get(job,"status",""),"message"=>get(job,"message",""),
+    Dict{String,Any}("id"=>job["id"],"status"=>get(visible,"status",""),"message"=>get(visible,"message",""),
         "created_at"=>get(job,"created_at",nothing),"updated_at"=>get(job,"updated_at",nothing),
         "airfoil"=>request === nothing ? nothing : request["airfoil"],"backends"=>request === nothing ? String[] : request["backends"],
         "alphas"=>request === nothing ? Float64[] : request["alphas"],"reynolds"=>get(flow,"reynolds",nothing),
         "mach"=>get(flow,"mach",nothing),"points"=>length(results),
-        "completed_points"=>count(p->p isa AbstractDict && get(p,"status","") in ("completed","converged","ok"),results))
+        "completed_points"=>count(p->p isa AbstractDict && get(p,"status","") in ("completed","converged","ok"),results),
+        "unverified_flow_points"=>count(p->p isa AbstractDict && get(p,"backend","")=="transonic" &&
+            get(ResultQualification.implicit_flow_qualification(get(p,"diagnostics",Dict())),"required",false) &&
+            !get(ResultQualification.implicit_flow_qualification(get(p,"diagnostics",Dict())),"qualified",false),results),
+        "qualification_revision"=>1)
 end
 function _persist_job(id::String)
     job = _get_job(id)
@@ -1053,15 +1093,24 @@ function _saved_job(id::String)
         record["status"] = "partial"
         record["message"] = "The server stopped while this job was running; the points saved before the stop are shown."
     end
-    record
+    _qualification_job_view(record)
 end
 function _recent_jobs(limit::Int=20)
     entries = Tuple{Float64,String}[]
+    seen=Set{String}()
     for parent in (RUN_DIR,LEGACY_RUN_DIR)
         isdir(parent) || continue
         for name in readdir(parent)
             occursin(r"^[0-9a-f-]{36}$", name) || continue
-            path = joinpath(parent, name, JOB_SUMMARY_FILE)
+            directory=try
+                parent==RUN_DIR ? _safe_job_dir(name) : joinpath(parent,name)
+            catch error
+                @warn "Could not resolve a saved result location" id=name exception=error
+                continue
+            end
+            path = joinpath(directory, JOB_SUMMARY_FILE)
+            path in seen && continue
+            push!(seen,path)
             isfile(path) && push!(entries, (mtime(path), path))
         end
     end
@@ -1075,10 +1124,14 @@ function _recent_jobs(limit::Int=20)
             get(summary, "hidden", false) === true && continue
             live = _get_job(String(summary["id"]))
             if live !== nothing
-                summary["status"] = get(live,"status",summary["status"]); summary["message"] = get(live,"message",summary["message"])
+                merge!(summary,_job_summary(live))
                 summary["live"] = true
             elseif get(summary,"status","") in ("queued","running","cancelling")
                 summary["status"] = "interrupted"
+            end
+            if live===nothing && get(summary,"qualification_revision",0)<1 && "transonic" in get(summary,"backends",String[])
+                saved=_saved_job(String(summary["id"]))
+                saved===nothing || merge!(summary,_job_summary(saved))
             end
             push!(items, summary)
         catch err
@@ -1132,12 +1185,22 @@ function _solver_guide_response(filename::String, mime::String)
 end
 function _asset_response(id::String, rel::String; range::AbstractString="")
     dir = _safe_job_dir(id)
-    full = abspath(normpath(joinpath(dir, replace(rel, '/'=>'\\'))))
+    requested = abspath(normpath(joinpath(dir, replace(rel, '\\'=>'/'))))
     root = abspath(dir)
-    startswith(lowercase(full), lowercase(root * "\\")) || return HTTP.Response(403, "Forbidden")
-    isfile(full) || return HTTP.Response(404, "Not found")
+    canonical(path)=Sys.iswindows() ? lowercase(normpath(path)) : normpath(path)
+    separator=Sys.iswindows() ? "\\" : "/"
+    startswith(canonical(requested),canonical(root)*separator) || return HTTP.Response(403, "Forbidden")
+    isfile(requested) || return HTTP.Response(404, "Not found")
+    # A permitted parent can be outside private storage (beside a saved study).
+    # Resolve against that registered job root, never against RUN_DIR; nested
+    # symlinks and Windows junctions must not grant access outside this job.
+    resolved_root=realpath(root)
+    expected_root=joinpath(realpath(dirname(root)),basename(root))
+    canonical(resolved_root)==canonical(expected_root) || return HTTP.Response(403,"Forbidden")
+    full=realpath(requested)
+    startswith(canonical(full),canonical(resolved_root)*separator) || return HTTP.Response(403,"Forbidden")
     # Byte ranges for the LBM 3D videos (27 Oct 2026): browsers seek an MP4 with Range requests. Every other file unchanged.
-    m = endswith(lowercase(full), ".mp4") ? match(r"^bytes=(\d*)-(\d*)$", strip(range)) : nothing
+    m = endswith(lowercase(requested), ".mp4") ? match(r"^bytes=(\d*)-(\d*)$", strip(range)) : nothing
     if m !== nothing && !(isempty(m.captures[1]) && isempty(m.captures[2]))
         n = filesize(full)
         a = isempty(m.captures[1]) ? max(0, n - parse(Int, m.captures[2])) : parse(Int, m.captures[1])
@@ -1147,7 +1210,7 @@ function _asset_response(id::String, rel::String; range::AbstractString="")
         return HTTP.Response(206, ["Content-Type"=>"video/mp4", "Accept-Ranges"=>"bytes", "Content-Range"=>"bytes $a-$b/$n",
             "Cache-Control"=>"no-store"], data)
     end
-    HTTP.Response(200, ["Content-Type"=>get(MIME,lowercase(splitext(full)[2]),"application/octet-stream"),
+    HTTP.Response(200, ["Content-Type"=>get(MIME,lowercase(splitext(requested)[2]),"application/octet-stream"),
         "Cache-Control"=>"no-store"], read(full))
 end
 
@@ -1174,7 +1237,8 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>26,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>27,"protocols"=>["msgpack","bson"],
+                "result_storage"=>Dict("study_folder_default"=>true,"timestamped_job_folders"=>true,"timestamp_timezone"=>"UTC"),
                 "job_control"=>Dict("cancel"=>true,"cooperative_grace_seconds"=>30),
                 "lowspeed_initial_flow"=>Dict("checked_job_seed"=>true,"request_key"=>"lowspeed_initial_job_id","exact_continuation"=>false),
                 "backends"=>["jxfoil","xfoil","transonic","cavitation","lowspeed","lbm"],"native_solver_platform_supported"=>!Sys.isapple(),"xfoil"=>AirfoilXfoilBackend.capabilities(),
@@ -1216,13 +1280,19 @@ function app_handler(req::HTTP.Request)
             ctype = wire_format(_header(req,"Content-Type"))
             fmt = _fmt(req; default=ctype)
             length(req.body) <= AirfoilWire.MAX_BYTES || return _error(413,"payload too large",fmt)
-            case = _validated_case(decode(Vector{UInt8}(req.body), ctype))
+            supplied_case=decode(Vector{UInt8}(req.body), ctype)
+            case = _validated_case(supplied_case)
+            study_path=_study_job_path(supplied_case)
             _lowspeed_initial_source(case) # Reject missing/nonterminal/incompatible source jobs before enqueueing.
             id = string(uuid4())
             job = Dict{String,Any}("id"=>id,"status"=>"queued","message"=>"Queued", "progress"=>0.0,
                 "created_at"=>string(now(UTC))*"Z", "case"=>case,"output_settings"=>case["outputs"])
             lock(JOB_LOCK) do
                 length(JOBS) < MAX_JOBS || throw(ArgumentError("job capacity reached; restart after downloading results"))
+                directory=AirfoilResultLocations.create_directory(RUN_DIR,id;
+                    study_path,parent=String(get(case["outputs"],"folder","")))
+                job["results_directory"]=directory
+                isempty(study_path) || (job["study_path"]=study_path)
                 JOBS[id] = job
                 JOB_CONTROLS[id] = AirfoilJobControl.CancellationToken(marker=joinpath(_safe_job_dir(id),"cancel.requested"))
                 JOB_LOGS[id] = Dict{String,Any}[]
@@ -1233,7 +1303,8 @@ function app_handler(req::HTTP.Request)
             _append_log(id, "server", "Job queued with backend(s): $(join(case["backends"], ", ")).")
             _persist_job(id)
             _start_worker(); put!(QUEUE,id)
-            return _response(202, Dict("id"=>id,"status"=>"queued","message"=>"Queued"),fmt)
+            return _response(202, Dict("id"=>id,"status"=>"queued","message"=>"Queued",
+                "results_directory"=>job["results_directory"]),fmt)
         elseif method == "POST" && startswith(path,"/api/jobs/")
             parts=split(path,'/';keepempty=false)
             length(parts)==4 && parts[4]=="cancel" || return _error(404,"Not found",fmt)

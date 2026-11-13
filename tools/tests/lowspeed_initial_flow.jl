@@ -1,5 +1,5 @@
 using Test,UUIDs,TOML,Serialization
-const REPOSITORY=normpath(joinpath(@__DIR__,"..",".."))
+const REPOSITORY=dirname(dirname(@__DIR__))
 const SCRATCH=joinpath(get(ENV,"LUDWIG_PRIVATE_ROOT",joinpath(dirname(REPOSITORY),"02_PRIVATE_PROJECT_DEVELOPMENT")),"TEMP_DELETEABLE","lowspeed_initial_flow_tests")
 mkpath(SCRATCH);ENV["LUDWIG_PRIVATE_ROOT"]=mktempdir(SCRATCH)
 include(joinpath(REPOSITORY,"apps","airfoil_web","src","server.jl"))
@@ -9,8 +9,10 @@ request(;alpha=12.,seed=nothing,extra=Dict{String,Any}())=Dict{String,Any}(
     "airfoil"=>Dict("kind"=>"naca4","id"=>"4412"),"backends"=>["lowspeed"],
     "flow"=>merge(Dict{String,Any}("reynolds"=>3e6,"alpha_deg"=>alpha,"lowspeed_resolution"=>"standard"),
         seed===nothing ? Dict() : Dict("lowspeed_initial_job_id"=>seed),extra))
-function fixture_job(;status="cancelled",angles=(10.,12.))
-    case=A._validated_case(request());id=string(uuid4());root=A._safe_job_dir(id);mkpath(root)
+function fixture_job(;status="cancelled",angles=(10.,12.),results_parent=nothing)
+    case=A._validated_case(request());id=string(uuid4())
+    results_parent===nothing || A.AirfoilResultLocations.create_directory(A.RUN_DIR,id;parent=results_parent)
+    root=A._safe_job_dir(id);mkpath(root)
     job=Dict{String,Any}("id"=>id,"status"=>status,"case"=>case)
     A.JOBS[id]=job
     foil=A.AirfoilJXBackend.resolve_airfoil(case["airfoil"]).airfoil
@@ -92,6 +94,11 @@ body(response)=A.AirfoilWire.decode(copy(response.body),:msgpack)
     outside=joinpath(dirname(f.root),"outside.txt");write(outside,"unrelated")
     @test_throws ArgumentError A._initial_confined(outside,f.root)
     @test A._initial_confined(joinpath(f.root,"airfoil.dat"),f.root)==realpath(joinpath(f.root,"airfoil.dat"))
+    registered=fixture_job(results_parent=mktempdir(SCRATCH))
+    selected=A._lowspeed_initial_source(A._validated_case(request(seed=registered.id)))
+    @test selected.id==registered.id
+    @test selected.root==registered.root
+    @test A._initial_confined(joinpath(first(selected.points),"state_checkpoint.jls"),selected.root)==realpath(joinpath(first(selected.points),"state_checkpoint.jls"))
     health=A.AirfoilWire.decode(copy(A.app_handler(A.HTTP.Request("GET","/api/health")).body),:msgpack)
     @test health["api_revision"]>=25
     @test health["lowspeed_initial_flow"]["checked_job_seed"]===true

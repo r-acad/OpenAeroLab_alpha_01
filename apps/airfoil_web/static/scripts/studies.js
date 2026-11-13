@@ -60,11 +60,11 @@ window.AirfoilStudies = (() => {
     if(busy||!await allowReplace())return;
     restoring=true;
     try {
-        detach();restoreControls(defaults);path=null;etag=null;resultLink=null;
+        detach();restoreControls(defaults);window.AirfoilResearchSettings?.restore();path=null;etag=null;resultLink=null;
         window.WingLegends?.restore(null);
       state.machEdited=false;state.reynoldsEdited=false;
       updateSetup();scheduleGeometryPreview();await window.AirfoilBenchmarks.restore(null);
-      switchTab('geometry');dirty=false;status('New study. Save to choose its location.');closeMenus();
+      switchTab('geometry');window.AirfoilWorkflow?.select('model');dirty=false;status('New study. Save to choose its location.');closeMenus();
     } finally {restoring=false;}
   }
   async function openPath(file) {
@@ -78,6 +78,9 @@ window.AirfoilStudies = (() => {
       // applying the snapshot. No network fetch is needed for UIUC geometry.
       applySavedRequestToForm(study.request);
       restoreControls(study.controls);
+      // Explicit request numerics take precedence over stale UI snapshots from
+      // an older app that could not represent these research selections.
+      window.AirfoilResearchSettings?.restore(study.request.flow);
       const foil=study.request.airfoil;
       state.embeddedAirfoil=['uiuc','dat'].includes(foil.kind)?{kind:foil.kind,id:foil.id,coordinates:{x:study.geometry.x,y:study.geometry.y}}:null;
       updateSetup();
@@ -95,6 +98,8 @@ window.AirfoilStudies = (() => {
         catch(error) {data.message+=' · Setup loaded, but linked results could not be read: '+error.message;}
       }
       switchTab(['geometry','results','field','polar','diagnostics','log'].includes(study.view?.tab)?study.view.tab:resultLink?'results':'geometry');
+      window.AirfoilWorkflow?.refresh();
+      if(study.view?.workflow_panel)requestAnimationFrame(()=>window.AirfoilWorkflow?.select(study.view.workflow_panel));
       dirty=false;status(data.message+(resultsOpened?' · Linked results opened.':''));
       $('study-open-dialog').close();closeMenus();return true;
     } catch(error) {displayError(error);status(error.message);return false;}
@@ -125,7 +130,7 @@ window.AirfoilStudies = (() => {
     if(busy)return false;
     busy=true;status();
     try {
-      const request=collectCase(),controls=captureControls(),revision=edits;
+      const request=collectCase({allowUnavailable:true}),controls=captureControls(),revision=edits;
       let destination=path,expected=etag;
       if(asNew||!destination) {
         const selected=await api('choose-save',{path:path||'',title:'Save Airfoil Lab study as'});
@@ -134,7 +139,7 @@ window.AirfoilStudies = (() => {
       }
       const link=state.job?.id?{job_id:state.job.id}:resultLink;
       const data=await api('save',{path:destination,etag:expected,request,controls,results:link,
-        view:{tab:state.activeTab,benchmark_id:window.AirfoilBenchmarks.selectedId,color_scales:window.WingLegends?.capture()}});
+        view:{tab:state.activeTab,workflow_panel:window.AirfoilWorkflow?.selected,benchmark_id:window.AirfoilBenchmarks.selectedId,color_scales:window.WingLegends?.capture()}});
       path=data.path;etag=data.etag;resultLink=data.study.results;dirty=edits!==revision;
       status(data.message+(dirty?' Newer edits still need saving.':''));closeMenus();return true;
     } catch(error){displayError(error);status(error.message);return false;}
@@ -159,6 +164,6 @@ window.AirfoilStudies = (() => {
     if(event.key.toLowerCase()==='s'){event.preventDefault();save(event.shiftKey);}
     if(event.key.toLowerCase()==='o'){event.preventDefault();showOpen();}
   });
-  status('New study. Project → Save study stores its setup and source geometry.');
+  status('New study. Study → Save study chooses its home folder and stores the setup and source geometry.');
   return {save,openPath,newStudy,showOpen,loadResults,markDirty,captureControls,get path(){return path;},get dirty(){return dirty;}};
 })();

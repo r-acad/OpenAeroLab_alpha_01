@@ -6,6 +6,9 @@
 const CS2   = 2.0f0/3.0f0
 const TGAS_D = 3.0f0
 
+@inline _gas_cs2(::Type{Float32})=CS2
+@inline _gas_cs2(::Type{Float64})=2.0/3.0
+
 # Area-integrated Stokes traction for a stationary no-slip wall and the local
 # linear gradient grad(u)=u_cell tensor n/d1. muS_over_d1 includes density,
 # molecular viscosity, area and inverse wall distance. The normal eigenvalue
@@ -40,6 +43,7 @@ end
 # pond _feqT2_gpu VERBATIM (fixed frame: isq=invth=1): 3rd-order thermal Hermite equilibrium
 # in the co-moving face frame. Velocities passed here are already FACE-FRAME (un, ut).
 @inline function _feqT2(rho, un, ut, T, ufn, uft, cxk, cyk, czk, wk)
+    CS2=_gas_cs2(typeof(rho))
     px = un - ufn; py = ut - uft
     inv_cs2 = 1.0f0/CS2; inv_2cs4 = 0.5f0/(CS2*CS2); inv_6cs6 = 1.0f0/(6.0f0*CS2*CS2*CS2)
     cp = px*cxk + py*cyk
@@ -60,8 +64,9 @@ end
 # pond pressure+density sensor (thermal.jl:211-214). GLOBAL-frame velocities in; (Frho,Fmx,Fmy,FE)·S out.
 @inline function _fvflux_normal6(rLLL,uxLLL,uyLLL,TLLL, rLL,uxLL,uyLL,TLL, rL,uxL,uyL,TL,
                                  rR,uxR,uyR,TR, rRR,uxRR,uyRR,TRR, rRRR,uxRRR,uyRRR,TRRR,
-                                 nx::Float32, ny::Float32, S::Float32,
-                                 cx_arr, cy_arr, cz_arr, w_arr, drot::Float32, recon::Int32)
+                                 nx, ny, S,
+                                 cx_arr, cy_arr, cz_arr, w_arr, drot, recon::Int32)
+    CS2=_gas_cs2(typeof(rL))
     # rotate stencil velocities into the face frame: un along +n, ut along the tangent
     unLLL = uxLLL*nx + uyLLL*ny; utLLL = -uxLLL*ny + uyLLL*nx
     unLL  = uxLL*nx + uyLL*ny;   utLL  = -uxLL*ny + uyLL*nx
@@ -69,7 +74,7 @@ end
     unR   = uxR *nx + uyR *ny;   utR   = -uxR *ny + uyR *nx
     unRR  = uxRR*nx + uyRR*ny;   utRR  = -uxRR*ny + uyRR*nx
     unRRR = uxRRR*nx + uyRRR*ny; utRRR = -uxRRR*ny + uyRRR*nx
-    local rLf::Float32, rRf::Float32, unLf::Float32, unRf::Float32, utLf::Float32, utRf::Float32, TLf::Float32, TRf::Float32
+    local rLf, rRf, unLf, unRf, utLf, utRf, TLf, TRf
     if recon == Int32(1)
         # shock/contact sensor (pond :211-214): pressure+density jump ramp [0.1,0.4] -> minmod at jumps
         pLm = rL*CS2*TL; pRm = rR*CS2*TR
@@ -90,7 +95,7 @@ end
     # arithmetic face frame (pond :201) + rotational internal energy
     ufn = 0.5f0*(unLf+unRf); uft = 0.5f0*(utLf+utRf); erc = 0.5f0*drot*CS2
     # 39-velocity upwind quadrature (pond :251-258, ax=1 semantics in the face frame)
-    Frho=0.0f0; Fmn=0.0f0; Fmt=0.0f0; FE=0.0f0
+    Frho=zero(nx); Fmn=zero(nx); Fmt=zero(nx); FE=zero(nx)
     @inbounds for k in 1:39
         cxk=cx_arr[k]; cyk=cy_arr[k]; czk=cz_arr[k]; wk=w_arr[k]
         vn = cxk + ufn; vt = cyk + uft; vz = czk
@@ -112,8 +117,8 @@ end
 # convention of the residual (dc = Fi(i+1)-Fi(i)+Fj(j+1)-Fj(j) => E/N faces +S⃗, W/S faces -S⃗).
 # GCL closure (max 2e-7) makes a constant field's gradient vanish identically.
 @inline function _gg_grad(phiW, phiE, phiS, phiN, phiC,
-                          SxW::Float32, SyW::Float32, SxE::Float32, SyE::Float32,
-                          SxS::Float32, SyS::Float32, SxN::Float32, SyN::Float32, invvol::Float32)
+                          SxW, SyW, SxE, SyE,
+                          SxS, SyS, SxN, SyN, invvol)
     fE = 0.5f0*(phiC+phiE); fW = 0.5f0*(phiW+phiC); fN = 0.5f0*(phiC+phiN); fS = 0.5f0*(phiS+phiC)
     ((fE*SxE - fW*SxW + fN*SxN - fS*SxS)*invvol,
      (fE*SyE - fW*SyW + fN*SyN - fS*SyS)*invvol)
@@ -159,9 +164,9 @@ end
 # limit the normal part reduces EXACTLY to the thin-layer Δφ/dn, so this is a strict superset).
 # gk order: (dudx,dudy,dvdx,dvdy,dTdx,dTdy). Returns OUTWARD (Fvx,Fvy,Fve)·S to SUBTRACT.
 @inline function _viscous_face_full(g1L,g2L,g3L,g4L,g5L,g6L, g1R,g2R,g3R,g4R,g5R,g6R,
-                                    uL,vL,TL, uR,vR,TR, dxc::Float32, dyc::Float32,
-                                    nx::Float32, ny::Float32, S::Float32,
-                                    mueff::Float32, keff::Float32)
+                                    uL,vL,TL, uR,vR,TR, dxc, dyc,
+                                    nx, ny, S,
+                                    mueff, keff)
     dn2 = dxc*dxc + dyc*dyc + 1.0f-30
     a1 = 0.5f0*(g1L+g1R); a2 = 0.5f0*(g2L+g2R); a3 = 0.5f0*(g3L+g3R)
     a4 = 0.5f0*(g4L+g4R); a5 = 0.5f0*(g5L+g5R); a6 = 0.5f0*(g6L+g6R)
@@ -193,8 +198,8 @@ end
 @inline function _visc_face_ij_3d(
         uxL,uyL,uzL, vxL,vyL,vzL, wxL,wyL,wzL, TxL,TyL,
         uxR,uyR,uzR, vxR,vyR,vzR, wxR,wyR,wzR, TxR,TyR,
-        uL,vL,wL,TL, uR,vR,wR,TR, dxc::Float32, dyc::Float32,
-        nx::Float32, ny::Float32, S::Float32, mueff::Float32, keff::Float32)
+        uL,vL,wL,TL, uR,vR,wR,TR, dxc, dyc,
+        nx, ny, S, mueff, keff)
     dn2 = dxc*dxc + dyc*dyc + 1.0f-30
     a_ux=0.5f0*(uxL+uxR); a_uy=0.5f0*(uyL+uyR); a_uz=0.5f0*(uzL+uzR)
     a_vx=0.5f0*(vxL+vxR); a_vy=0.5f0*(vyL+vyR); a_vz=0.5f0*(vzL+vzR)
@@ -220,7 +225,7 @@ end
 @inline function _visc_face_k_3d(
         uxL,vyL,wxL,wyL, uzL,vzL,wzL,TzL,
         uxR,vyR,wxR,wyR, uzR,vzR,wzR,TzR,
-        uL,vL,wL,TL, uR,vR,wR,TR, dz::Float32, mueff::Float32, keff::Float32)
+        uL,vL,wL,TL, uR,vR,wR,TR, dz, mueff, keff)
     dz2 = dz*dz + 1.0f-30
     a_uz=0.5f0*(uzL+uzR); a_vz=0.5f0*(vzL+vzR); a_wz=0.5f0*(wzL+wzR); a_Tz=0.5f0*(TzL+TzR)
     cu=((uR-uL)-a_uz*dz)/dz2; dudz=a_uz+cu*dz
@@ -238,7 +243,7 @@ end
 
 # Sutherland viscosity factor mu(T)/mu(T_inf) with Sr = S/T_inf (air ambient: 0.404; NOTE cryogenic
 # tunnels change Sr strongly — check the test's static temperature). Sr<=0 => 1 (bitwise legacy).
-@inline _mufac(Tf::Float32, Sr::Float32) = Sr <= 0.0f0 ? 1.0f0 : Tf*sqrt(Tf)*(1.0f0+Sr)/(Tf+Sr)
+@inline _mufac(Tf, Sr) = Sr <= 0.0f0 ? 1.0f0 : Tf*sqrt(Tf)*(1.0f0+Sr)/(Tf+Sr)
 
 # ---- Wallin-Johansson 2D EARSM (JFM 403, 2000; Menter BSL-EARSM combination) --------------------
 # Closed-form 2D solution. Inputs: velocity-gradient tensor components and the turbulence timescale
@@ -247,7 +252,7 @@ end
 # nu_t_eff = -(beta1/2)*k*tau_t; the beta4 term is the EXTRA (non-Boussinesq) anisotropy.
 # Validated by tools/cmesh_earsm_unittest.jl: the closed form must satisfy the IMPLICIT ARSM
 # N*a = -(6/5)S* + (a*Om* - Om**a), N = c1p - (9/4)tr(a S*), for random tensors (self-consistency).
-@inline function _wj_earsm_2d(dudx::Float32, dudy::Float32, dvdx::Float32, dvdy::Float32, tau_t::Float32)
+@inline function _wj_earsm_2d(dudx, dudy, dvdx, dvdy, tau_t)
     c1p = 1.8f0                                       # (9/4)(c1-1), c1 = 1.8
     # traceless symmetric strain + rotation, normalized by tau_t
     div2 = 0.5f0*(dudx + dvdy)
@@ -257,7 +262,7 @@ end
     IIOm = -2.0f0*oxy*oxy                             # tr(Om*Om*) <= 0
     P1 = c1p*(c1p*c1p/27.0f0 + 0.45f0*IIS - (2.0f0/3.0f0)*IIOm)
     P2 = P1*P1 - (c1p*c1p/9.0f0 + 0.9f0*IIS + (2.0f0/3.0f0)*IIOm)^3
-    local N::Float32
+    local N
     if P2 >= 0.0f0
         s1 = P1 + sqrt(P2); s2 = P1 - sqrt(P2)
         N = c1p/3.0f0 + cbrt(abs(s1))*sign(s1) + cbrt(abs(s2))*sign(s2)
@@ -275,8 +280,8 @@ end
 # PG point-vortex far-field velocity increment (the _vortex_pg form, device-inlinable) — used by the
 # far-field SPONGE so its target carries the circulation correction (blending to raw freestream would
 # fight the interior circulation and pump the very waves the sponge exists to absorb).
-@inline function _pg_vortex_uv(xcc::Float32, ycc::Float32, gam::Float32, xv::Float32, yv::Float32,
-                               m2::Float32, bet::Float32, ca::Float32, sa::Float32)
+@inline function _pg_vortex_uv(xcc, ycc, gam, xv, yv,
+                               m2, bet, ca, sa)
     gam == 0.0f0 && return (0.0f0, 0.0f0)
     dx = xcc - xv; dy = ycc - yv
     dxs = dx*ca + dy*sa; dys = -dx*sa + dy*ca
@@ -289,7 +294,7 @@ end
 
 # 4-state compatibility wrapper (existing callers/gates): minmod path, LLL/RRR duplicated (unused).
 @inline _fvflux_normal(rLL,uxLL,uyLL,TLL, rL,uxL,uyL,TL, rR,uxR,uyR,TR, rRR,uxRR,uyRR,TRR,
-                       nx::Float32, ny::Float32, S::Float32, cx_arr, cy_arr, cz_arr, w_arr, drot::Float32) =
+                       nx, ny, S, cx_arr, cy_arr, cz_arr, w_arr, drot) =
     _fvflux_normal6(rLL,uxLL,uyLL,TLL, rLL,uxLL,uyLL,TLL, rL,uxL,uyL,TL, rR,uxR,uyR,TR,
                     rRR,uxRR,uyRR,TRR, rRR,uxRR,uyRR,TRR, nx, ny, S, cx_arr, cy_arr, cz_arr, w_arr, drot, Int32(0))
 
@@ -318,8 +323,8 @@ end
 
 @inline function _fvflux_mix6(rLLL,uxLLL,uyLLL,TLLL,pLLL, rLL,uxLL,uyLL,TLL,pLL, rL,uxL,uyL,TL,pL,
                               rR,uxR,uyR,TR,pR, rRR,uxRR,uyRR,TRR,pRR, rRRR,uxRRR,uyRRR,TRRR,pRRR,
-                              amL::Float32, amR::Float32, eint::Float32, minf2::Float32,
-                              nx::Float32, ny::Float32, S::Float32, recon::Int32)
+                              amL, amR, eint, minf2,
+                              nx, ny, S, recon::Int32)
     # The reference Mach squared must be finite and nonnegative. Propagate invalid
     # configuration through a nonfinite flux; device code must not throw exceptions.
     if !isfinite(minf2) || minf2 < 0.0f0
@@ -331,8 +336,8 @@ end
     unR   = uxR *nx + uyR *ny;   utR   = -uxR *ny + uyR *nx
     unRR  = uxRR*nx + uyRR*ny;   utRR  = -uxRR*ny + uyRR*nx
     unRRR = uxRRR*nx + uyRRR*ny; utRRR = -uxRRR*ny + uyRRR*nx
-    local rLf::Float32, rRf::Float32, unLf::Float32, unRf::Float32, utLf::Float32, utRf::Float32
-    local TLf::Float32, TRf::Float32, pLf::Float32, pRf::Float32
+    local rLf, rRf, unLf, unRf, utLf, utRf
+    local TLf, TRf, pLf, pRf
     if recon == Int32(1)
         # shock/contact sensor on the MIXTURE pressure and the density (same ramp as _fvflux_normal6)
         spj = abs(pR-pL)/max(min(pL,pR), 1.0f-12)
@@ -358,8 +363,8 @@ end
 # tangent basis. The caller supplies reconstructed or admitted constant states.
 # Keep this arithmetic identical for legacy reconstruction and direct pressure.
 @inline function _fvflux_mix_face(rLf,unLf,utLf,TLf,pLf,rRf,unRf,utRf,TRf,pRf,
-                                  amL::Float32,amR::Float32,eint::Float32,minf2::Float32,
-                                  nx::Float32,ny::Float32,S::Float32)
+                                  amL,amR,eint,minf2,
+                                  nx,ny,S)
     af  = 0.5f0*(amL + amR)
     Mb2 = 0.5f0*(unLf*unLf + unRf*unRf)/(af*af)
     # Exactly zero means no convective reference scale: use acoustic scaling on
@@ -378,7 +383,7 @@ end
     # Ku = 0.75: velocity-diffusion in the interface pressure
     pf = Pp*pLf + Pm*pRf - 0.75f0*Pp*Pm*(rLf + rRf)*(fa*af)*(unRf - unLf)
     # upwinded convected quantities
-    local unU::Float32, utU::Float32, HU::Float32
+    local unU, utU, HU
     if mdot > 0.0f0
         unU = unLf; utU = utLf; HU = eint*TLf + 0.5f0*(unLf*unLf + utLf*utLf) + pLf/rLf
     else
@@ -396,8 +401,8 @@ end
 # performs no density/pressure/temperature floor or reconstruction. The species
 # stage owns EOS admission; malformed face inputs still produce nonfinite fluxes.
 @inline function _fvflux_mix_pc(rL,uL,vL,TL,pL,rR,uR,vR,TR,pR,
-                                amL::Float32,amR::Float32,eint::Float32,minf2::Float32,
-                                nx::Float32,ny::Float32,S::Float32)
+                                amL,amR,eint,minf2,
+                                nx,ny,S)
     if !(isfinite(rL) && rL>0.0f0 && isfinite(rR) && rR>0.0f0 &&
          isfinite(pL) && pL>0.0f0 && isfinite(pR) && pR>0.0f0 &&
          isfinite(TL) && TL>0.0f0 && isfinite(TR) && TR>0.0f0 &&
@@ -452,7 +457,7 @@ end
 const KFVS_CMAX = 3.0f0   # largest D3Q39 abscissa magnitude along any axis (shell 5)
 
 @inline function _fvflux_kfvs_pc(rL,uL,vL,pL,cL, rR,uR,vR,pR,cR,
-                                 cx_arr, cy_arr, w_arr, nx::Float32, ny::Float32, S::Float32)
+                                 cx_arr, cy_arr, w_arr, nx, ny, S)
     bad = (NaN32,NaN32,NaN32,NaN32,NaN32,NaN32,NaN32)
     if !(isfinite(rL) && rL>0.0f0 && isfinite(rR) && rR>0.0f0 &&
          isfinite(pL) && pL>0.0f0 && isfinite(pR) && pR>0.0f0 &&

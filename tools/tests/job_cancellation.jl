@@ -137,3 +137,58 @@ end
         JC.cancel!(token)
     end
 end
+
+@testset "Optional postprocessing cancellation owns its child tree" begin
+    dir=mktempdir(FIXTURE)
+    native=joinpath(dir,"flow_fields.vtu");write(native,"saved native solver field")
+    grandchild=joinpath(dir,"postprocess_grandchild.jl")
+    write(grandchild,"write(ARGS[1],string(getpid()));sleep(90)\n")
+    worker=joinpath(dir,"postprocess_worker.jl")
+    write(worker,"run(pipeline(`\$(Base.julia_cmd()) --startup-file=no "*repr(grandchild)*" \$(ARGS[1])`;stdout=devnull,stderr=devnull);wait=false)\n"*
+        "write(ARGS[2],string(getpid()));sleep(90)\n")
+    child_marker=joinpath(dir,"postprocess_child.pid")
+    parent_marker=joinpath(dir,"postprocess_parent.pid")
+    function fake_postprocessor(request;log_path,wait=false,prepare_command=identity)
+        @test wait===false
+        cmd=prepare_command(`$(Base.julia_cmd()) --startup-file=no $worker $child_marker $parent_marker`)
+        run(pipeline(cmd;stdout=devnull,stderr=devnull);wait=false)
+    end
+    sentinel=run(pipeline(JC.process_command(`$(Base.julia_cmd()) --startup-file=no $grandchild $(joinpath(dir,"sentinel.pid"))`);stdout=devnull,stderr=devnull);wait=false)
+    sentinel_owned=JC.track!(sentinel,nothing)
+    token=JC.CancellationToken(grace_seconds=0.)
+    task=@async try
+        JC.with_token(token) do
+            A._run_airfoil_postprocess(fake_postprocessor,Dict(),joinpath(dir,"postprocess.log"))
+        end
+    catch error
+        error
+    end
+    try
+        @test timedwait(()->isfile(child_marker)||istaskdone(task),30.;pollint=.1)==:ok
+        @test isfile(child_marker)
+        childpid=parse(Int,read(child_marker,String))
+        @test pid_active(childpid)
+        @test lock(()->length(token.children),token.lock)==1
+        JC.cancel!(token)
+        @test timedwait(()->istaskdone(task),10.;pollint=.1)==:ok
+        @test fetch(task) isa JC.JobCancelled
+        @test !pid_active(childpid)
+        @test process_running(sentinel)
+        @test read(native,String)=="saved native solver field"
+        @test lock(()->isempty(token.children),token.lock)
+    finally
+        JC.cancel!(token)
+        JC.finish!(sentinel_owned);wait(sentinel)
+    end
+    # Exercise the actual launcher's command-preparation contract without
+    # starting Makie or compiling its plotting environment.
+    prepared=Ref(false)
+    prepare(cmd)=begin
+        prepared[]=true
+        @test cmd isa Cmd
+        error("stop before postprocess spawn")
+    end
+    request=Dict("source_directory"=>dir,"destination_directory"=>joinpath(dir,"exports"))
+    @test_throws ErrorException A.LudwigPostprocess.launch(request;log_path=joinpath(dir,"contract.log"),prepare_command=prepare)
+    @test prepared[]
+end

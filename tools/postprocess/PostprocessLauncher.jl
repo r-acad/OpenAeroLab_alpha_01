@@ -15,15 +15,17 @@ _toml(x::AbstractFloat) = isfinite(x) ? x : string(x)
 _toml(x) = string(x)
 
 """
-    launch(request; log_path, wait=false) -> Process
+    launch(request; log_path, wait=false, prepare_command=identity) -> Process
 
 Run the headless CairoMakie postprocessor in its own Julia environment. The
 request uses source_directory/destination_directory plus report, charts,
 render_3d, chart_format, surface_quantity, camera and image dimensions.
 With wait=true, inspect success(process) and destination/manifest.json; an
 optional plot failure does not change the solver's completion status.
+`prepare_command` lets an owning application prepare its process group before
+spawn; the caller can then register and cancel the returned exact Process.
 """
-function launch(request::AbstractDict; log_path::AbstractString, wait::Bool=false)
+function launch(request::AbstractDict; log_path::AbstractString, wait::Bool=false, prepare_command::Function=identity)
     available() || error("The Makie postprocessor is unavailable")
     data = Dict{String,Any}(String(k)=>v for (k,v) in pairs(request))
     for key in ("source_directory", "destination_directory")
@@ -40,6 +42,7 @@ function launch(request::AbstractDict; log_path::AbstractString, wait::Bool=fals
     end
     julia = joinpath(Sys.BINDIR,Base.julia_exename())
     cmd = Cmd(`$julia --startup-file=no --project=$DIRECTORY -t 1 $(joinpath(DIRECTORY,"render.jl")) $request_file`; dir=DIRECTORY,windows_hide=true)
+    cmd = prepare_command(cmd)
     output = open(log,"w")
     process = try
         run(pipeline(cmd;stdout=output,stderr=output);wait=false)

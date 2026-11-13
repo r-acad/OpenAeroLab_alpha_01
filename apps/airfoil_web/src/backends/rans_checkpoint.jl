@@ -5,6 +5,16 @@ using Serialization
 
 const RANS_RESTART_FIELDS = (:rho, :ux, :uy, :T, :tk, :tom, :nut, :tnl)
 
+# Include new steady-solver helpers automatically: a checkpoint must not silently
+# survive a change to its reconstruction, Jacobian, preconditioner or stopping math.
+function _rans_restart_solver_sources(src=SRC)
+    folder=joinpath(src,"compressible")
+    names=sort!(unique(vcat(["cmesh_solver.jl","cmesh_solver_ka.jl",
+        "cmesh_geometric_reconstruction_ka.jl"],
+        filter(name->startswith(name,"cmesh_steady_")&&endswith(name,".jl"),readdir(folder)))))
+    Dict(name=>bytes2hex(open(sha256,joinpath(folder,name))) for name in names)
+end
+
 function _rans_restart_identity(cfg, mesh_path, topology)
     keys = ("mach", "reynolds", "time_mode", "viscosity_model", "mesh_mode",
             "trip_upper", "trip_lower", "fully_turbulent", "irsj",
@@ -14,9 +24,9 @@ function _rans_restart_identity(cfg, mesh_path, topology)
     Dict{String,Any}(
         "format"=>2, "topology"=>topology,
         "mesh_sha256"=>bytes2hex(open(sha256, mesh_path)),
-        "solver_sha256"=>Dict(name=>bytes2hex(open(sha256, joinpath(SRC, "compressible", name)))
-            for name in ("cmesh_solver.jl", "cmesh_solver_ka.jl", "cmesh_steady_implicit_ka.jl",
-                         "cmesh_steady_jfnk_ka.jl", "cmesh_steady_krylov_ka.jl")),
+        "solver_sha256"=>_rans_restart_solver_sources(),
+        "geometry_sha256"=>Dict(path=>bytes2hex(open(sha256,joinpath(SRC,split(path,'/')...)))
+            for path in ("cmesh/cmesh_metrics.jl","collision/lattice.jl")),
         "flux_sha256"=>Dict(name=>bytes2hex(open(sha256, joinpath(SRC, "cmesh", name)))
             for name in ("cmesh_flux_core.jl", "cmesh_sst_nonorth.jl", "cmesh_wallfun.jl",
                          "cmesh_eos_mix.jl", "cmesh_pressure_outlet.jl", "cmesh_species_sst.jl")),

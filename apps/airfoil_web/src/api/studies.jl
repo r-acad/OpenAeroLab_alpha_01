@@ -13,6 +13,21 @@ _study_json(code,data) = HTTP.Response(code,["Content-Type"=>"application/json; 
     "Cache-Control"=>"no-store"],JSON3.write(_clean(data)))
 _study_hash(path) = isfile(path) ? bytes2hex(sha256(read(path))) : nothing
 
+"A saved study selects the default parent for this new run, never an artifact URL."
+function _study_job_path(data::AbstractDict)
+    value=get(data,"study_path","")
+    value isa AbstractString || throw(ArgumentError("study_path must be a saved study filename"))
+    isempty(value) && return ""
+    path=_study_path(value;existing=true)
+    filesize(path)<=AIRFOIL_STUDY_LIMIT || throw(ArgumentError("Study exceeds 8 MB"))
+    document=try JSON3.read(read(path,String),Dict{String,Any}) catch
+        throw(ArgumentError("The selected study file cannot be read"))
+    end
+    get(document,"schema","")==AIRFOIL_STUDY_SCHEMA && get(document,"version",0)==1 ||
+        throw(ArgumentError("Choose a saved Airfoil Lab study"))
+    path
+end
+
 function _study_path(value; existing=false)
     value isa AbstractString && 1 <= length(value) <= 2000 && !occursin('\0',value) ||
         throw(ArgumentError("Choose a study file"))

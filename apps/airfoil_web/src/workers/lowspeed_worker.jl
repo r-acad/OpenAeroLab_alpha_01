@@ -26,7 +26,14 @@ let ap = Base.active_project()
     ap !== nothing && normpath(ap) == normpath(joinpath(SNAP, "src", "pbcav", "Project.toml")) ||
         error("lowspeed_worker.jl runs in the snapshot's PBCav environment only (active project: $(ap))")
 end
-include(joinpath(SNAP, "src", "pbcav", "PBCav.jl")); using .PBCav
+include(joinpath(@__DIR__, "..", "lowspeed_native_loader.jl"))
+const NATIVE_LOAD_CLOCK=time()
+const NATIVE_LOAD=AirfoilLowSpeedNative.load_native(SNAP)
+const PBCav=NATIVE_LOAD.native
+using .PBCav
+println("PB NATIVE LOAD: ",NATIVE_LOAD.mode,"; ",round(time()-NATIVE_LOAD_CLOCK;digits=3)," s; source ",NATIVE_LOAD.provenance.native_sha256,
+    "; host bundle ",NATIVE_LOAD.provenance.bundle_sha256)
+flush(stdout)
 using KernelAbstractions
 using Printf
 using SHA
@@ -276,7 +283,7 @@ end
 # pass a partial state to the next point.
 if R.outcome != :NOT_REACHED
     checkpoint = Dict{String,Any}(
-        "commit"=>CFG["commit"], "source_sha256"=>SOURCE_SHA, "mesh_hashes"=>collect(BLOCKS.hashes),
+        "commit"=>CFG["commit"], "source_sha256"=>SOURCE_SHA, "native_load_mode"=>NATIVE_LOAD.mode, "native_host_bundle_sha256"=>NATIVE_LOAD.provenance.bundle_sha256, "mesh_hashes"=>collect(BLOCKS.hashes),
         "foil_sha256"=>FOIL_SHA, "reynolds"=>k["PB_RE"],
         "tu"=>k["PB_SST_TU_INF"], "mut_ratio"=>k["PB_SST_MUT_RATIO"],
         "alpha_deg"=>k["PB_ALPHA"], "gamma"=>pv.G,
@@ -340,7 +347,7 @@ open(joinpath(OUT, "surface_cp.csv"), "w") do io
 end
 const CLp = L.CLp; const CLf = L.CLf
 result = Dict{String,Any}(
-    "source_sha256"=>SOURCE_SHA,
+    "source_sha256"=>SOURCE_SHA, "native_load_mode"=>NATIVE_LOAD.mode, "native_host_bundle_sha256"=>NATIVE_LOAD.provenance.bundle_sha256,
     "solver"=>"PBCav $(PBCav.PBCAV_VERSION)", "commit"=>CFG["commit"], "snapshot"=>SNAP, "threads"=>Threads.nthreads(),
     "rans_acceleration"=>Bool(get(CFG,"rans_acceleration",false)),
     "rans_acceleration_method"=>String(get(CFG,"rans_acceleration_method","standard")),

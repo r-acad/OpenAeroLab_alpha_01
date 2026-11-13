@@ -35,7 +35,7 @@ end
 
 @testset "Native DAT C+H meshes and exact Gurney retain their quality gates" begin
     mktempdir(SCRATCH) do dir
-        for (name,m,p,t) in (("0012",0.,.4,.12),("4412",.04,.4,.12))
+        for (name,m,p,t) in (("0012",0.,.4,.12),("2412",.02,.4,.12),("4412",.04,.4,.12))
             path=joinpath(dir,"naca$name.dat");write_naca_dat(path,m,p,t)
             af=PBCav.CMeshGen.read_airfoil_dat(path);gap=hypot(af.x[1]-af.x[end],af.y[1]-af.y[end]);nb=ceil(Int,gap/(3.9*3e-5))
             env=Dict("PB_DOMAIN"=>"freeair","PB_FOIL"=>path,"PB_MESH_LE_DS"=>"0","PB_MESH"=>"192,128,3e-5,1.10,80,64",
@@ -44,8 +44,23 @@ end
                 "PB_MESH_REMAP_WAKE"=>"300,500","PB_MESH_REMAP_STRIP"=>"graded")
             k,src=PBCav.read_knobs(env)
             gen=PBCav.generate_v1(PBCav.mesh_call(k,src));b=PBCav.cblocks(gen)
-            b=PBCav.freeair_blocks(PBCav.subdivide(PBCav.remap_columns(b,PBCav.remap_spec(k)).blocks,1))
-            cases=name=="4412" ? ((false,:lower,.01),(true,:lower,.01),(true,:upper,.01),(true,:symmetric,.04)) : ((false,:lower,.01),(true,:lower,.01))
+            parent=b
+            remapped=PBCav.remap_columns(b,PBCav.remap_spec(k))
+            @test remapped.info.version=="PBMeshRemapCommonV4"
+            foil=b.NIW+1:b.NIW+b.NIF+1
+            @test remapped.blocks.X[foil,1:3]==parent.X[foil,1:3]
+            @test remapped.blocks.Y[foil,1:3]==parent.Y[foil,1:3]
+            @test remapped.info.delta[b.NIW+1]==0
+            @test remapped.info.delta[b.NIW+b.NIF+1]==0
+            # The added strip width must start smoothly from the physical base.
+            # A nonzero fourth-power offset followed by a forced base station
+            # used to create a >20-degree boundary-cell kink here.
+            added=remapped.info.strip_W-remapped.info.strip_W0
+            ds=hypot(parent.X[b.NIW,1]-parent.X[b.NIW+1,1],parent.Y[b.NIW,1]-parent.Y[b.NIW+1,1])
+            @test added[1]==0
+            @test added[2]/ds<0.02
+            b=PBCav.freeair_blocks(PBCav.subdivide(remapped.blocks,1))
+            cases=name!="0012" ? ((false,:lower,.01),(true,:lower,.01),(true,:upper,.01),(true,:symmetric,.04)) : ((false,:lower,.01),(true,:lower,.01))
             for (flap,side,height) in cases
                 plan=flap ? PBCav.baffle_plan(b,PBCav.BaffleSpec(;side,h=height)) : nothing
                 blocks=plan===nothing ? b : plan.blocks
@@ -65,5 +80,20 @@ end
                 println("NACA$name flap=$flap side=$side height=$height cells=$(mesh.nc) app_gates=pass native_gates=pass")
             end
         end
+    end
+end
+
+@testset "Graded-strip widening meets the base without an offset" begin
+    W0=.00252;h0=3e-5;n=44;cw=1.02
+    width(h)=PBCav._graded_strip_width(W0,h,h0,n,cw)
+    @test width(h0)===W0
+    @test width(prevfloat(h0))===W0
+    @test width(nextfloat(h0))>=W0
+    s=1e-4;kap=.01
+    added(a)=width(hypot(h0,kap*a))-W0
+    @test isapprox(added(s)/added(s/2),4.;rtol=.002)
+    for h in (1e-4,1e-3,.01)
+        @test width(h)>W0
+        @test width(h)>n*h
     end
 end

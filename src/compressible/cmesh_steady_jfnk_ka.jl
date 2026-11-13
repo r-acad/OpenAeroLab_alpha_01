@@ -33,15 +33,20 @@ end
 # Kept separate so the convergence diagnostics can evolve without changing
 # the nonlinear acceptance test or the solver's physical equations.
 include("cmesh_steady_diagnostics_ka.jl")
+include("cmesh_steady_globalization_ka.jl")
 
 function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
                                       preconditioner::Symbol=:line,
-                                      pseudo_scale::Float32=1f0)
+                                      pseudo_scale::Float32=1f0,
+                                      block_scalar_type::Type{<:AbstractFloat}=Float32)
+    block_scalar_type in (Float32,Float64)||throw(ArgumentError("Block preconditioner precision must be Float32 or Float64"))
     2<=m<=96 || throw(ArgumentError("JFNK restart length must be 2:96"))
     preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi,
                        :swept_line,:cut_swept_line,:multilevel,
                        :kinetic_block_adi,:kinetic_fullvisc_block_adi,
                        :kinetic_weno_fullvisc_block_adi,
+                       :kinetic_muscl_fullvisc_block_adi,
+                       :kinetic_muscl_ls_fullvisc_block_adi,
                        :kinetic_block_unfloored_adi,
                        :kinetic_weno_fullvisc_unfloored_adi) ||
         throw(ArgumentError("unknown airfoil preconditioner"))
@@ -64,17 +69,23 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
     mg=preconditioner==:multilevel ? build_airfoil_mg_workspace(s,line,adi) : nothing
     kinetic=preconditioner in (:kinetic_block_adi,:kinetic_fullvisc_block_adi,
                                :kinetic_weno_fullvisc_block_adi,
+                               :kinetic_muscl_fullvisc_block_adi,
+                               :kinetic_muscl_ls_fullvisc_block_adi,
                                :kinetic_block_unfloored_adi,
                                :kinetic_weno_fullvisc_unfloored_adi) ?
         build_airfoil_kinetic_block_workspace(s;block_length=min(s.NI,64),
             fullvisc_block=preconditioner in (:kinetic_fullvisc_block_adi,
                 :kinetic_weno_fullvisc_block_adi,
+                :kinetic_muscl_fullvisc_block_adi,
+                :kinetic_muscl_ls_fullvisc_block_adi,
                 :kinetic_weno_fullvisc_unfloored_adi),
             weno_block=preconditioner in (:kinetic_weno_fullvisc_block_adi,
                 :kinetic_weno_fullvisc_unfloored_adi),
+            muscl_block=preconditioner in (:kinetic_muscl_fullvisc_block_adi,:kinetic_muscl_ls_fullvisc_block_adi),
+            muscl_ls_block=preconditioner==:kinetic_muscl_ls_fullvisc_block_adi,
             unfloored=preconditioner in (:kinetic_block_unfloored_adi,
                 :kinetic_weno_fullvisc_unfloored_adi),
-            pseudo_scale) : nothing
+            pseudo_scale,block_scalar_type) : nothing
     JFNKAirfoilWorkspace(line,adi,mg,kinetic,coupled_cut,
         swept_line,swept_line ? vec() : nothing,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
@@ -92,12 +103,12 @@ function _av_fill!(dst,a::Float32)
     dst
 end
 function _av_axpy!(dst,a::Float64,src)
-    af=Float32(a)
+    af=eltype(dst[1])(a)
     for k in 1:4; @. dst[k]=dst[k]+af*src[k]; end
     dst
 end
 function _av_scale!(dst,a::Float64)
-    af=Float32(a)
+    af=eltype(dst[1])(a)
     for k in 1:4; @. dst[k]=af*dst[k]; end
     dst
 end
@@ -187,13 +198,14 @@ function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
                           E::Float64,fd_scale::Float32;
                           local_cap::Float32=1.0f-3)
     state_norm=sqrt(ncell*(r*r+2*(r*u)^2+E*E))
-    h=Float32(fd_scale*sqrt(eps(Float32))*(1.0+state_norm)/nv)
+    F=eltype(v[1])
+    h=F(fd_scale*sqrt(eps(F))*(1.0+state_norm)/nv)
     # A global 2-norm step can perturb one wall cell by O(sqrt(N) eps^1/2)
     # when a preconditioned Krylov vector is localized there. Bound the
     # conservative change in every cell before sampling the nonlinear flux.
-    inv_r=Float32(1/r)
-    inv_m=Float32(1/(r*u))
-    inv_e=Float32(1/E)
+    inv_r=F(1/r)
+    inv_m=F(1/(r*u))
+    inv_e=F(1/E)
     max_scaled=if _implicit_cpu_strided(v[1])
         # Four cache-friendly CPU reductions avoid a mesh-sized broadcast
         # temporary at every matrix-free Jacobian action.
@@ -284,9 +296,10 @@ end
 function _airfoil_fgmres!(s::KSol,w::JFNKAirfoilWorkspace;
                           linear_tol::Float64=0.1,fd_scale::Float32=1.0f0,
                           fd_scheme::Symbol=:forward,
-                          fd_local_cap::Float32=1.0f-3)
+                          fd_local_cap::Float32=1.0f-3,maxiter::Int=w.m)
     0<linear_tol<1 || throw(ArgumentError("linear_tol must be in (0,1)"))
-    m=w.m;V=w.basis;Z=w.preconditioned
+    1<=maxiter<=w.m || throw(ArgumentError("cycle maxiter must be in 1:restart"))
+    m=maxiter;V=w.basis;Z=w.preconditioned
     H=zeros(Float64,m+1,m);g=zeros(Float64,m+1)
     cs=zeros(Float64,m);sn=zeros(Float64,m)
     _av_fill!(w.delta,0.0f0)
@@ -331,15 +344,25 @@ function _airfoil_fgmres_restarted!(s::KSol,w::JFNKAirfoilWorkspace;
                                     linear_cycles::Int=1,
                                     fd_scale::Float32=1.0f0,
                                     fd_scheme::Symbol=:forward,
-                                    fd_local_cap::Float32=1.0f-3)
+                                    fd_local_cap::Float32=1.0f-3,
+                                    linear_maxiter::Union{Nothing,Int}=nothing,
+                                    restart_callback=nothing)
     1<=linear_cycles<=4 || throw(ArgumentError("linear_cycles must be 1:4"))
+    maxiter=linear_maxiter===nothing ? w.m*linear_cycles : linear_maxiter
+    1<=maxiter<=10000 || throw(ArgumentError("linear_maxiter must be in 1:10000"))
     _av_copy!(w.full_rhs,w.rhs)
     _av_fill!(w.total_delta,0.0f0)
     beta=_av_norm(w.full_rhs)
     beta==0 && return (0,0.0)
     total=0;rel=1.0
-    for _ in 1:linear_cycles
-        kits,_=_airfoil_fgmres!(s,w;linear_tol,fd_scale,fd_scheme,fd_local_cap)
+    while total<maxiter
+        current_beta=_av_norm(w.rhs)
+        current_beta<=linear_tol*beta && break
+        # Every restart aims at the ORIGINAL absolute forcing goal. Solving
+        # each correction to the same relative tolerance can oversolve it.
+        cycle_tol=min(0.999,linear_tol*beta/current_beta)
+        kits,_=_airfoil_fgmres!(s,w;linear_tol=cycle_tol,fd_scale,fd_scheme,fd_local_cap,
+            maxiter=min(w.m,maxiter-total))
         total+=kits
         _av_axpy!(w.total_delta,1.0,w.delta)
         _airfoil_jacobian_vec!(w.work,w.total_delta,s,w;
@@ -347,6 +370,7 @@ function _airfoil_fgmres_restarted!(s::KSol,w::JFNKAirfoilWorkspace;
         for k in 1:4; @. w.rhs[k]=w.full_rhs[k]-w.work[k]; end
         rel=_av_norm(w.rhs)/beta
         isfinite(rel) || throw(ArgumentError("nonfinite restarted linear residual"))
+        restart_callback===nothing || restart_callback((;iterations=total,relative=rel))
         rel<=linear_tol && break
     end
     _av_copy!(w.delta,w.total_delta)
@@ -362,8 +386,17 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
                                fd_scheme::Symbol=:forward,
                                fd_local_cap::Float32=1.0f-3,
                                merit_reference::Float64=NaN,
+                               globalization::Symbol=:steady,
+                               physical_fraction::Float32=0.2f0,
+                               linear_residual_max::Float64=0.95,
+                               linear_maxiter::Union{Nothing,Int}=nothing,
                                krylov_workspace=nothing)
-    _implicit_admit(s,cfl)
+    globalization in (:steady,:pseudo_transient) ||
+        throw(ArgumentError("globalization must be :steady or :pseudo_transient"))
+    isfinite(physical_fraction) && 0.0f0<physical_fraction<=0.5f0 ||
+        throw(ArgumentError("physical_fraction must be in (0,0.5]"))
+    0<linear_residual_max<1 || throw(ArgumentError("linear_residual_max must be in (0,1)"))
+    _implicit_admit(s,cfl;max_cfl=globalization==:pseudo_transient ? 1.0f5 : 10.0f0)
     isfinite(fd_scale) && 0.1f0<=fd_scale<=16.0f0 ||
         throw(ArgumentError("fd_scale must be in [0.1,16]"))
     fd_scheme in (:forward,:central) ||
@@ -395,7 +428,8 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
         return (accepted=true,alpha=0.0f0,linear_iterations=0,
                 linear_relative=0.0,merit_before=before,merit_after=before,
                 best_trial_merit=before,best_trial_alpha=0.0f0,
-                physical_trials=0,merit_reference=reference)
+                physical_trials=0,merit_reference=reference,globalization,
+                acceptance_merit_after=before,physical_alpha=1.0f0)
     end
     _k_implicit_line_coeffs!(b)(line.lamS,line.lamN,line.d0,
         s.rho,s.ux,s.uy,s.T,s.nut,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,
@@ -418,10 +452,20 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     for k in 1:4; @. w.rhs[k]=w.base_residual[k]/s.vol; end
     kits,rel=krylov_workspace===nothing ?
         _airfoil_fgmres_restarted!(s,w;
-            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap) :
+            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap,linear_maxiter) :
         _airfoil_krylov_gmres!(s,w,krylov_workspace;
-            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap)
-    alpha=1.0f0
+            linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap,linear_maxiter)
+    if globalization==:pseudo_transient && rel>linear_residual_max
+        _raw_residual_ka!(s,Int32(2),Int32(1))
+        return (accepted=false,alpha=0.0f0,linear_iterations=kits,
+            linear_relative=rel,merit_before=before,merit_after=before,
+            best_trial_merit=Inf,best_trial_alpha=0.0f0,physical_trials=0,
+            merit_reference=reference,globalization,
+            acceptance_merit_after=before,physical_alpha=0.0f0)
+    end
+    physical_alpha=globalization==:pseudo_transient ?
+        _airfoil_physical_alpha(s,w,physical_fraction) : 1.0f0
+    alpha=physical_alpha
     best=Inf;best_alpha=0.0f0;physical_trials=0
     for _ in 1:max_backtracks
         _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,backup...,
@@ -437,14 +481,18 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
             # An opt-in recent-maximum reference can pass a small local
             # residual rise, while the per-step cap limits an SST-coupled
             # excursion. The default reference is the current merit.
-            if isfinite(after) &&
-               after<reference*(1.0-1e-4*Float64(alpha)) &&
-               after<before*1.02
+            objective=globalization==:pseudo_transient ? _airfoil_pseudo_merit(s,w) : after
+            objective_reference=globalization==:pseudo_transient ? before : reference
+            steady_cap=globalization==:pseudo_transient ? 2.0 : 1.02
+            if isfinite(after) && isfinite(objective) &&
+               objective<objective_reference*(1.0-1e-4*Float64(alpha)) &&
+               after<before*steady_cap
                 prepare_dt_ka!(s,min(cfl,0.45f0))
                 return (accepted=true,alpha,linear_iterations=kits,
                         linear_relative=rel,merit_before=before,merit_after=after,
                         best_trial_merit=best,best_trial_alpha=best_alpha,
-                        physical_trials,merit_reference=reference)
+                        physical_trials,merit_reference=reference,globalization,
+                        acceptance_merit_after=objective,physical_alpha)
             end
         end
         alpha*=0.5f0
@@ -454,7 +502,8 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
     return (accepted=false,alpha=0.0f0,linear_iterations=kits,
             linear_relative=rel,merit_before=before,merit_after=before,
             best_trial_merit=best,best_trial_alpha=best_alpha,
-            physical_trials,merit_reference=reference)
+            physical_trials,merit_reference=reference,globalization,
+            acceptance_merit_after=before,physical_alpha)
 end
 
 """Adaptive pseudo-CFL controller for the opt-in steady A+/C SST march.
@@ -482,6 +531,8 @@ mutable struct JFNKAirfoilController{W,K,S}
     recovery_iterations::Int
     recovery_events::Int
     restart_cfl::Float32
+    globalization::Symbol
+    physical_fraction::Float32
 end
 
 function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
@@ -490,9 +541,16 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     max_attempts::Int=4,linear_solver::Symbol=:native,
     nonmonotone_window::Int=0,preconditioner::Symbol=:line,
     pseudo_scale::Float32=1f0,
-    recovery_steps::Int=0,recovery_limit::Int=200)
+    recovery_steps::Int=0,recovery_limit::Int=200,
+    globalization::Symbol=:steady,physical_fraction::Float32=0.2f0,
+    block_scalar_type::Type{<:AbstractFloat}=Float32)
+    globalization in (:steady,:pseudo_transient) ||
+        throw(ArgumentError("globalization must be :steady or :pseudo_transient"))
+    isfinite(physical_fraction) && 0.0f0<physical_fraction<=0.5f0 ||
+        throw(ArgumentError("physical_fraction must be in (0,0.5]"))
+    allowed_cfl=globalization==:pseudo_transient ? 1.0f5 : 10.0f0
     isfinite(min_cfl) && isfinite(initial_cfl) && isfinite(max_cfl) &&
-        0.0f0<min_cfl<=initial_cfl<=max_cfl<=10.0f0 ||
+        0.0f0<min_cfl<=initial_cfl<=max_cfl<=allowed_cfl ||
         throw(ArgumentError("invalid JFNK pseudo-CFL bounds"))
     isfinite(growth) && 1.0f0<growth<=2.0f0 ||
         throw(ArgumentError("JFNK CFL growth must be in (1,2]"))
@@ -503,7 +561,7 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
         throw(ArgumentError("nonmonotone_window must be 0:20"))
     0<=recovery_steps<=100 && recovery_steps<=recovery_limit<=10_000 ||
         throw(ArgumentError("recovery_steps must be 0:100 and recovery_limit must be between recovery_steps and 10000"))
-    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale)
+    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale,block_scalar_type)
     krylov_workspace=linear_solver==:krylov ?
         build_krylov_airfoil_workspace(s,workspace) : nothing
     # Reusable backups avoid allocating mesh-sized arrays on every nonlinear
@@ -511,7 +569,8 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     coupled_backup=map(name->similar(getproperty(s,name)),_AIRFOIL_COUPLED_STATE)
     JFNKAirfoilController(workspace,krylov_workspace,coupled_backup,initial_cfl,
         min_cfl,max_cfl,growth,max_attempts,0,0,
-        nonmonotone_window,Float64[],recovery_steps,recovery_limit,0,0,initial_cfl)
+        nonmonotone_window,Float64[],recovery_steps,recovery_limit,0,0,initial_cfl,
+        globalization,physical_fraction)
 end
 
 function _airfoil_coupled_backup!(s::KSol,c::JFNKAirfoilController)
@@ -550,7 +609,7 @@ function enables failure-path testing without modifying the solver kernels.
 """
 function _airfoil_coupled_sst!(s::KSol,c::JFNKAirfoilController;
     corrected_wall_metric::Bool=false,nonorth_diffusion::Bool=false,
-    sst_substeps::Int=1,advance! = sst_step_ka!,saved_clock::Float32=s.last_global_dt)
+    sst_substeps::Int=1,advance! = sst_step_ka!,saved_clock=s.last_global_dt)
     accepted=false
     try
         for k in 1:sst_substeps
@@ -610,7 +669,7 @@ function _airfoil_explicit_recovery!(s::KSol,c::JFNKAirfoilController;
     end
 end
 
-@inline _airfoil_next_cfl(used::Float32,alpha::Float32,
+@inline _airfoil_next_cfl(used::Float32,alpha::Real,
     min_cfl::Float32,max_cfl::Float32,growth::Float32) =
     alpha>=0.9f0 ? min(max_cfl,used*growth) :
                     max(min_cfl,used*max(0.5f0,alpha))
@@ -623,7 +682,8 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
     fd_scale::Float32=1.0f0,fd_scheme::Symbol=:forward,
     fd_local_cap::Float32=1.0f-3,corrected_wall_metric::Bool=false,
     nonorth_diffusion::Bool=false,max_backtracks::Int=8,
-    sst_substeps::Int=1,_sst_advance! = sst_step_ka!)
+    sst_substeps::Int=1,linear_maxiter::Union{Nothing,Int}=nothing,
+    _sst_advance! = sst_step_ka!)
     s.sst || throw(ArgumentError("JFNK RANS controller requires SST"))
     1<=sst_substeps<=100 ||
         throw(ArgumentError("sst_substeps must be 1:100"))
@@ -638,7 +698,9 @@ function step_jfnk_rans_ka!(s::KSol,c::JFNKAirfoilController;
         used=c.cfl
         result=step_jfnk_airfoil_ka!(s,c.workspace,used;
             linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap,max_backtracks,
+            linear_maxiter,
             merit_reference=reference,
+            globalization=c.globalization,physical_fraction=c.physical_fraction,
             krylov_workspace=c.krylov_workspace)
         if result.accepted
             coupled=_airfoil_coupled_sst!(s,c;corrected_wall_metric,

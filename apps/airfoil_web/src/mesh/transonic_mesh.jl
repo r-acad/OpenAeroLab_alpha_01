@@ -230,7 +230,10 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         shock_layer::Bool=true)
     far_extent >= 10 || throw(ArgumentError("far_extent must be at least 10 chords"))
     n_base >= 1 || throw(ArgumentError("n_base must be positive"))
-    outer_angle = isnothing(farfield_angle_deg) ? alpha_deg : farfield_angle_deg
+    fixed_orientation = mesh_refinement === :aplus_uniform_fixed
+    fixed_orientation && farfield_angle_deg !== nothing && farfield_angle_deg != 0.0 &&
+        throw(ArgumentError("aplus_uniform_fixed requires a zero-degree mesh frame; physical alpha_deg is independent"))
+    outer_angle = fixed_orientation ? 0.0 : isnothing(farfield_angle_deg) ? alpha_deg : farfield_angle_deg
     isfinite(outer_angle) && -90 <= outer_angle <= 90 ||
         throw(ArgumentError("farfield_angle_deg must be finite and within [-90, 90] degrees"))
     conditioned=CMeshGen.condition_airfoil(af;
@@ -255,12 +258,15 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
     blunt && wall_dn1 < dn1/8 && throw(ArgumentError(
         "trailing-edge gap $gap is below the resolvable scale of the requested wall spacing $dn1; " *
         "refine the CFD wall spacing or use a section with a resolved trailing edge"))
-    te_ds = blunt ? 1.5 * gap / (2nb) : 0.0
+    # The quality profile spreads the finite-base turn over six surface intervals.
+    # Its near-unit surface/base spacing avoids a requested 50% width jump.
+    uniform_quality = mesh_refinement in (:aplus_uniform_quality,:aplus_uniform_fixed)
+    te_ds = blunt ? (uniform_quality ? 1.1 : 1.5) * gap / (2nb) : 0.0
     spec = CMeshGen.ChannelSpec(; height=2far_extent,
         xi_in=0.5 - far_extent, xi_out=0.5 + far_extent,
         xi_ref=0.5, ref=(0.5, 0.0), angle_deg=outer_angle)
-    mesh_refinement in (:none,:aplus_nested_refined) ||
-        throw(ArgumentError("mesh_refinement must be :none or :aplus_nested_refined"))
+    mesh_refinement in (:none,:aplus_nested_refined,:aplus_uniform_quality,:aplus_uniform_fixed) ||
+        throw(ArgumentError("mesh_refinement must be :none, :aplus_nested_refined, :aplus_uniform_quality or :aplus_uniform_fixed"))
     generate(growth,blend,maxspacing,delay; nose_anchor_fillet=0.0) = CMeshGen.generate_cmesh(af;
         n_foil=n_foil, n_wake=n_wake, n_normal=n_normal,
         dn1=wall_dn1, growth_max=growth_max,
@@ -271,20 +277,43 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
         # without changing the base-to-surface Vinokur join.
         le_ds=condition_geometry && !blunt ? le_ds : 0.0,
         channel=spec, n_base=nb, te_ds=te_ds, te_topology=:aplus,
-        wake_blend_fraction=blend,
+        wake_blend_fraction=blend, te_fan_cells=uniform_quality ? 6.0 : 2.0,
         wake_first_spacing_growth=growth,
         wake_first_spacing_max=maxspacing,
         wake_first_spacing_delay_cells=delay,nose_anchor_fillet)
-    actual_blend = mesh_refinement === :none ? wake_blend_fraction : 0.10
-    actual_growth = wake_first_spacing_growth
-    actual_delay = wake_first_spacing_delay_cells
-    actual_maxspacing = mesh_refinement === :none ? wake_first_spacing_max :
+    actual_blend = uniform_quality ? 0.25 : mesh_refinement === :none ? wake_blend_fraction : 0.10
+    actual_growth = uniform_quality ? 1.12 : wake_first_spacing_growth
+    actual_delay = uniform_quality ? clamp(round(Int,16n_wake/64),0,n_wake-1) : wake_first_spacing_delay_cells
+    actual_maxspacing = uniform_quality ? 0.01 : mesh_refinement === :none ? wake_first_spacing_max :
                         (wake_first_spacing_max > 0 ? wake_first_spacing_max : 0.01)
     refinement_metadata = Dict{String,Any}()
     wall_projection_shift=0.0
     mesh = if mesh_refinement === :none
         candidate=generate(actual_growth,actual_blend,actual_maxspacing,actual_delay)
         condition_geometry && (wall_projection_shift=_transonic_curve_wall!(candidate,curve,nb))
+        candidate
+    elseif uniform_quality
+        # Uniform children reduce centroid/taper errors in stretched wake cells.
+        # No source-name exception, geometry smoothing, or relaxed gate admits a mesh.
+        source_mesh=generate(actual_growth,actual_blend,actual_maxspacing,actual_delay)
+        candidate,meta,_=_nested_refine_candidate(source_mesh,nb;uniform_factor=3)
+        if condition_geometry
+            wall_projection_shift=_transonic_curve_wall!(candidate,curve,meta["refined_n_base"])
+            meta["original_foil_j1j2_preserved_before_curve_projection"]=meta["original_foil_j1j2_preserved"]
+            meta["original_foil_j1j2_preserved"]=false
+            meta["wall_representation"]="shared source-interpolating C2 curve; children projected before geometric gates"
+        end
+        Q=CMeshGen.CMeshQualityMetrics
+        failed=Q.gate_failures(Q.quality_gates(Q.quality_summary(candidate.X,candidate.Y,candidate.NIW,candidate.NIF);cavitating=false))
+        isempty(failed) || error("uniform A-plus quality profile refused: " * join(failed,"; "))
+        wake=_nested_wake_cut_metrics(candidate)
+        wake.skew <= 4.0 && wake.ar <= 1500.0 ||
+            error("uniform A-plus quality profile failed the unchanged wake skew/aspect gates")
+        meta["nested_profile_family"]="smooth_finite_base_fan_uniform_v1"
+        meta["te_wall_fan_intervals"]=6.0
+        meta["provisional_wake_cut_skew_over_distance"]=wake.skew
+        meta["provisional_first_row_wake_aspect_ratio"]=wake.ar
+        refinement_metadata=meta
         candidate
     else
         # Search tested topology families in a deterministic order, then
@@ -475,7 +504,7 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
     quality.nfold == 0 && quality.area_min > 0 ||
         error("transonic mesh has folded or nonpositive-area cells")
     quality_report = shock_quality === nothing ? _transonic_quality_report(mesh) : shock_quality
-    mesh_refinement === :aplus_nested_refined &&
+    mesh_refinement in (:aplus_nested_refined,:aplus_uniform_quality,:aplus_uniform_fixed) &&
         !quality_report["provisional_wake_gates"]["passed"] &&
         error("nested mesh failed the provisional wake-cut skew/aspect gates")
     partner_distance = maximum(hypot(mesh.X[i,1] - mesh.X[mesh.NI+2-i,1],
@@ -508,13 +537,17 @@ function _build_transonic_mesh(af::CMeshGen.AirfoilPts;
             "CMeshGen.ChannelMesh nested-i A-plus geometry with external-flow farfield metrics",
         "mesh_topology"=>mesh_refinement === :none ?
             (blunt ? "aplus_v1 finite base" : "sharp") :
-            (blunt ? "aplus_nested_refined_v1 finite base" : "aplus_nested_refined_v1 sharp"),
+            (fixed_orientation ? (blunt ? "aplus_uniform_fixed_v1 finite base" : "aplus_uniform_fixed_v1 sharp") :
+             uniform_quality ? (blunt ? "aplus_uniform_quality_v1 finite base" : "aplus_uniform_quality_v1 sharp") :
+             (blunt ? "aplus_nested_refined_v1 finite base" : "aplus_nested_refined_v1 sharp")),
         "mesh_refinement"=>String(mesh_refinement),
         "n_base"=>actual_nb, "requested_n_base"=>n_base,
         "te_ds"=>te_ds, "wall_dn1"=>wall_dn1,
         "far_extent"=>far_extent, "farfield_height"=>spec.height,
         "farfield_xi_in"=>spec.xi_in, "farfield_xi_out"=>spec.xi_out,
         "farfield_angle_deg"=>outer_angle,
+        "mesh_angle_deg"=>outer_angle, "flow_alpha_deg"=>alpha_deg,
+        "mesh_orientation_policy"=>fixed_orientation ? "fixed chord frame" : "flow angle or explicit frame",
         "wake_blend_fraction"=>actual_blend,
         "wake_first_spacing_growth"=>actual_growth,
         "wake_first_spacing_max"=>actual_maxspacing,

@@ -1061,14 +1061,14 @@ base half, m and the corner included, takes that half's direction; the surface n
 intervals of a corner blend from it into their own normal with a cosine. The upper junction node is then set by the upper
 wake loop (to b_up, at wake distance 0).
 """
-function _te_wall_normals!(nb, surf, surf_s, NIW::Int, n_base::Int, b_lo, b_up)
+function _te_wall_normals!(nb, surf, surf_s, NIW::Int, n_base::Int, b_lo, b_up; fan_cells::Float64=_TE_FAN_CELLS)
     NIF_s = length(surf_s) - 1; NIF = length(surf) - 1
     nb[NIW+1] = b_lo                                           # lower junction node m
     nb0 = copy(nb)                                             # the foil loop's central-difference normals
     for k in 1:n_base+1; nb[NIW+k] = b_lo; end                 # lower base: m .. lower corner
     for k in NIF+1-n_base:NIF+1; nb[NIW+k] = b_up; end         # upper base: upper corner .. m
-    Lc_lo = _TE_FAN_CELLS*hypot(surf_s[2][1]-surf_s[1][1], surf_s[2][2]-surf_s[1][2])
-    Lc_up = _TE_FAN_CELLS*hypot(surf_s[NIF_s+1][1]-surf_s[NIF_s][1], surf_s[NIF_s+1][2]-surf_s[NIF_s][2])
+    Lc_lo = fan_cells*hypot(surf_s[2][1]-surf_s[1][1], surf_s[2][2]-surf_s[1][2])
+    Lc_up = fan_cells*hypot(surf_s[NIF_s+1][1]-surf_s[NIF_s][1], surf_s[NIF_s+1][2]-surf_s[NIF_s][2])
     sarc = 0.0
     for k in n_base+2:NIF-n_base                               # lower surface, walking away from the lower corner
         sarc += hypot(surf[k][1]-surf[k-1][1], surf[k][2]-surf[k-1][2])
@@ -1535,6 +1535,7 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
                         n_base::Int=0, te_ds::Float64=0.0, wake_near_ds::Float64=0.0, wake_near_len::Float64=0.0,
                         wake_near_growth::Float64=1.05, te_topology::Symbol=:aplus,
                         wake_blend_fraction::Float64=0.25,
+                        te_fan_cells::Float64=_TE_FAN_CELLS,
                         wake_first_spacing_growth::Float64=1.0,
                         wake_first_spacing_max::Float64=0.0,
                         wake_first_spacing_delay_cells::Int=0,
@@ -1562,6 +1563,8 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
     # verification, memory/project_docs/_records/2026-10-02_blunt_te/stage1/verify_range/README.md F6 and F9); every one passes at the
     # defaults.
     n_base >= 0 || throw(ArgumentError("n_base must be >= 0 (got $n_base)"))
+    isfinite(te_fan_cells) && te_fan_cells >= 1 ||
+        throw(ArgumentError("te_fan_cells must be finite and at least 1"))
     isfinite(wake_blend_fraction) && 0 < wake_blend_fraction <= 1 ||
         throw(ArgumentError("wake_blend_fraction must be finite and in (0, 1] (got $wake_blend_fraction)"))
     isfinite(wake_first_spacing_growth) && wake_first_spacing_growth >= 1 ||
@@ -1874,7 +1877,7 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
             tx = surf[kp][1]-surf[km][1]; ty = surf[kp][2]-surf[km][2]; tn = hypot(tx,ty)
             nb[NIW+k] = (-ty/tn, tx/tn)
         end
-        n_base > 0 && !strip_mode && _te_wall_normals!(nb, surf, surf_s, NIW, n_base, n_lo, n_up)   # blunt edge: base, junction, corner fan
+        n_base > 0 && !strip_mode && _te_wall_normals!(nb, surf, surf_s, NIW, n_base, n_lo, n_up; fan_cells=te_fan_cells)   # blunt edge: base, junction, corner fan
         if strip_mode
             for k in 1:NIW+1                                   # upper leg: upper corner CU -> outlet, its own stations
                 d = dU[k]
@@ -2230,7 +2233,7 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
         reference = generate_cmesh(af; n_foil,n_wake,n_normal,dn1,growth_max,R_ff,L_wake,
             cluster_le,cluster_te,smooth_iters,bl_freeze,channel,smooth_block,smooth_max_extra,le_ds,
             n_base,te_ds,wake_near_ds,wake_near_len,wake_near_growth,te_topology,
-            wake_blend_fraction,wake_first_spacing_growth,wake_first_spacing_max,
+            wake_blend_fraction,te_fan_cells,wake_first_spacing_growth,wake_first_spacing_max,
             wake_first_spacing_delay_cells,nose_anchor_fillet=0.0,ray_anchor_fillet=0.0,strip_leg_edge_spacing,
             quality,surface_evaluator,surface_distribution,surface_curvature_weight)
         npin = min(12,size(mesh.X,2))

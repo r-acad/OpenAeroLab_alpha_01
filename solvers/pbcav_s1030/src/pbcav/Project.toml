@@ -1,25 +1,31 @@
-[deps]
-Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
-Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
-TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+name = "PBCavNativeCache"
+uuid = "6f0a2905-8233-4ec0-9ceb-66eb6ae42f8a"
+version = "0.1.0"
 
 [compat]
 Adapt = "=4.4.0"
 Atomix = "=1.1.2"
 CUDA = "=5.10.0"
 KernelAbstractions = "=0.9.40"
+PrecompileTools = "=1.2.1"
 StaticArrays = "=1.9.16"
 julia = "=1.13.2"
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+Atomix = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [extras]
 CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
 
 [preferences.CUDA_Runtime_jll]
-version = "12.9"
 local = "false"
+version = "12.9"

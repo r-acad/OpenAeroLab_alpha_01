@@ -105,8 +105,9 @@
 #          cell (solved so that they fill the station's length); at the base this is the base graded toward the corners
 #          (edge e_c, the corner cells' volume ratio across the interface about 1 instead of 195);
 #      (c) the strip WIDENS downstream so that its cells can grow with the legs' first cells: the station's length is
-#          W(k) = (W0(k)^4 + (c_w NS max(e_lo, e_up))^4)^(1/4) (W0 the parent's station length, c_w = 1.02 so that the halves
-#          never shrink toward the middle), reached by moving each leg node outward ALONG ITS C COLUMN by the same distance
+#          W(k)^4 = W0(k)^4 + (c_w NS)^4 (max(e_lo,e_up)^4 - max(e_base_lo,e_base_up)^4). The base contribution is
+#          subtracted, so W(1)=W0(1) without an exceptional jump; added width starts quadratically downstream. The factor
+#          c_w=1.02 retains the far-wake margin. Reached by moving each leg node outward ALONG ITS C COLUMN by the same distance
 #          delta(k) (solved by bisection; delta(1) = 0, the base and the corners exact); the strip's station k is the segment
 #          between the two new leg nodes (the strip's edge nodes ARE the C block's new row-0 nodes, copied, so the mesh stays
 #          conforming), and the leg column's rows are delta(k) plus its merge profile, then its own outer section;
@@ -152,6 +153,8 @@ const MESH_REMAP_VERSION = "PBMeshRemapCommonV1"
 const MESH_REMAP_VERSION_B = "PBMeshRemapCommonV2"
 "The tag when the graded strip's base is capped (strip_cap != 0, header item 7(d)); the receipt then also gives the cap and the strip's NS."
 const MESH_REMAP_VERSION_C = "PBMeshRemapCommonV3"
+# Base-compatible graded-strip widening; removes the forced station-1/2 jump.
+const MESH_REMAP_VERSION_D = "PBMeshRemapCommonV4"
 
 """
     RemapSpec(; rows=0, n_keep=6, n_blend=24, ratio=0.0, y_law=5.0, wake_ar=500.0, wake_ar_outlet=750.0, stall_h=0.0,
@@ -506,6 +509,16 @@ function merge_profile(Dref::Vector{Float64}, h1::Float64; q_slow::Float64=1.0, 
     d, (Lambda0=L0, jA=jA, jB=jB, merge=je)
 end
 
+# Graded-strip widening starts at the exact physical base, with zero initial
+# slope under the quadratic wake law. Subtracting the base edge contribution
+# avoids the previous nonzero offset followed by a forced station-1 exception.
+# The factored fourth-power difference avoids cancellation near the base.
+function _graded_strip_width(W0::Float64, edge::Float64, edge0::Float64, NS::Int, cw::Float64)
+    edge <= edge0 && return W0
+    extra = (cw*NS)^4 * (edge-edge0)*(edge+edge0)*(edge^2+edge0^2)
+    sqrt(sqrt(W0^4 + extra))
+end
+
 """
     remap_target_distances(b::CBlocks, spec::RemapSpec; paths=column_paths(b)) -> (D, info)
 
@@ -596,7 +609,7 @@ function remap_target_distances(b::CBlocks, spec::RemapSpec; paths::Vector{Colum
             pl = paths[il]; pu = paths[iu]
             W0 = hypot(X[iu, 1] - X[il, 1], Y[iu, 1] - Y[il, 1])
             el = k == 1 ? e_c[1] : h1[il]; eu = k == 1 ? e_c[2] : h1[iu]
-            W = (W0^4 + (spec.strip_cw*NS*max(el, eu))^4)^(1/4)
+            W = _graded_strip_width(W0, max(el, eu), max(e_c...), NS, spec.strip_cw)
             push!(W0k, W0); push!(Wk, W)
             k == 1 && continue
             len(dl) = (a = path_points(pl, [dl]); c = path_points(pu, [dl]); hypot(c[1][1] - a[1][1], c[2][1] - a[2][1]))
@@ -674,7 +687,7 @@ function remap_target_distances(b::CBlocks, spec::RemapSpec; paths::Vector{Colum
     gr = [D[i, j+2] - D[i, j+1] for i in 1:NI+1, j in 0:NJn-1]
     rr = [max(gr[i, j+1]/gr[i, j], gr[i, j]/gr[i, j+1]) for i in 1:NI+1, j in 1:NJn-1]
     wk = vcat(collect(lower), collect(upper))
-    info = (version=capped ? MESH_REMAP_VERSION_C : _remap_b(spec) ? MESH_REMAP_VERSION_B : MESH_REMAP_VERSION, rows=NJn,
+    info = (version=graded ? MESH_REMAP_VERSION_D : _remap_b(spec) ? MESH_REMAP_VERSION_B : MESH_REMAP_VERSION, rows=NJn,
             parent_rows=NJ, n_keep=nk,
             n_blend=nbl, h1ref=h1ref, ratio=r,
             y_law=spec.y_law, xi_o=xo, law_rows=nl, wake_ar=spec.wake_ar, wake_ar_outlet=spec.wake_ar_outlet, wake_slope=kap,
@@ -759,7 +772,7 @@ function remap_receipt_line(r)
     s2 = s * @sprintf(" strip=%s strip_edge=%.6g", a.strip, a.strip_edge) *
         (a.strip === :graded ? @sprintf(" strip_q_base=%.5f,%.5f strip_W_base=%.6e strip_W_out=%.6e strip_e_out=%.6e,%.6e delta_max=%.6e strip_x_sha256=%s strip_y_sha256=%s",
                                         si.q_base..., si.W_base, si.W_out, si.e_out..., maximum(a.delta), h[3], h[4]) : "")
-    a.version == MESH_REMAP_VERSION_C || return s2
+    isfinite(a.strip_cap) || return s2
     s2 * @sprintf(" strip_cap=%.6e strip_ns=%d strip_ns_parent=%d strip_m_uncapped=%.6e strip_base_max=%.6e strip_out_max=%.6e",
                   a.strip_cap, a.strip_ns, a.strip_ns_parent, a.strip_m_uncapped, si.m_base, si.m_out)
 end

@@ -50,7 +50,9 @@ function _lowspeed_initial_source(case)
     end
     root=_safe_job_dir(id)
     isdir(root) || throw(ArgumentError("Initial-flow job directory is missing"))
-    allowed=any(base->isdir(base)&&try _initial_confined(root,base);true catch;false end,(RUN_DIR,LEGACY_RUN_DIR))
+    registered=AirfoilResultLocations.registered_directory(RUN_DIR,id)
+    allowed=registered!==nothing && normpath(registered)==normpath(root) ||
+        any(base->isdir(base)&&try _initial_confined(root,base);true catch;false end,(RUN_DIR,LEGACY_RUN_DIR))
     allowed || throw(ArgumentError("Initial-flow job is outside saved result storage"))
     lowdir=joinpath(root,"lowspeed")
     isdir(lowdir) || throw(ArgumentError("Initial-flow job has no low-speed result directory"))

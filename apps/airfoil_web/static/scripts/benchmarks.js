@@ -109,7 +109,7 @@ window.AirfoilBenchmarks = (() => {
   }
   for(const id of ['benchmark-select','literature-select']) $(id).addEventListener('change',()=>apply(items.find(item=>item.id===$(id).value)));
   $('benchmark-apply').addEventListener('click',()=>apply(current()));
-  document.querySelectorAll('[data-validation]').forEach(button=>button.addEventListener('click',async()=>{try{await catalog();apply(items.find(item=>item.id===button.dataset.validation));button.closest('details').open=false;}catch(error){displayError(error);}}));
+  document.querySelectorAll('[data-validation]').forEach(button=>button.addEventListener('click',async()=>{try{await catalog();apply(items.find(item=>item.id===button.dataset.validation));const menu=button.closest('details');if(menu)menu.open=false;}catch(error){displayError(error);}}));
   $('literature-menu').addEventListener('click',()=>{if(current()?.id==='naca0012-stall')switchTab('polar');else{switchTab('results');$('literature-panel').scrollIntoView({block:'nearest'});}});
   document.addEventListener('change',event=>{
     if(event.target.matches('.setup-column input,.setup-column select,#cfd-te-topology,#show-reference')) refresh();

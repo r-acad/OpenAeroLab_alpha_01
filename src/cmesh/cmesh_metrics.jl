@@ -1,6 +1,6 @@
 # ============================================================================================
 # CMESH2D metrics (A0, 2026-07-14 — memory/project_docs/2026-07-14_CMESH2D_solver_plan.md §1)
-# FP64 host precompute from the mesh nodes, FP32 storage. SHARED face-normal storage: each face
+# FP64 host precompute from the mesh nodes, FP32 storage by default; optional scalar_type=Float64 retains original precision. SHARED face-normal storage: each face
 # normal computed ONCE and read by both adjacent cells — the discrete GCL (Σ S_outward = 0 per
 # cell) then holds to FP32-storage roundoff by construction (per-cell recomputation breaks
 # freestream preservation via FP32 rounding — plan §1 "non-negotiable").
@@ -22,14 +22,14 @@ export CMetrics, build_metrics, build_strip_metrics, gcl_check
 import ..CMeshGen: CMesh, ChannelMesh, StripBlock, OUTER_FARFIELD, OUTER_INLET,
                    OUTER_LOWER_WALL, OUTER_UPPER_WALL, OUTER_STRIP_INTERFACE
 
-struct CMetrics
+struct CMetrics{T<:AbstractFloat}
     NI::Int; NJ::Int; NIW::Int; NIF::Int
-    Six::Matrix{Float32}; Siy::Matrix{Float32}   # (NI+1) x NJ
-    Sjx::Matrix{Float32}; Sjy::Matrix{Float32}   # NI x (NJ+1)
-    vol::Matrix{Float32}                          # NI x NJ
-    xc::Matrix{Float32};  yc::Matrix{Float32}     # NI x NJ
-    wdist::Matrix{Float32}                        # NI x NJ
-    gammat::Matrix{Float32}                       # NI x NJ trip intermittency
+    Six::Matrix{T}; Siy::Matrix{T}   # (NI+1) x NJ
+    Sjx::Matrix{T}; Sjy::Matrix{T}   # NI x (NJ+1)
+    vol::Matrix{T}                          # NI x NJ
+    xc::Matrix{T};  yc::Matrix{T}     # NI x NJ
+    wdist::Matrix{T}                        # NI x NJ
+    gammat::Matrix{T}                       # NI x NJ trip intermittency
     outer_face_kind::Vector{UInt8}                # NI outer j-face tags (0 = legacy far field)
     channel_provenance::Bool                      # true only for validated ChannelMesh geometry
 end
@@ -44,20 +44,22 @@ function _build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::I
                         trip_lower::Float64=0.05,
                         trip_side::Symbol=:y_sign,
                         wall_segments::Union{Nothing,Vector{NTuple{4,Float64}}}=nothing,
-                        extra_segments::Union{Nothing,Vector{NTuple{4,Float64}}}=nothing)
+                        extra_segments::Union{Nothing,Vector{NTuple{4,Float64}}}=nothing,
+                        scalar_type::Type{T}=Float32) where {T<:AbstractFloat}
+    T in (Float32,Float64) || throw(ArgumentError("metric scalar_type must be Float32 or Float64"))
     NI = size(X,1)-1; NJ = size(X,2)-1
     length(kinds) == NI || throw(ArgumentError(
         "outer_face_kind has length $(length(kinds)); expected one tag for each of $NI outer faces"))
-    Six = zeros(Float32, NI+1, NJ); Siy = zeros(Float32, NI+1, NJ)
-    Sjx = zeros(Float32, NI, NJ+1); Sjy = zeros(Float32, NI, NJ+1)
-    vol = zeros(Float32, NI, NJ);   xc  = zeros(Float32, NI, NJ); yc = zeros(Float32, NI, NJ)
+    Six = zeros(T, NI+1, NJ); Siy = zeros(T, NI+1, NJ)
+    Sjx = zeros(T, NI, NJ+1); Sjy = zeros(T, NI, NJ+1)
+    vol = zeros(T, NI, NJ);   xc  = zeros(T, NI, NJ); yc = zeros(T, NI, NJ)
     for j in 1:NJ, i in 1:NI+1                                   # i-faces (FP64 arithmetic, FP32 store)
-        Six[i,j] =  Float32(Y[i,j+1] - Y[i,j])
-        Siy[i,j] = -Float32(X[i,j+1] - X[i,j])
+        Six[i,j] =  T(Y[i,j+1] - Y[i,j])
+        Siy[i,j] = -T(X[i,j+1] - X[i,j])
     end
     for j in 1:NJ+1, i in 1:NI                                   # j-faces
-        Sjx[i,j] = -Float32(Y[i+1,j] - Y[i,j])
-        Sjy[i,j] =  Float32(X[i+1,j] - X[i,j])
+        Sjx[i,j] = -T(Y[i+1,j] - Y[i,j])
+        Sjy[i,j] =  T(X[i+1,j] - X[i,j])
     end
     # ⛔⛔ NaN IS NOT A NEGATIVE AREA, AND THIS GATE COULD NOT SEE IT (fixed 2026-08-05).
     # The gate was `a <= 0 && (nneg += 1)` followed by `@assert nneg == 0`. In IEEE arithmetic
@@ -81,9 +83,9 @@ function _build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::I
         d2x = X[i,j+1]-X[i+1,j]; d2y = Y[i,j+1]-Y[i+1,j]
         a = 0.5*(d1x*d2y - d1y*d2x)
         isnan(a) ? (nnan += 1) : (a <= 0 && (nneg += 1))
-        vol[i,j] = Float32(a)
-        xc[i,j] = Float32(0.25*(X[i,j]+X[i+1,j]+X[i,j+1]+X[i+1,j+1]))
-        yc[i,j] = Float32(0.25*(Y[i,j]+Y[i+1,j]+Y[i,j+1]+Y[i+1,j+1]))
+        vol[i,j] = T(a)
+        xc[i,j] = T(0.25*(X[i,j]+X[i+1,j]+X[i,j+1]+X[i+1,j+1]))
+        yc[i,j] = T(0.25*(Y[i,j]+Y[i+1,j]+Y[i,j+1]+Y[i+1,j+1]))
     end
     @assert nnan == 0 "build_metrics: $nnan cell volumes are NaN -- the mesh contains non-finite " *
                       "coordinates. This is NOT a fold; it is a corrupt generator output, and the " *
@@ -94,7 +96,7 @@ function _build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::I
     # foil range's NIF segments in index order (or `wall_segments` in their place) plus `extra_segments`; on the default
     # path it holds exactly the NIF (ax, ay, bx, by) values the loop used to read from wx/wy, in the same order, so dmin is
     # the same Float64.
-    wdist = fill(Float32(Inf), NI, NJ)
+    wdist = fill(T(Inf), NI, NJ)
     wx = [X[NIW+k, 1] for k in 1:NIF+1]; wy = [Y[NIW+k, 1] for k in 1:NIF+1]
     segs = wall_segments === nothing ? [(wx[k], wy[k], wx[k+1], wy[k+1]) for k in 1:NIF] : copy(wall_segments)
     extra_segments === nothing || append!(segs, extra_segments)
@@ -106,7 +108,7 @@ function _build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::I
             d = hypot(px-(ax+t*ex), py-(ay+t*ey))
             d < dmin && (dmin = d)
         end
-        wdist[i,j] = Float32(dmin)
+        wdist[i,j] = T(dmin)
     end
 
     # Trip intermittency: per-column chord station, laminar (0) ahead of the trip,
@@ -132,7 +134,7 @@ function _build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::I
         isfinite(chord2) && chord2 > 0 || throw(ArgumentError(
             "wall-order trip assignment requires a finite, nonzero chord"))
     end
-    gammat = ones(Float32, NI, NJ)
+    gammat = ones(T, NI, NJ)
     for i in NIW+1:NIW+NIF
         xw = 0.5*(X[i,1] + X[i+1,1]); yw = 0.5*(Y[i,1] + Y[i+1,1])
         xtrip = trip_side === :wall_order ?
@@ -142,7 +144,7 @@ function _build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::I
         # the LE-to-TE projection, which is invariant to rigid-body rotation.
         xstation = trip_side === :wall_order ?
             ((xw-lex)*chordx+(yw-ley)*chordy)/chord2 : xw
-        gam = Float32(clamp((xstation - xtrip)/0.02, 0.0, 1.0))
+        gam = T(clamp((xstation - xtrip)/0.02, 0.0, 1.0))
         for j in 1:NJ; gammat[i,j] = gam; end
     end
 
@@ -160,17 +162,17 @@ contract can be validated. This prevents a mask from being attached to an unrela
 """
 function build_metrics(X::Matrix{Float64}, Y::Matrix{Float64}, NIW::Int, NIF::Int;
                        trip_upper::Float64=0.03, trip_lower::Float64=0.05,
-                       trip_side::Symbol=:y_sign)
+                       trip_side::Symbol=:y_sign, scalar_type::Type{T}=Float32) where {T<:AbstractFloat}
     NI = size(X,1)-1
     _build_metrics(X, Y, NIW, NIF, fill(OUTER_FARFIELD, NI);
-                   trip_upper=trip_upper, trip_lower=trip_lower, trip_side=trip_side)
+                   trip_upper=trip_upper, trip_lower=trip_lower, trip_side=trip_side, scalar_type=scalar_type)
 end
 
 """Build legacy metrics from a mesh object; all outer j-faces retain far-field semantics."""
 function build_metrics(mesh::CMesh; trip_upper::Float64=0.03, trip_lower::Float64=0.05,
-                       trip_side::Symbol=:y_sign)
+                       trip_side::Symbol=:y_sign, scalar_type::Type{T}=Float32) where {T<:AbstractFloat}
     build_metrics(mesh.X, mesh.Y, mesh.NIW, mesh.NIF;
-                  trip_upper=trip_upper, trip_lower=trip_lower, trip_side=trip_side)
+                  trip_upper=trip_upper, trip_lower=trip_lower, trip_side=trip_side, scalar_type=scalar_type)
 end
 
 function _validate_channel_mask(mesh::ChannelMesh)
@@ -223,11 +225,11 @@ _base_segment(mesh::ChannelMesh) = (mesh.X[mesh.NIW+1, 1], mesh.Y[mesh.NIW+1, 1]
 wall polyline (its open surface) gains the base segment CL-CU, the strip's wall, so the leg cells beside the base see it
 (plan section 4.5); without a strip the call is today's, statement for statement."""
 function build_metrics(mesh::ChannelMesh; trip_upper::Float64=0.03, trip_lower::Float64=0.05,
-                       trip_side::Symbol=:y_sign)
+                       trip_side::Symbol=:y_sign, scalar_type::Type{T}=Float32) where {T<:AbstractFloat}
     _validate_channel_mask(mesh)
     _build_metrics(mesh.X, mesh.Y, mesh.NIW, mesh.NIF, copy(mesh.outer_face_kind);
                    channel_provenance=true,
-                   trip_upper=trip_upper, trip_lower=trip_lower, trip_side=trip_side,
+                   trip_upper=trip_upper, trip_lower=trip_lower, trip_side=trip_side, scalar_type=scalar_type,
                    extra_segments=mesh.strip === nothing ? nothing : [_base_segment(mesh)])
 end
 
@@ -241,11 +243,11 @@ j = NJ+1 faces are the upper interface, never a channel face, so the channel mas
 provenance, the wall distance to the base segment (the strip's column 1, the nearest wall of every strip cell) and
 `gammat` all ones (no foil column). Refused on a mesh without a strip block.
 """
-function build_strip_metrics(mesh::ChannelMesh; trip_upper::Float64=0.03, trip_lower::Float64=0.05)
+function build_strip_metrics(mesh::ChannelMesh; trip_upper::Float64=0.03, trip_lower::Float64=0.05, scalar_type::Type{T}=Float32) where {T<:AbstractFloat}
     s = mesh.strip
     s === nothing && throw(ArgumentError("build_strip_metrics needs a strip mesh (te_topology=:strip); this mesh has no strip block"))
     _build_metrics(s.X, s.Y, s.NI, 0, fill(OUTER_STRIP_INTERFACE, s.NI);
-                   channel_provenance=true, trip_upper=trip_upper, trip_lower=trip_lower,
+                   channel_provenance=true, trip_upper=trip_upper, trip_lower=trip_lower, scalar_type=scalar_type,
                    wall_segments=[_base_segment(mesh)])
 end
 

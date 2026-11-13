@@ -159,7 +159,7 @@ function build_d3q19_static()
 end
 
 """
-    build_d3q39_static()
+    build_d3q39_static(::Type{T}=F)
 
 Build D3Q39 Variant B (Frapolli/Chikatamarla/Karlin, Phys. Rev. E 2015) lattice.
 
@@ -174,15 +174,15 @@ Build D3Q39 Variant B (Frapolli/Chikatamarla/Karlin, Phys. Rev. E 2015) lattice.
 cs² = 2/3 (not 1/3). Drops D3Q27 edge shell (±1,±1,0), adds shells at ε=4,8,9.
 Max |c| = 3, fits within BLOCK_SIZE=8 neighbor table.
 """
-function build_d3q39_static()
+function build_d3q39_static(::Type{T}=F) where {T<:AbstractFloat}
     cx_list = Int32[]
     cy_list = Int32[]
     cz_list = Int32[]
-    w_list  = F[]
+    w_list  = T[]
 
     # Shell 0: rest (0,0,0) — 1 direction
     push!(cx_list, Int32(0)); push!(cy_list, Int32(0)); push!(cz_list, Int32(0))
-    push!(w_list, F(1/12))
+    push!(w_list, T(1//12))
 
     # Shell 1: (±1,0,0) permutations — 6 directions
     for dim in 1:3
@@ -190,14 +190,14 @@ function build_d3q39_static()
             c = [Int32(0), Int32(0), Int32(0)]
             c[dim] = Int32(s)
             push!(cx_list, c[1]); push!(cy_list, c[2]); push!(cz_list, c[3])
-            push!(w_list, F(1/12))
+            push!(w_list, T(1//12))
         end
     end
 
     # Shell 2: (±1,±1,±1) — 8 directions
     for sx in (-1, 1), sy in (-1, 1), sz in (-1, 1)
         push!(cx_list, Int32(sx)); push!(cy_list, Int32(sy)); push!(cz_list, Int32(sz))
-        push!(w_list, F(1/27))
+        push!(w_list, T(1//27))
     end
 
     # Shell 3: (±2,0,0) permutations — 6 directions
@@ -206,7 +206,7 @@ function build_d3q39_static()
             c = [Int32(0), Int32(0), Int32(0)]
             c[dim] = Int32(2*s)
             push!(cx_list, c[1]); push!(cy_list, c[2]); push!(cz_list, c[3])
-            push!(w_list, F(2/135))
+            push!(w_list, T(2//135))
         end
     end
 
@@ -218,7 +218,7 @@ function build_d3q39_static()
             c[d1] = Int32(2*s1)
             c[d2] = Int32(2*s2)
             push!(cx_list, c[1]); push!(cy_list, c[2]); push!(cz_list, c[3])
-            push!(w_list, F(1/432))
+            push!(w_list, T(1//432))
         end
     end
 
@@ -228,7 +228,7 @@ function build_d3q39_static()
             c = [Int32(0), Int32(0), Int32(0)]
             c[dim] = Int32(3*s)
             push!(cx_list, c[1]); push!(cy_list, c[2]); push!(cz_list, c[3])
-            push!(w_list, F(1/1620))
+            push!(w_list, T(1//1620))
         end
     end
 
@@ -239,9 +239,9 @@ function build_d3q39_static()
     @assert abs(w_sum - 1.0f0) < 1.0f-5 "D3Q39 weights must sum to 1, got $w_sum"
 
     # Verify isotropy: Σ w_i c_ix c_jx = cs² δ_ij  (cs² = 2/3)
-    cs2_check = sum(w_list[k] * F(cx_list[k])^2 for k in 1:39)
-    @assert abs(cs2_check - F(2/3)) < 1.0f-5 "D3Q39 cs² must be 2/3, got $cs2_check"
-    cross_check = sum(w_list[k] * F(cx_list[k]) * F(cy_list[k]) for k in 1:39)
+    cs2_check = sum(w_list[k] * T(cx_list[k])^2 for k in 1:39)
+    @assert abs(cs2_check - T(2//3)) < 1.0f-5 "D3Q39 cs² must be 2/3, got $cs2_check"
+    cross_check = sum(w_list[k] * T(cx_list[k]) * T(cy_list[k]) for k in 1:39)
     @assert abs(cross_check) < 1.0f-7 "D3Q39 cross-moment Σw*cx*cy must be 0, got $cross_check"
 
     # Build opposite and mirror mappings
@@ -273,7 +273,7 @@ function build_d3q39_static()
         SVector{39, Int32}(cx_list),
         SVector{39, Int32}(cy_list),
         SVector{39, Int32}(cz_list),
-        SVector{39, F}(w_list),
+        SVector{39, T}(w_list),
         SVector{39, Int32}(opp_list),
         SVector{39, Int32}(mirror_y_list)
     )
