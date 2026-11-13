@@ -76,6 +76,16 @@ include(joinpath(@__DIR__,"..","..","apps","airfoil_web","src","workers","implic
     @test full.estimated_workspace_bytes>mixed.estimated_workspace_bytes
     @test full.estimated_workspace_bytes<2*1024^3
     @test full.state_scalar_type==full.block_scalar_type=="Float64"
+    lagged=implicit_memory_guard(1548,112,3,96,"kinetic_fullvisc_block_adi","jfnk_native";
+        state_scalar_type=Float64,block_scalar_type=Float64,
+        lagged_component_limiter=true,muscl_ls_factors=true)
+    @test lagged.estimated_workspace_bytes-full.estimated_workspace_bytes==cld(5*13*sizeof(Float64)*1548*112,4)
+    @test lagged.lagged_component_limiter&&lagged.muscl_ls_factors
+    @test lagged.estimated_workspace_bytes<lagged.workspace_budget_bytes==2*1024^3
+    @test_throws ArgumentError implicit_memory_guard(32,20,3,8,"line","jfnk_native";lagged_component_limiter=true)
+    @test_throws ArgumentError implicit_memory_guard(1548,112,3,96,"kinetic_fullvisc_block_adi","jfnk_native";
+        state_scalar_type=Float64,block_scalar_type=Float64,lagged_component_limiter=true,muscl_ls_factors=true,
+        available_bytes=2lagged.estimated_workspace_bytes-2)
     @test_throws ArgumentError implicit_memory_guard(32,20,3,8,"line","jfnk_native";block_scalar_type=Float16)
     built=Ref{Any}(nothing);stepped=Ref{Any}(nothing)
     fake=(;KA=(;get_backend=x->:cpu,CPU=()->:cpu),

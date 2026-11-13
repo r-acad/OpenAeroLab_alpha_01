@@ -7,14 +7,17 @@ using LinearAlgebra
 include("cmesh_steady_multilevel_ka.jl")
 include("cmesh_steady_block_line_ka.jl")
 include("cmesh_steady_kinetic_blocks_ka.jl")
+include("cmesh_steady_lagged_limiter_ka.jl")
 export JFNKAirfoilWorkspace, build_jfnk_airfoil_workspace, step_jfnk_airfoil_ka!
 export JFNKAirfoilController, build_jfnk_airfoil_controller, step_jfnk_rans_ka!
+export airfoil_jacobian_contract
 
-struct JFNKAirfoilWorkspace{L,V,A,S,M,K}
+struct JFNKAirfoilWorkspace{L,V,A,S,M,K,J}
     line::L
     adi::A
     mg::M
     kinetic::K
+    lagged_limiter::J
     coupled_cut::Bool
     swept_line::Bool
     sweep_old::S
@@ -35,10 +38,22 @@ end
 include("cmesh_steady_diagnostics_ka.jl")
 include("cmesh_steady_globalization_ka.jl")
 
+"""Allocate an experimental steady flow workspace.
+
+`lagged_component_limiter=true` selects a declared Float64 thermal-MUSCL R1
+for Jv only. It owns nine additional scalar fields per cell: four component
+factors, four R1 baseline residuals and one error-rollback dt field. The low
+level factory retains caller-managed memory admission; large GPU studies
+must preflight restart, precision and all optional storage before allocation.
+Current physical R0, nonlinear merits and scientific stopping rules are not
+changed. The default uses the current limiter in every Jv sample.
+"""
 function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
                                       preconditioner::Symbol=:line,
                                       pseudo_scale::Float32=1f0,
-                                      block_scalar_type::Type{<:AbstractFloat}=Float32)
+                                      block_scalar_type::Type{<:AbstractFloat}=Float32,
+                                      lagged_component_limiter::Bool=false)
+    lagged_component_limiter&&_airfoil_lagged_limiter_admit(s)
     block_scalar_type in (Float32,Float64)||throw(ArgumentError("Block preconditioner precision must be Float32 or Float64"))
     2<=m<=96 || throw(ArgumentError("JFNK restart length must be 2:96"))
     preconditioner in (:line,:cut_line,:adi,:block_adi,:cut_block_adi,
@@ -86,7 +101,8 @@ function build_jfnk_airfoil_workspace(s::KSol;m::Int=8,
             unfloored=preconditioner in (:kinetic_block_unfloored_adi,
                 :kinetic_weno_fullvisc_unfloored_adi),
             pseudo_scale,block_scalar_type) : nothing
-    JFNKAirfoilWorkspace(line,adi,mg,kinetic,coupled_cut,
+    lagged=lagged_component_limiter ? _build_airfoil_lagged_limiter_workspace(s) : nothing
+    JFNKAirfoilWorkspace(line,adi,mg,kinetic,lagged,coupled_cut,
         swept_line,swept_line ? vec() : nothing,
         [vec() for _ in 1:m+1],[vec() for _ in 1:m],v,
         vec(),vec(),vec(),vec(),vec(),vec(),m)
@@ -220,7 +236,7 @@ function _airfoil_fd_step(v,nv::Float64,ncell::Int,r::Float64,u::Float64,
     h
 end
 
-function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
+function _airfoil_jacobian_vec_impl!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
                                 fd_scale::Float32=1.0f0,
                                 fd_scheme::Symbol=:forward,
                                 fd_local_cap::Float32=1.0f-3)
@@ -228,6 +244,8 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
         throw(ArgumentError("fd_scheme must be :forward or :central"))
     isfinite(fd_local_cap) && 1.0f-4<=fd_local_cap<=0.05f0 ||
         throw(ArgumentError("fd_local_cap must be in [1e-4,0.05]"))
+    reference=_airfoil_jacobian_reference(w)
+    w.lagged_limiter===nothing||_airfoil_lagged_owner(s,w.lagged_limiter)
     nv=_av_norm(v)
     nv==0.0 && return _av_fill!(out,0.0f0)
     line=w.line
@@ -238,52 +256,49 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
     h=_airfoil_fd_step(v,nv,ncell,r,u,E,fd_scale;local_cap=fd_local_cap)
     b=s.backend;ni=Int32(s.NI);nj=Int32(s.NJ);g=Int32(s.g)
     physical=false
-    for _ in 1:16
-        _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
-            line.rho0,line.ux0,line.uy0,line.T0,v...,
-            s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
-        if _airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
-            if fd_scheme==:central
-                _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
-                    line.rho0,line.ux0,line.uy0,line.T0,v...,
-                    s.eint,h,ni,nj,g;ndrange=(s.NI,s.NJ))
-                physical=_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
-            else
-                physical=true
-            end
-            physical && break
-        end
-        h*=0.5f0
-    end
-    if !physical
-        for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),
-                             (line.rho0,line.ux0,line.uy0,line.T0))
-            copyto!(dst,src)
-        end
-        throw(ArgumentError("no physical matrix-free perturbation after 16 halvings"))
-    end
     try
+        for _ in 1:16
+            _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
+                line.rho0,line.ux0,line.uy0,line.T0,v...,
+                s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
+            if _airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
+                if fd_scheme==:central
+                    _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
+                        line.rho0,line.ux0,line.uy0,line.T0,v...,
+                        s.eint,h,ni,nj,g;ndrange=(s.NI,s.NJ))
+                    physical=_airfoil_physical_state(s.rho,s.ux,s.uy,s.T)
+                else
+                    physical=true
+                end
+                physical && break
+            end
+            h*=0.5f0
+        end
+        physical||throw(ArgumentError("no physical matrix-free perturbation after 16 halvings"))
         if fd_scheme==:central
             # The accepted state is U-hv. Retain its residual, then sample
             # U+hv; symmetric differencing reduces truncation at the larger
             # perturbations needed for a useful Float32 Jacobian signal.
-            _raw_residual_ka!(s,Int32(2),Int32(1))
+            _airfoil_jacobian_residual_ka!(s,w)
             _av_copy!(w.fd_minus,_airfoil_residual(s))
             _k_implicit_line_trial!(b)(s.rho,s.ux,s.uy,s.T,
                 line.rho0,line.ux0,line.uy0,line.T0,v...,
                 s.eint,-h,ni,nj,g;ndrange=(s.NI,s.NJ))
         end
-        _raw_residual_ka!(s,Int32(2),Int32(1))
+        _airfoil_jacobian_residual_ka!(s,w)
         current=_airfoil_residual(s)
         for k in 1:4
             if fd_scheme==:central
                 @. out[k]=((current[k]-w.fd_minus[k])/(2h)+
                            line.d0*v[k])/s.vol
             else
-                @. out[k]=((current[k]-w.base_residual[k])/h+
+                @. out[k]=((current[k]-reference[k])/h+
                            line.d0*v[k])/s.vol
             end
         end
+    catch
+        w.lagged_limiter===nothing||(w.lagged_limiter.ready=false)
+        rethrow()
     finally
         for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),
                              (line.rho0,line.ux0,line.uy0,line.T0))
@@ -291,6 +306,16 @@ function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;
         end
     end
     out
+end
+
+function _airfoil_jacobian_vec!(out,v,s::KSol,w::JFNKAirfoilWorkspace;kwargs...)
+    w.lagged_limiter===nothing&&return _airfoil_jacobian_vec_impl!(out,v,s,w;kwargs...)
+    try
+        _airfoil_jacobian_vec_impl!(out,v,s,w;kwargs...)
+    catch
+        w.lagged_limiter.ready=false
+        rethrow()
+    end
 end
 
 function _airfoil_fgmres!(s::KSol,w::JFNKAirfoilWorkspace;
@@ -380,7 +405,7 @@ end
 """One opt-in pseudo-transient Newton-Krylov flow iteration on a single-phase
 free-air airfoil. Returns acceptance, line-search factor, linear iterations,
 linear relative residual, and nonlinear merit. This does not advance SST."""
-function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
+function _step_jfnk_airfoil_impl!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
                                linear_tol::Float64=0.1,linear_cycles::Int=1,
                                max_backtracks::Int=8,fd_scale::Float32=1.0f0,
                                fd_scheme::Symbol=:forward,
@@ -449,6 +474,7 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
         w.swept_line && (@. w.adi.d0_eff=line.d0+w.adi.lamW+w.adi.lamE)
         w.mg!==nothing && _prepare_airfoil_mg!(w.mg,b)
     end
+    w.lagged_limiter===nothing||_airfoil_refresh_lagged_limiter!(s,w.lagged_limiter,line)
     for k in 1:4; @. w.rhs[k]=w.base_residual[k]/s.vol; end
     kits,rel=krylov_workspace===nothing ?
         _airfoil_fgmres_restarted!(s,w;
@@ -506,6 +532,32 @@ function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
             acceptance_merit_after=before,physical_alpha)
 end
 
+"""One physical-residual-controlled flow iteration.
+
+`lagged_component_limiter=true` is selected when building the workspace. It
+uses a declared lagged-limiter R1 only for Jv; every trial uses current R0 and
+current BE/steady merits. Initially limited to Float64 thermal MUSCL airfoils.
+The lagged reference is refreshed per linearization and invalidated on exit.
+This flow step does not advance SST or certify scientific convergence.
+"""
+function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;kwargs...)
+    r=w.lagged_limiter
+    r===nothing&&return _step_jfnk_airfoil_impl!(s,w,cfl;kwargs...)
+    r.ready=false
+    _airfoil_lagged_owner(s,r)
+    for (dst,src) in zip((w.line.rho0,w.line.ux0,w.line.uy0,w.line.T0),(s.rho,s.ux,s.uy,s.T));copyto!(dst,src);end
+    copyto!(r.saved_dt,s.dtf);clock=s.last_global_dt
+    try
+        result=_step_jfnk_airfoil_impl!(s,w,cfl;kwargs...)
+        r.ready=false
+        merge(result,airfoil_jacobian_contract(w))
+    catch
+        for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),(w.line.rho0,w.line.ux0,w.line.uy0,w.line.T0));copyto!(dst,src);end
+        copyto!(s.dtf,r.saved_dt);s.last_global_dt=clock;r.ready=false
+        rethrow()
+    end
+end
+
 """Adaptive pseudo-CFL controller for the opt-in steady A+/C SST march.
 This is a convergence experiment. It does not advance physical time, and SST
 still uses the solver's segregated, stability-capped transport step. A positive
@@ -543,7 +595,8 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     pseudo_scale::Float32=1f0,
     recovery_steps::Int=0,recovery_limit::Int=200,
     globalization::Symbol=:steady,physical_fraction::Float32=0.2f0,
-    block_scalar_type::Type{<:AbstractFloat}=Float32)
+    block_scalar_type::Type{<:AbstractFloat}=Float32,
+    lagged_component_limiter::Bool=false)
     globalization in (:steady,:pseudo_transient) ||
         throw(ArgumentError("globalization must be :steady or :pseudo_transient"))
     isfinite(physical_fraction) && 0.0f0<physical_fraction<=0.5f0 ||
@@ -561,7 +614,7 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
         throw(ArgumentError("nonmonotone_window must be 0:20"))
     0<=recovery_steps<=100 && recovery_steps<=recovery_limit<=10_000 ||
         throw(ArgumentError("recovery_steps must be 0:100 and recovery_limit must be between recovery_steps and 10000"))
-    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale,block_scalar_type)
+    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale,block_scalar_type,lagged_component_limiter)
     krylov_workspace=linear_solver==:krylov ?
         build_krylov_airfoil_workspace(s,workspace) : nothing
     # Reusable backups avoid allocating mesh-sized arrays on every nonlinear

@@ -133,7 +133,7 @@ end
 
 @kernel function _k_airfoil_muscl_states!(states,theta,status,gux,guy,gvx,gvy,gTx,gTy,
     @Const(r),@Const(u),@Const(v),@Const(t),@Const(offsets),@Const(weights),@Const(neighbors),@Const(area),
-    limiter::Int32,kappa::Float32,eint,NI::Int32,NJ::Int32,g::Int32)
+    limiter::Int32,kappa::Float32,eint,NI::Int32,NJ::Int32,g::Int32,fixed_factors)
     i,j=@index(Global,NTuple)
     CS2=_gas_cs2(eltype(r))
     @inbounds if i<=NI&&j<=NJ
@@ -141,7 +141,7 @@ end
         gx=ntuple(k->_airfoil_ls_gradient(r,u,v,t,weights,neighbors,z,i,j,k,1),Val(4))
         gy=ntuple(k->_airfoil_ls_gradient(r,u,v,t,weights,neighbors,z,i,j,k,2),Val(4))
         finite=all(isfinite,gx)&&all(isfinite,gy)
-        th=ntuple(Val(4)) do k
+        th=fixed_factors===nothing ? ntuple(Val(4)) do k
             lo=z[k];hi=z[k]
             for f in 1:4
                 ii=neighbors[i,j,1,f];jj=neighbors[i,j,2,f]
@@ -162,7 +162,7 @@ end
                 end
             end
             clamp(value,zero(value),one(value))
-        end
+        end : ntuple(k->fixed_factors[i,j,k],Val(4))
         gux[i,j]=finite ? gx[2] : 0f0;guy[i,j]=finite ? gy[2] : 0f0
         gvx[i,j]=finite ? gx[3] : 0f0;gvy[i,j]=finite ? gy[3] : 0f0
         gTx[i,j]=finite ? gx[4] : 0f0;gTy[i,j]=finite ? gy[4] : 0f0
@@ -177,12 +177,23 @@ end
     end
 end
 
-function _airfoil_muscl_prepare!(s::KSol,w::AirfoilMUSCLWorkspace)
+function _airfoil_check_component_factors(s::KSol,factors;check_values::Bool=false)
+    eltype(factors)===eltype(s.rho)&&size(factors)==(s.NI,s.NJ,4)&&KA.get_backend(factors)==s.backend||
+        throw(ArgumentError("Lagged component factors must match the airfoil state type, shape and backend"))
+    if check_values
+        all(isfinite,factors)&&minimum(factors)>=0&&maximum(factors)<=1||
+            throw(ArgumentError("Lagged component factors must be finite and in [0,1]"))
+    end
+    nothing
+end
+
+function _airfoil_muscl_prepare!(s::KSol,w::AirfoilMUSCLWorkspace;fixed_component_factors=nothing)
     _airfoil_physical_state(s.rho,s.ux,s.uy,s.T)||throw(ArgumentError("MUSCL received a nonphysical cell/ghost state"))
+    fixed_component_factors===nothing||_airfoil_check_component_factors(s,fixed_component_factors)
     a=w.geometry
     _k_airfoil_muscl_states!(s.backend)(w.states,w.theta,w.status,s.gux,s.guy,s.gvx,s.gvy,s.gTx,s.gTy,
         s.rho,s.ux,s.uy,s.T,a.offsets,a.weights,a.neighbors,a.area,w.limiter,w.smooth_coefficient,s.eint,
-        Int32(s.NI),Int32(s.NJ),Int32(s.g);ndrange=(s.NI,s.NJ))
+        Int32(s.NI),Int32(s.NJ),Int32(s.g),fixed_component_factors;ndrange=(s.NI,s.NJ))
     w.states
 end
 

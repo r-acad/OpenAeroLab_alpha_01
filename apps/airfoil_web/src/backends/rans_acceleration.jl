@@ -33,12 +33,16 @@ end
 function implicit_memory_guard(ni::Integer,nj::Integer,g::Integer,m::Integer,pc::AbstractString,
                                method::AbstractString;available_bytes=nothing,
                                state_scalar_type::Type{<:AbstractFloat}=Float32,
-                               block_scalar_type::Type{<:AbstractFloat}=Float32)
+                               block_scalar_type::Type{<:AbstractFloat}=Float32,
+                               lagged_component_limiter::Bool=false,
+                               muscl_ls_factors::Bool=false)
     ni>0&&nj>0&&g>=0&&2<=m<=96 || throw(ArgumentError("Invalid implicit workspace dimensions"))
     pc in PRECONDITIONERS || throw(ArgumentError("Unknown implicit preconditioner"))
     method in ("jfnk_native","jfnk_krylov") || throw(ArgumentError("Unknown Newton–Krylov method"))
     state_scalar_type in (Float32,Float64)&&block_scalar_type in (Float32,Float64)||
         throw(ArgumentError("Implicit workspace precision must be Float32 or Float64"))
+    !lagged_component_limiter||state_scalar_type===Float64||
+        throw(ArgumentError("Lagged component-limiter Jv currently requires Float64 state precision"))
     # Count the native V/Z bases, all seven four-field scratch vectors, twelve
     # line arrays and thirteen coupled rollback fields. The Krylov adapter
     # keeps the native allocation and adds its own packed basis and scratch.
@@ -49,6 +53,11 @@ function implicit_memory_guard(ni::Integer,nj::Integer,g::Integer,m::Integer,pc:
     pc in ("swept_line","cut_swept_line") && (bytes+=4sb*n)
     startswith(pc,"kinetic_") && (bytes+=160bb*n+8sb*n+32bb*(BigInt(ni)+nj))
     method=="jfnk_krylov" && (bytes+=4sb*n*(2m+16))
+    # Solver-API-only experiments, not new web/default selections. Lagged R1
+    # owns four factors, four baseline residuals and one error-rollback clock
+    # field. The separately selected R3 PC has its own four-factor storage.
+    lagged_component_limiter && (bytes+=9sb*n)
+    muscl_ls_factors && (bytes+=4sb*n)
     # Leave room for implementation scratch/allocator rounding. On the 10 GiB
     # reference GPU the measured native m60 block workspace is 696 MiB; this
     # guard also reserves existing solver arrays, CUDA and desktop allocations.
@@ -57,9 +66,11 @@ function implicit_memory_guard(ni::Integer,nj::Integer,g::Integer,m::Integer,pc:
     limit=available_bytes===nothing ? hard_limit : min(hard_limit,BigInt(available_bytes)÷2)
     limit>0&&bound<=limit || throw(ArgumentError(
         "Implicit workspace needs at most $(round(Float64(bound)/1024^2;digits=1)) MiB including reserve, above the $(round(Float64(max(limit,0))/1024^2;digits=1)) MiB safety budget. Reduce restart length or mesh size."))
-    (;estimated_workspace_bytes=Int(bound),workspace_budget_bytes=Int(limit),
+    receipt=(;estimated_workspace_bytes=Int(bound),workspace_budget_bytes=Int(limit),
       state_scalar_type=string(state_scalar_type),block_scalar_type=string(block_scalar_type),
       reserve_factor=1.25,scope="Conservative workspace bound; excludes the already allocated flow solver. Total iterations do not increase restart storage.")
+    lagged_component_limiter||muscl_ls_factors ?
+        merge(receipt,(;lagged_component_limiter,muscl_ls_factors)) : receipt
 end
 
 "Select an actual iteration method; never silently substitute a different solver."

@@ -128,6 +128,14 @@ provide an STL file, and edit its `config.yaml`. Copy
 The app's default solver modes are development stage models. Inspect each
 result's convergence and mesh diagnostics before drawing physical conclusions.
 
+The compressible implicit developer API also provides the optional
+`lagged_component_limiter=true` workspace setting for Float64 thermal MUSCL
+free-air cases with impermeable walls. It holds the reconstruction limiter
+fixed during each linear solve; nonlinear acceptance still evaluates the
+current physical equations. The option defaults to false and is not exposed
+in the app. CPU checks and a GPU flow-step check pass, but a complete cold
+airfoil and the five-minute convergence target are not yet qualified.
+
 ## Project layout
 
 - `src/`: solver source and command line entry point. See `src/README.md` for the solver map; compressible C-mesh and Species cavitation now have separate source directories.

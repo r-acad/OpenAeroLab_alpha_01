@@ -2446,6 +2446,7 @@ end
 # including the exact zero halves and mdot splits written by the boundary overrides.
 function _raw_residual_body_ka!(s::KSol,wallmode::Int32,wallflux::Int32,
                                 cav_first_order::Bool,mixture_pressure;face_states=nothing,kinetic=nothing,
+                                airfoil_component_factors=nothing,
                                 inlet_present=nothing,pressure_slot=nothing,store_divergence::Bool=true,
                                 strip_ctx=nothing,outlet_sides::Int32=Int32(3))
     # strip_ctx / outlet_sides (strip topology, 5 Oct 2026, plan section 4.1): a strip pair's block context for the two
@@ -2454,13 +2455,15 @@ function _raw_residual_body_ka!(s::KSol,wallmode::Int32,wallflux::Int32,
     (s.outer_mode==Int32(2) && strip_ctx===nothing) && throw(ArgumentError(
         "the strip carrier (outer_mode 2, CMeshSpeciesStripTopologyV1) evaluates its residual only with its pair's context (strip_ctx)"))
     air_geometry=nothing
+    airfoil_component_factors===nothing||s.recon==_AIRFOIL_MUSCL_RECON||
+        throw(ArgumentError("Lagged component factors require physical-coordinate thermal MUSCL"))
     if s.recon==_AIRFOIL_MUSCL_RECON
         s.cav==0&&s.outer_mode==0&&s.outlet_mode==0&&s.ff_mix==0&&s.emix==0&&
             strip_ctx===nothing&&face_states===nothing&&kinetic===nothing&&mixture_pressure===nothing ||
             throw(ArgumentError("Geometric thermal MUSCL is separate from Species/mixture/strip reconstruction"))
         w=get(_AIRFOIL_MUSCL,s,nothing)
         w===nothing&&throw(ArgumentError("MUSCL requires its original-node workspace; configure it explicitly after restart"))
-        face_states=_airfoil_muscl_prepare!(s,w)
+        face_states=_airfoil_muscl_prepare!(s,w;fixed_component_factors=airfoil_component_factors)
         air_geometry=w.geometry.displacements
     end
     if face_states!==nothing
