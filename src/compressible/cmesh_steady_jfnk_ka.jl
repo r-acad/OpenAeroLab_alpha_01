@@ -701,17 +701,19 @@ end
 # No recovery event can declare convergence. Failed recovery restores every
 # evolved flow/turbulence field, including auxiliaries updated by SST.
 function _airfoil_explicit_recovery!(s::KSol,c::JFNKAirfoilController;
-    corrected_wall_metric::Bool=_sst_default_wall_metric(s),nonorth_diffusion::Bool=false)
+    corrected_wall_metric::Bool=_sst_default_wall_metric(s),nonorth_diffusion::Bool=false,
+    _flow_advance! = step_ka!, _sst_advance! = sst_step_ka!)
     count=min(c.recovery_steps,c.recovery_limit-c.recovery_iterations)
     count>0 || return (accepted=false,recovery_steps=0)
-    names=(:rho,:ux,:uy,:T,:tk,:tom,:nut,:tnl,:pvort,:exx,:exy,:eyy)
+    names=_AIRFOIL_COUPLED_STATE
     saved=map(name->copy(getproperty(s,name)),names)
+    saved_clock=s.last_global_dt
     good=false
     try
         for _ in 1:count
-            step_ka!(s,0.45f0)
-            sst_step_ka!(s;corrected_wall_metric,nonorth_diffusion)
-            _airfoil_physical_state(s.rho,s.ux,s.uy,s.T) ||
+            _flow_advance!(s,0.45f0)
+            _sst_advance!(s;corrected_wall_metric,nonorth_diffusion)
+            (_airfoil_physical_state(s.rho,s.ux,s.uy,s.T) && _airfoil_valid_sst_state(s)) ||
                 return (accepted=false,recovery_steps=0)
         end
         refresh_raw_residual_ka!(s)
@@ -726,6 +728,7 @@ function _airfoil_explicit_recovery!(s::KSol,c::JFNKAirfoilController;
     finally
         if !good
             for (name,array) in zip(names,saved);copyto!(getproperty(s,name),array);end
+            s.last_global_dt=saved_clock
             refresh_raw_residual_ka!(s)
         end
     end

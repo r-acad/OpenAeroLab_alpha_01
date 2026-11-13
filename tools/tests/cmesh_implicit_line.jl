@@ -444,6 +444,49 @@ function airfoil_recovery_and_diagnostics(backend)
         @test Array(getproperty(s,name))==copy
     end
     @test_throws ArgumentError M.build_jfnk_airfoil_controller(s;recovery_steps=10,recovery_limit=5)
+    airfoil_recovery_failure_rollback(backend)
+end
+
+function airfoil_recovery_failure_rollback(backend)
+    for failure in (:invalid_sst,:throw_sst,:throw_flow)
+        s=airfoil_implicit_smoke(backend;jfnk=true)
+        c=M.build_jfnk_airfoil_controller(s;m=4,recovery_steps=2,recovery_limit=2)
+        fill!(s.dtf,0.035f0);s.last_global_dt=0.125f0
+        names=M._AIRFOIL_COUPLED_STATE
+        before=map(name->Array(getproperty(s,name)),names)
+        clock=s.last_global_dt
+        counters=(c.iterations,c.rejections,c.recovery_iterations,c.recovery_events,c.cfl,copy(c.merit_history))
+        flow_calls=Ref(0);sst_calls=Ref(0)
+        function flow!(x,cfl)
+            flow_calls[]+=1
+            for (i,name) in enumerate(names)
+                fill!(getproperty(x,name),Float32(.25+.001i))
+            end
+            x.last_global_dt=0.75f0
+            failure===:throw_flow&&error("synthetic recovery flow failure")
+            nothing
+        end
+        function turbulence!(x;kwargs...)
+            sst_calls[]+=1;fill!(x.tk,NaN32);fill!(x.dtf,55f0)
+            x.last_global_dt=0.875f0
+            failure===:throw_sst&&error("synthetic recovery SST failure")
+            nothing
+        end
+        if failure===:invalid_sst
+            result=M._airfoil_explicit_recovery!(s,c;_flow_advance! = flow!,_sst_advance! = turbulence!)
+            @test !result.accepted&&result.recovery_steps==0
+        else
+            @test_throws ErrorException M._airfoil_explicit_recovery!(s,c;
+                _flow_advance! = flow!,_sst_advance! = turbulence!)
+        end
+        @test flow_calls[]==1
+        @test sst_calls[]==(failure===:throw_flow ? 0 : 1)
+        for (name,expected) in zip(names,before)
+            @test isequal(Array(getproperty(s,name)),expected)
+        end
+        @test isequal(s.last_global_dt,clock)
+        @test (c.iterations,c.rejections,c.recovery_iterations,c.recovery_events,c.cfl,c.merit_history)==counters
+    end
 end
 
 function airfoil_coupled_rollback(backend)
