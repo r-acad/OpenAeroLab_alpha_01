@@ -44,7 +44,8 @@ end
     helpers=("cmesh_geometric_reconstruction_ka.jl","cmesh_steady_globalization_ka.jl",
         "cmesh_steady_diagnostics_ka.jl","cmesh_steady_block_line_ka.jl",
         "cmesh_steady_kinetic_blocks_ka.jl","cmesh_steady_multilevel_ka.jl",
-        "cmesh_steady_packed_cgs2_ka.jl")
+        "cmesh_steady_packed_cgs2_ka.jl","cmesh_steady_newton_ka.jl",
+        "cmesh_steady_newton_linear_ka.jl","cmesh_steady_newton_sst_ka.jl")
     for name in helpers
         @test identity["solver_sha256"][name]==bytes2hex(open(sha256,joinpath(SRC,"compressible",name)))
         changed=deepcopy(good);changed["identity"]["solver_sha256"][name]="changed"

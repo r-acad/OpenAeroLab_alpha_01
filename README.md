@@ -155,6 +155,19 @@ current physical equations. The option defaults to false and is not exposed
 in the app. CPU checks and a GPU flow-step check pass, but a complete cold
 airfoil and the five-minute convergence target are not yet qualified.
 
+The same developer API has an experimental pseudo-transient Newton-Krylov
+march for single-block airfoil meshes with plain SST
+(`src/compressible/cmesh_steady_newton_ka.jl`: `newton_rans_init`,
+`newton_rans_march!`, `newton_cold_run`). The flow step solves the true
+second-order residual with a finite-difference Jacobian product and a
+two-level block-line preconditioner; turbulence takes an implicit SST step;
+coarse levels by node skipping provide the starting guess. It runs in Float64
+on the CPU and needs a smooth reconstruction, so subsonic cases call
+`newton_unlimited_reconstruction!` and transonic cases are not covered. No
+default path, worker or app setting uses it. `tools/tests/cmesh_steady_newton.jl`
+checks it on a small mesh; results on full airfoils are development results,
+not validation.
+
 ## Project layout
 
 - `src/`: solver source and command line entry point. See `src/README.md` for the solver map; compressible C-mesh and Species cavitation now have separate source directories.
