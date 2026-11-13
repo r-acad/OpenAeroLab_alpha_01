@@ -3450,5 +3450,6 @@ include(joinpath(@__DIR__, "cmesh_geometric_reconstruction_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_implicit_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_jfnk_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_krylov_ka.jl"))
+include(joinpath(@__DIR__, "cmesh_steady_packed_cgs2_ka.jl"))
 
 end # module

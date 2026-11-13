@@ -405,6 +405,9 @@ end
 """One opt-in pseudo-transient Newton-Krylov flow iteration on a single-phase
 free-air airfoil. Returns acceptance, line-search factor, linear iterations,
 linear relative residual, and nonlinear merit. This does not advance SST."""
+# Default native/Krylov admission is unchanged; optional adapters may require stricter accuracy.
+_airfoil_linear_residual_limit(::Any,globalization,configured,requested)=globalization===:pseudo_transient ? configured : Inf
+
 function _step_jfnk_airfoil_impl!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
                                linear_tol::Float64=0.1,linear_cycles::Int=1,
                                max_backtracks::Int=8,fd_scale::Float32=1.0f0,
@@ -481,7 +484,7 @@ function _step_jfnk_airfoil_impl!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;
             linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap,linear_maxiter) :
         _airfoil_krylov_gmres!(s,w,krylov_workspace;
             linear_tol,linear_cycles,fd_scale,fd_scheme,fd_local_cap,linear_maxiter)
-    if globalization==:pseudo_transient && rel>linear_residual_max
+    if rel>_airfoil_linear_residual_limit(krylov_workspace,globalization,linear_residual_max,linear_tol)
         _raw_residual_ka!(s,Int32(2),Int32(1))
         return (accepted=false,alpha=0.0f0,linear_iterations=kits,
             linear_relative=rel,merit_before=before,merit_after=before,
@@ -596,7 +599,7 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     recovery_steps::Int=0,recovery_limit::Int=200,
     globalization::Symbol=:steady,physical_fraction::Float32=0.2f0,
     block_scalar_type::Type{<:AbstractFloat}=Float32,
-    lagged_component_limiter::Bool=false)
+    lagged_component_limiter::Bool=false,available_bytes=nothing)
     globalization in (:steady,:pseudo_transient) ||
         throw(ArgumentError("globalization must be :steady or :pseudo_transient"))
     isfinite(physical_fraction) && 0.0f0<physical_fraction<=0.5f0 ||
@@ -608,15 +611,21 @@ function build_jfnk_airfoil_controller(s::KSol;m::Int=4,
     isfinite(growth) && 1.0f0<growth<=2.0f0 ||
         throw(ArgumentError("JFNK CFL growth must be in (1,2]"))
     1<=max_attempts<=8 || throw(ArgumentError("max_attempts must be 1:8"))
-    linear_solver in (:native,:krylov) ||
-        throw(ArgumentError("linear_solver must be :native or :krylov"))
+    linear_solver in (:native,:krylov,:native_cgs2) ||
+        throw(ArgumentError("linear_solver must be :native, :krylov or :native_cgs2"))
     0<=nonmonotone_window<=20 ||
         throw(ArgumentError("nonmonotone_window must be 0:20"))
     0<=recovery_steps<=100 && recovery_steps<=recovery_limit<=10_000 ||
         throw(ArgumentError("recovery_steps must be 0:100 and recovery_limit must be between recovery_steps and 10000"))
-    workspace=build_jfnk_airfoil_workspace(s;m,preconditioner,pseudo_scale,block_scalar_type,lagged_component_limiter)
-    krylov_workspace=linear_solver==:krylov ?
-        build_krylov_airfoil_workspace(s,workspace) : nothing
+    linear_solver===:native_cgs2&&recovery_steps!=0&&
+        throw(ArgumentError("Native CGS2 initially requires recovery_steps=0"))
+    cgs2_receipt=linear_solver===:native_cgs2 ? airfoil_cgs2_memory_guard(s,m;
+    preconditioner,block_scalar_type,lagged_component_limiter,available_bytes) : nothing
+operator_m=linear_solver===:native_cgs2 ? 2 : m
+workspace=build_jfnk_airfoil_workspace(s;m=operator_m,preconditioner,pseudo_scale,block_scalar_type,lagged_component_limiter)
+krylov_workspace=linear_solver===:native_cgs2 ?
+    _build_packed_cgs2_airfoil_workspace(s,workspace,m,cgs2_receipt) : linear_solver==:krylov ?
+    build_krylov_airfoil_workspace(s,workspace) : nothing
     # Reusable backups avoid allocating mesh-sized arrays on every nonlinear
     # step while allowing an invalid segregated SST update to be rolled back.
     coupled_backup=map(name->similar(getproperty(s,name)),_AIRFOIL_COUPLED_STATE)
