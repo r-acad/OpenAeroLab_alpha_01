@@ -545,19 +545,28 @@ This flow step does not advance SST or certify scientific convergence.
 """
 function step_jfnk_airfoil_ka!(s::KSol,w::JFNKAirfoilWorkspace,cfl::Float32;kwargs...)
     r=w.lagged_limiter
-    r===nothing&&return _step_jfnk_airfoil_impl!(s,w,cfl;kwargs...)
-    r.ready=false
-    _airfoil_lagged_owner(s,r)
-    for (dst,src) in zip((w.line.rho0,w.line.ux0,w.line.uy0,w.line.T0),(s.rho,s.ux,s.uy,s.T));copyto!(dst,src);end
-    copyto!(r.saved_dt,s.dtf);clock=s.last_global_dt
+    r===nothing||(r.ready=false)
+    state=(s.rho,s.ux,s.uy,s.T)
+    backup=(w.line.rho0,w.line.ux0,w.line.uy0,w.line.T0)
+    # Embedded scalar dr is reserved during current-mode JFNK; JFNK's actual
+    # directions/preconditioners use separate tuple/PC storage.
+    saved_dt=r===nothing ? w.line.dr : r.saved_dt
+    size(w.rhs[1])==size(s.dtf) && size(saved_dt)==size(s.dtf) &&
+        all(size(dst)==size(src) for (dst,src) in zip(backup,state)) ||
+        throw(ArgumentError("JFNK workspace does not match solver"))
+    r===nothing||_airfoil_lagged_owner(s,r)
+    for (dst,src) in zip(backup,state);copyto!(dst,src);end
+    copyto!(saved_dt,s.dtf);clock=s.last_global_dt
     try
         result=_step_jfnk_airfoil_impl!(s,w,cfl;kwargs...)
-        r.ready=false
-        merge(result,airfoil_jacobian_contract(w))
+        r===nothing||(r.ready=false)
+        r===nothing ? result : merge(result,airfoil_jacobian_contract(w))
     catch
-        for (dst,src) in zip((s.rho,s.ux,s.uy,s.T),(w.line.rho0,w.line.ux0,w.line.uy0,w.line.T0));copyto!(dst,src);end
-        copyto!(s.dtf,r.saved_dt);s.last_global_dt=clock;r.ready=false
+        for (dst,src) in zip(state,backup);copyto!(dst,src);end
+        copyto!(s.dtf,saved_dt);s.last_global_dt=clock
         rethrow()
+    finally
+        r===nothing||(r.ready=false)
     end
 end
 

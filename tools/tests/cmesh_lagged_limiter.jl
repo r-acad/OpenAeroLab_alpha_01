@@ -159,3 +159,78 @@ end
     prepare_lagged!(s,w)
     @test r.ready
 end
+
+
+# No public injection keyword is required.
+struct ThrowingFlowTransactionKrylov end
+const flow_transaction_precondition_calls=Ref(0)
+function M._airfoil_krylov_gmres!(s::M.KSol,w::M.JFNKAirfoilWorkspace,
+        ::ThrowingFlowTransactionKrylov;kwargs...)
+    M._airfoil_line_precondition!(w.delta,w.rhs,s,w)
+    flow_transaction_precondition_calls[]+=1
+    fill!(s.rho,2.);fill!(s.ux,.7);fill!(s.uy,-.3);fill!(s.T,1.2)
+    fill!(s.dtf,.123);s.last_global_dt=.456
+    error("injected flow transaction failure")
+end
+flow_record(s)=(;fields=map(n->Array(getproperty(s,n)),M._AIRFOIL_COUPLED_STATE),clock=s.last_global_dt)
+flow_same(s,b)=all(isequal(Array(a),x) for (a,x) in zip(
+    map(n->getproperty(s,n),M._AIRFOIL_COUPLED_STATE),b.fields))&&isequal(s.last_global_dt,b.clock)
+
+@testset "Flow exceptions restore current and R1 transactions" begin
+    for (lagged,pc,T) in ((false,:line,Float32),(false,:line,Float64),(false,:kinetic_muscl_ls_fullvisc_block_adi,Float64),(true,:line,Float64))
+        s,_=lagged_fixture(;scalar_type=T)
+        w=M.build_jfnk_airfoil_workspace(s;m=2,preconditioner=pc,
+            block_scalar_type=Float64,lagged_component_limiter=lagged)
+        fill!(s.dtf,.00234);s.last_global_dt=.00123
+        before=flow_record(s);calls=flow_transaction_precondition_calls[]
+        caught=try
+            M.step_jfnk_airfoil_ka!(s,w,.45f0;krylov_workspace=ThrowingFlowTransactionKrylov())
+            nothing
+        catch err
+            err
+        end
+        @test caught isa ErrorException
+        @test occursin("injected flow transaction failure",sprint(showerror,caught))
+        @test flow_transaction_precondition_calls[]==calls+1
+        @test flow_same(s,before)
+        lagged&&(@test !w.lagged_limiter.ready)
+        M.clear_airfoil_muscl_ka!(s)
+    end
+end
+
+# Build malformed SAME-TYPE storage without mutating the valid fixture.
+replace_field(x,name,value)=typeof(x)((f===name ? value : getfield(x,f) for f in fieldnames(typeof(x)))...)
+@testset "Wrong backup shapes reject before copying or inner dispatch" begin
+    s,_=lagged_fixture();w=M.build_jfnk_airfoil_workspace(s;m=2)
+    before=flow_record(s);calls=flow_transaction_precondition_calls[]
+    for field in (:rho0,:ux0,:uy0,:T0,:dr)
+        old=getproperty(w.line,field)
+        badline=replace_field(w.line,field,similar(old,1,1))
+        bad=replace_field(w,:line,badline)
+        @test_throws ArgumentError M.step_jfnk_airfoil_ka!(s,bad,.45f0;
+            krylov_workspace=ThrowingFlowTransactionKrylov())
+        @test flow_same(s,before)
+        @test flow_transaction_precondition_calls[]==calls
+    end
+    M.clear_airfoil_muscl_ka!(s)
+end
+
+
+@testset "Flow transaction preserves successful current and R1 results" begin
+    for lagged in (false,true)
+        s,_=lagged_fixture();control,_=lagged_fixture()
+        w=M.build_jfnk_airfoil_workspace(s;m=6,lagged_component_limiter=lagged)
+        wc=M.build_jfnk_airfoil_workspace(control;m=6,lagged_component_limiter=lagged)
+        expected=M._step_jfnk_airfoil_impl!(control,wc,.45f0)
+        actual=M.step_jfnk_airfoil_ka!(s,w,.45f0)
+        @test all(isequal(getproperty(actual,k),getproperty(expected,k)) for k in keys(expected))
+        @test flow_same(s,flow_record(control))
+        if lagged
+            @test actual.jacobian_model===:lagged_component_limiter
+            @test !actual.frozen_base_ready&&!w.lagged_limiter.ready
+        else
+            @test keys(actual)==keys(expected)
+        end
+        M.clear_airfoil_muscl_ka!(s);M.clear_airfoil_muscl_ka!(control)
+    end
+end
