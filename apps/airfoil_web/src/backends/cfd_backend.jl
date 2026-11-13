@@ -32,6 +32,9 @@ const SRC = joinpath(ROOT, "src")
 const LBM_F = Float32  # Required by src/collision/lattice.jl in the isolated CFD worker.
 const IS_WORKER = abspath(PROGRAM_FILE) == abspath(@__FILE__) &&
                   !isempty(ARGS) && ARGS[1] in ("--transonic-worker","--species-worker","--ch-transonic-worker")
+# The cohort starts before geometry/core includes and ends below, after the
+# conditional late C+H runtime includes. Checkpoints never rehash mutable disk.
+const _RANS_RESTART_SOURCE_LOAD_BEFORE = IS_WORKER ? _rans_restart_capture_source_snapshot() : nothing
 include(joinpath(SRC, "cmesh", "cmesh_gen.jl"))
 include(joinpath(SRC, "cmesh", "cmesh_metrics.jl"))
 include(joinpath(@__DIR__, "..", "mesh", "transonic_mesh.jl"))
@@ -2043,6 +2046,8 @@ include(joinpath(@__DIR__,"..","lbm","lbm_geometry.jl"))
 include(joinpath(@__DIR__,"..","lbm","lbm_case.jl"))
 include(joinpath(@__DIR__,"..","lbm","lbm_render.jl"))
 include(joinpath(@__DIR__,"..","lbm","lbm_backend.jl"))
+
+IS_WORKER && _rans_restart_bind_source_snapshot!(_RANS_RESTART_SOURCE_LOAD_BEFORE)
 
 end # module CFDBackend
 

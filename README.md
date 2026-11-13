@@ -139,6 +139,14 @@ nonorthogonal diffusion remains a separate option that defaults to false.
 Historical results retain their recorded settings, and restart checks reject
 different numerical sources or effective metric settings.
 
+RANS restart hashes now come from a worker startup snapshot checked before and
+after its numerical files load, including the late C+H runtime files. Editing
+those files on disk cannot relabel checkpoints from an already running worker.
+This records the guarded file-load cohort, including conservative inventory
+entries, rather than arbitrary runtime method edits. Older checkpoints without
+this provenance start cold; existing result files and visualization fields
+remain readable.
+
 The compressible implicit developer API also provides the optional
 `lagged_component_limiter=true` workspace setting for Float64 thermal MUSCL
 free-air cases with impermeable walls. It holds the reconstruction limiter
