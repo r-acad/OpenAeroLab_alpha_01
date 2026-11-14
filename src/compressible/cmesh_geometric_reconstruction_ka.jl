@@ -88,7 +88,7 @@ end
 function set_airfoil_muscl_ka!(s::KSol,X,Y;limiter::Symbol=:barth,smooth_coefficient::Float32=.05f0)
     s.cav==0&&s.outer_mode==0&&s.outlet_mode==0&&s.ff_mix==0&&s.emix==0 ||
         throw(ArgumentError("Geometric thermal MUSCL requires single-phase free-air C/A+"))
-    limiter in (:barth,:venkat)||throw(ArgumentError("Limiter must be :barth or :venkat"))
+    limiter in (:barth,:venkat,:venkat_chord)||throw(ArgumentError("Limiter must be :barth, :venkat or :venkat_chord"))
     isfinite(smooth_coefficient)&&0<smooth_coefficient<=1 || throw(ArgumentError("Invalid limiter smoothing coefficient"))
     size(X)==size(Y)==(s.NI+1,s.NJ+1)||throw(ArgumentError("MUSCL mesh does not match solver dimensions"))
     R=eltype(s.rho)
@@ -104,7 +104,7 @@ function set_airfoil_muscl_ka!(s::KSol,X,Y;limiter::Symbol=:barth,smooth_coeffic
     theta=similar(s.dtf);status=similar(s.dtf)
     old=get(_AIRFOIL_MUSCL,s,nothing)
     previous=old===nothing ? s.recon : old.previous_recon
-    w=AirfoilMUSCLWorkspace(geom,states,theta,status,limiter==:barth ? Int32(0) : Int32(1),smooth_coefficient,previous)
+    w=AirfoilMUSCLWorkspace(geom,states,theta,status,limiter==:barth ? Int32(0) : limiter==:venkat ? Int32(1) : Int32(2),smooth_coefficient,previous)
     _AIRFOIL_MUSCL[s]=w;s.recon=_AIRFOIL_MUSCL_RECON;w
 end
 
@@ -124,6 +124,13 @@ end
     end
     value
 end
+# Smoothing scale epsilon^2 of the Venkatakrishnan form. Limiters 0 (:barth) and 1 (:venkat): the cell-size scale
+# (kappa sqrt(area))^3 |q|^2, unchanged. Limiter 2 (:venkat_chord, opt-in): a fixed length (the chord, 1) and, for the
+# velocity components, the freestream speed as magnitude: epsilon = kappa^1.5 x magnitude. The cell-size scale vanishes
+# in boundary-layer and far-field cells, where round-off-level variations then switch the limiter; the fixed scale
+# leaves every variation below about kappa^1.5 of the magnitude unlimited, so the residual stays differentiable.
+@inline _airfoil_limit_epsilon2(limiter,kappa,area,q,k,uref)=limiter==Int32(2) ?
+    kappa^3*((k==2||k==3) ? uref : max(abs(q),1f-3))^2 : (kappa*sqrt(area))^3*max(abs(q),1f-3)^2
 @inline function _airfoil_limit_ratio(a,b,epsilon2,limiter)
     lo=zero(b);hi=one(b)
     b==lo&&return hi
@@ -133,7 +140,7 @@ end
 
 @kernel function _k_airfoil_muscl_states!(states,theta,status,gux,guy,gvx,gvy,gTx,gTy,
     @Const(r),@Const(u),@Const(v),@Const(t),@Const(offsets),@Const(weights),@Const(neighbors),@Const(area),
-    limiter::Int32,kappa::Float32,eint,NI::Int32,NJ::Int32,g::Int32,fixed_factors)
+    limiter::Int32,kappa::Float32,eint,NI::Int32,NJ::Int32,g::Int32,fixed_factors,uref)
     i,j=@index(Global,NTuple)
     CS2=_gas_cs2(eltype(r))
     @inbounds if i<=NI&&j<=NJ
@@ -149,7 +156,7 @@ end
                 lo=min(lo,q);hi=max(hi,q)
             end
             value=finite ? one(z[k]) : zero(z[k])
-            epsilon2=(kappa*sqrt(area[i,j]))^3*max(abs(z[k]),1f-3)^2
+            epsilon2=_airfoil_limit_epsilon2(limiter,kappa,area[i,j],z[k],k,uref)
             for f in 1:4
                 b=gx[k]*offsets[i,j,1,f]+gy[k]*offsets[i,j,2,f]
                 a=b>0f0 ? hi-z[k] : lo-z[k]
@@ -193,7 +200,7 @@ function _airfoil_muscl_prepare!(s::KSol,w::AirfoilMUSCLWorkspace;fixed_componen
     a=w.geometry
     _k_airfoil_muscl_states!(s.backend)(w.states,w.theta,w.status,s.gux,s.guy,s.gvx,s.gvy,s.gTx,s.gTy,
         s.rho,s.ux,s.uy,s.T,a.offsets,a.weights,a.neighbors,a.area,w.limiter,w.smooth_coefficient,s.eint,
-        Int32(s.NI),Int32(s.NJ),Int32(s.g),fixed_component_factors;ndrange=(s.NI,s.NJ))
+        Int32(s.NI),Int32(s.NJ),Int32(s.g),fixed_component_factors,eltype(s.rho)(hypot(s.uxi,s.uyi));ndrange=(s.NI,s.NJ))
     w.states
 end
 

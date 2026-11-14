@@ -13,9 +13,13 @@
 # stops when CL and CD have settled. newton_cold_run adds mesh sequencing by node skipping.
 #
 # REQUIREMENTS AND LIMITS. Float64 state on the CPU (GMRES and the coarse solve are host code). The MUSCL
-# limiter must be smooth: the cell-size-scaled Venkatakrishnan constant acts as a hard switch and makes the
-# linearisation useless, so subsonic cases run with newton_unlimited_reconstruction!(s); transonic cases need a
-# limiter that this file does not provide. Development results only: not validated against reference data.
+# limiter must be smooth: the cell-size-scaled Venkatakrishnan constant (limiter = :venkat) is switched by
+# round-off-level variations and makes the linearisation useless. Subsonic cases run without a limiter
+# (newton_unlimited_reconstruction!(s)); cases with shocks use set_airfoil_muscl_ka!(...; limiter = :venkat_chord),
+# whose smoothing scale is a fixed fraction of the freestream magnitudes. Its coefficient matters: 0.05 also limits
+# smooth boundary-layer profiles slightly (RAE 2822 Case 9: 13 % of the cells, drag 3.7 % higher), 0.2 acts at the
+# shock only. newton_rans_march!(...; vortex_relax) updates the far-field point vortex from the lift.
+# Development results only: not validated against reference data.
 import Printf
 include(joinpath(@__DIR__, "cmesh_steady_newton_linear_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_newton_sst_ka.jl"))
@@ -89,7 +93,8 @@ end
 Stops when CL and CD have stayed within `load_tol` (relative to max(|CL|,0.1), max(|CD|,0.001)) over the last
 `window` steps and at least `min_steps` were taken. CSV rows per diagnostic if `csv` is given."""
 function newton_rans_march!(s::KSol,m::NewtonRANS;nsteps=100,cflmax=1e3,growth=1.5,budget=Inf,every=5,csv=nothing,
-        label="",ref=nothing,window=20,load_tol=1e-4,min_steps=window,quiet=false,rre=nothing,kwargs...)
+        label="",ref=nothing,window=20,load_tol=1e-4,min_steps=window,quiet=false,rre=nothing,vortex_relax=0.0,
+        kwargs...)
     t0=time();io=csv===nothing ? nothing : open(csv,"w")
     io===nothing||println(io,"step,seconds,cfl,its,rho,mx,my,E,k,omega,dk,dw,mass,CL,CD")
     loads=Tuple{Float64,Float64}[];converged=false;nlocal=0
@@ -97,6 +102,9 @@ function newton_rans_march!(s::KSol,m::NewtonRANS;nsteps=100,cflmax=1e3,growth=1
     try
         for n in 1:nsteps
             r=newton_rans_step!(s,m;kwargs...);nlocal+=1
+            # Far-field point vortex (the Prandtl-Glauert corrected circulation of the free-stream boundary): relaxed
+            # towards the current lift after every step when vortex_relax > 0 (0, the default: left as it is).
+            vortex_relax>0&&r.ok&&(s.gam+=oftype(s.gam,vortex_relax)*(oftype(s.gam,0.5*hypot(s.uxi,s.uyi)*r.cl)-s.gam))
             if rre!==nothing&&r.cfl>=cflmax&&r.ok&&r.alpha>=0.99
                 # Reduced-rank extrapolation once the CFL ramp is over: q+2 iterates every `cycle` steps.
                 push!(xs,newton_state_vec(s));length(xs)>rre[1]+2&&popfirst!(xs);since+=1
@@ -231,18 +239,18 @@ end
 # `nodes` = (X, Y, NIW, NIF, NI, NJ) of the fine mesh; `make_solver(nodes)` returns a prepared KSol for a level.
 function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),cflmax=(1e3,1e3,1e3),
         load_tol=(1e-3,3e-4,1e-4),window=(10,15,20),rre=(3,8),blocks=:roe,delta=0.3,outdir=nothing,every=10,
-        lintol=0.05,maxit=40,quiet=false)
+        lintol=0.05,maxit=40,quiet=false,vortex_relax=0.0,growth=1.5)
     prev=nothing;pf=0;t00=time();out=nothing;summary=Dict{String,Any}();lv=Any[]
     for (k,f) in enumerate(levels)
         t0=time();nd=newton_coarsen_nodes(nodes,f)
         s=make_solver(nd)
         d=steady_airfoil_diagnostics_ka(s;corrected_wall_metric=true)
         ref=[d.flow_l2...,d.turb_k_equation_l2,d.turb_omega_equation_l2]
-        prev===nothing||newton_prolong!(s,prev,pf÷f)
+        prev===nothing||(newton_prolong!(s,prev,pf÷f);s.gam=oftype(s.gam,prev.gam))
         m=newton_rans_init(s;cfl=prev===nothing ? 5. : 20.,agg=(4÷f,4÷f))
         setup=time()-t0
         quiet||Printf.@printf("LEVEL 1/%d: %d x %d = %d cells, setup %.1fs\n",f,nd.NI,nd.NJ,nd.NI*nd.NJ,setup)
-        r=newton_rans_march!(s,m;nsteps=nsteps[k],cflmax=cflmax[k],growth=1.5,every,label="L$f ",ref,quiet,
+        r=newton_rans_march!(s,m;nsteps=nsteps[k],cflmax=cflmax[k],growth,every,vortex_relax,label="L$f ",ref,quiet,
             load_tol=load_tol[k],window=window[k],rre,blocks,delta,lintol,maxit,
             csv=outdir===nothing ? nothing : joinpath(outdir,"history_L$f.csv"))
         cl,cd=loads_ka(s)

@@ -18,14 +18,14 @@ function small_nodes()
     (X=mesh.X,Y=mesh.Y,NIW=mesh.NIW,NIF=mesh.NIF,NI=mesh.NI,NJ=mesh.NJ)
 end
 "A prepared Float64 CPU solver on `nd`: thermal MUSCL, full viscous terms, SST, Mach 0.3, alpha 4 deg, Re 1e5."
-function small_solver(nd;unlimited=true)
+function small_solver(nd;unlimited=true,limiter=:venkat,kappa=.05f0)
     T=Float64
     met=CMeshMetrics.build_metrics(nd.X,nd.Y,nd.NIW,nd.NIF;trip_upper=0.,trip_lower=0.,scalar_type=T)
     cx,cy,cz,w,_,_=build_d3q39_static(T)
     s=M.build_sol_ka(CPU(),met;drot=T(2),cxv=cx,cyv=cy,czv=cz,wv=w,scalar_type=T)
     s.wall_flux=true;s.fullvisc=Int32(1)
-    M.set_airfoil_muscl_ka!(s,nd.X,nd.Y;limiter=:venkat)
-    unlimited&&M.newton_unlimited_reconstruction!(s)
+    M.set_airfoil_muscl_ka!(s,nd.X,nd.Y;limiter,smooth_coefficient=kappa)
+    unlimited&&limiter===:venkat&&M.newton_unlimited_reconstruction!(s)
     M.set_freestream_ka!(s,.3,4.);s.nu_lam=hypot(s.uxi,s.uyi)/1e5
     M.set_sst_ka!(s);M.applyBC_ka!(s,Int32(2));M.prepare_dt_ka!(s,.45f0)
     M.sst_step_ka!(s;corrected_wall_metric=true)
@@ -87,4 +87,33 @@ end
     @test all(r.summary["final_six_over_cold"][1:4].<1e-3)
     @test isfinite(r.summary["final_CL"])&&isfinite(r.summary["final_CD"])
     @test r.summary["levels"][2]["cells"]==nd.NI*nd.NJ
+end
+
+@testset "Chord-scaled smooth limiter and far-field vortex" begin
+    nd=small_nodes()
+    march!(s)=(m=M.newton_rans_init(s;cfl=5.,agg=(4,4));
+        M.newton_rans_march!(s,m;nsteps=40,cflmax=1e3,every=40,quiet=true,rre=nothing,blocks=:roe,delta=.3,lintol=.3,maxit=60,load_tol=1e-6,window=10);m)
+    limited(s)=(M._raw_residual_ka!(s,Int32(2),Int32(1));count(<(0.99),Array(M._AIRFOIL_MUSCL[s].theta)[1:s.NI,1:s.NJ])/(s.NI*s.NJ))
+    free=small_solver(nd);cold=six(free);march!(free);clf,cdf=M.loads_ka(free)
+    # the chord-scaled limiter is opt-in and, with its smoothing scale above the variations of a smooth flow, leaves the
+    # Newton march as it is without a limiter (this mesh is coarse: the scale is the freestream magnitude itself)
+    s=small_solver(nd;limiter=:venkat_chord,kappa=1f0)
+    @test M._AIRFOIL_MUSCL[s].limiter==Int32(2)
+    march!(s);warm=six(s);cl,cd=M.loads_ka(s)
+    @test all(warm[1:4].<1e-2.*cold[1:4])               # two orders in 40 steps (three without a limiter)
+    @test abs(cl-clf)<0.02*abs(clf)&&abs(cd-cdf)<0.05*abs(cdf)
+    wide=limited(s)
+    @test wide<0.10
+    # a smaller scale limits more cells of the same state
+    v=small_solver(nd;limiter=:venkat_chord,kappa=.02f0)
+    for f in (:rho,:ux,:uy,:T,:tk,:tom,:nut);copyto!(getproperty(v,f),getproperty(s,f));end
+    M.applyBC_ka!(v,Int32(2))
+    @test limited(v)>wide
+    @test_throws ArgumentError small_solver(nd;limiter=:minmod)
+    # far-field vortex: with full relaxation it equals the circulation of the last step's lift; off by default
+    @test free.gam==0
+    g=small_solver(nd);m=M.newton_rans_init(g;cfl=5.,agg=(4,4))
+    M.newton_rans_march!(g,m;nsteps=6,cflmax=1e3,every=6,quiet=true,rre=nothing,blocks=:roe,delta=.3,lintol=.3,maxit=60,load_tol=1e-9,window=5,vortex_relax=1.0)
+    @test g.gam!=0
+    @test isfinite(g.gam)&&abs(g.gam)<hypot(g.uxi,g.uyi)
 end

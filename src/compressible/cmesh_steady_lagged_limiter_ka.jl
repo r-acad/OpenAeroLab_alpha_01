@@ -51,7 +51,7 @@ function _airfoil_refresh_lagged_limiter!(s::KSol,r::AirfoilLaggedLimiterWorkspa
     try
         _k_airfoil_muscl_block_theta!(s.backend)(r.component_factors,s.rho,s.ux,s.uy,s.T,
             a.offsets,a.weights,a.neighbors,a.area,mw.limiter,mw.smooth_coefficient,
-            Int32(s.NI),Int32(s.NJ),Int32(s.g);ndrange=(s.NI,s.NJ))
+            Int32(s.NI),Int32(s.NJ),Int32(s.g),eltype(s.rho)(hypot(s.uxi,s.uyi));ndrange=(s.NI,s.NJ))
         _airfoil_check_component_factors(s,r.component_factors;check_values=true)
         _airfoil_lagged_residual_ka!(s,r)
         for (dst,src) in zip(r.reference_residual,(s.dc_r,s.dc_mx,s.dc_my,s.dc_e));copyto!(dst,src);end

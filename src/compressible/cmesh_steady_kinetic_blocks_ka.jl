@@ -303,7 +303,7 @@ end
 # changing the physical reconstruction payload or the production residual.
 @kernel function _k_airfoil_muscl_block_theta!(theta,
     @Const(r),@Const(u),@Const(v),@Const(t),@Const(offsets),@Const(weights),@Const(neighbors),@Const(area),
-    limiter::Int32,kappa::Float32,NI::Int32,NJ::Int32,g::Int32)
+    limiter::Int32,kappa::Float32,NI::Int32,NJ::Int32,g::Int32,uref)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI&&j<=NJ
         z=_airfoil_air_z(r,u,v,t,i+g,j+g)
@@ -318,7 +318,7 @@ end
                 lo=min(lo,q);hi=max(hi,q)
             end
             value=finite ? one(z[k]) : zero(z[k])
-            epsilon2=(kappa*sqrt(area[i,j]))^3*max(abs(z[k]),1f-3)^2
+            epsilon2=_airfoil_limit_epsilon2(limiter,kappa,area[i,j],z[k],k,uref)
             for f in 1:4
                 b=gx[k]*offsets[i,j,1,f]+gy[k]*offsets[i,j,2,f]
                 a=b>0f0 ? hi-z[k] : lo-z[k]
@@ -553,7 +553,8 @@ function _airfoil_kinetic_build!(s::KSol,w::AirfoilKineticBlockWorkspace,d0)
         if w.muscl_theta!==nothing
             a=mw.geometry
             _k_airfoil_muscl_block_theta!(b)(w.muscl_theta,s.rho,s.ux,s.uy,s.T,
-                a.offsets,a.weights,a.neighbors,a.area,mw.limiter,mw.smooth_coefficient,ni,nj,g;
+                a.offsets,a.weights,a.neighbors,a.area,mw.limiter,mw.smooth_coefficient,ni,nj,g,
+                eltype(s.rho)(hypot(s.uxi,s.uyi));
                 ndrange=(s.NI,s.NJ))
             ls_weights=a.weights;ls_offsets=a.offsets
         end

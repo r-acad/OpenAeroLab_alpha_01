@@ -162,9 +162,12 @@ march for single-block airfoil meshes with plain SST
 second-order residual with a finite-difference Jacobian product and a
 two-level block-line preconditioner; turbulence takes an implicit SST step;
 coarse levels by node skipping provide the starting guess. It runs in Float64
-on the CPU and needs a smooth reconstruction, so subsonic cases call
-`newton_unlimited_reconstruction!` and transonic cases are not covered. No
-default path, worker or app setting uses it. `tools/tests/cmesh_steady_newton.jl`
+on the CPU and needs a smooth reconstruction: subsonic cases call
+`newton_unlimited_reconstruction!`, and cases with shocks use the opt-in
+limiter `:venkat_chord` of `set_airfoil_muscl_ka!`, whose smoothing scale is a
+fixed fraction of the freestream magnitudes instead of the local cell size
+(the existing `:barth` and `:venkat` limiters are unchanged). No default path,
+worker or app setting uses either. `tools/tests/cmesh_steady_newton.jl`
 checks it on a small mesh; results on full airfoils are development results,
 not validation.
 
