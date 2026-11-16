@@ -63,7 +63,7 @@ using .CFDBackend
     @test occursin("Recent load stability does not establish the final CL/CD",message)
 
     case = Dict{String,Any}("airfoil"=>Dict{String,Any}("kind"=>"naca4", "id"=>"0012"))
-    gas = Dict{String,Any}("rans_acceleration"=>true, "cfd_mesh"=>"aplus_nested_refined")
+    gas = Dict{String,Any}("rans_acceleration"=>true)
     cfg = CFDBackend._ch_transonic_config(case, "foil.dat", gas, 0.0, @__DIR__)
     @test cfg["irsj"] == true
     @test cfg["rans_acceleration"] == true

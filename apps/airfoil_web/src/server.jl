@@ -21,7 +21,6 @@ include(joinpath("references", "reference_data.jl"))
 using .AirfoilReferenceData
 include(joinpath("backends", "cfd_backend.jl"))
 using .CFDBackend
-const ResultQualification=CFDBackend.CFDResultQualification
 include(joinpath("references", "nearby_references.jl"))
 using .AirfoilNearbyReferences
 # Streamline-aligned meshes (development, 24 Oct 2026): the JXfoil paths are computed here (CFDBackend's workers never
@@ -63,16 +62,11 @@ const STATIC_FILES = Dict(
     "scripts/studies.js"=>"scripts/studies.js", "scripts/benchmarks.js"=>"scripts/benchmarks.js",
     "scripts/workflow_help.js"=>"scripts/workflow_help.js",
     "scripts/workflow.js"=>"scripts/workflow.js",
-    "scripts/research_settings.js"=>"scripts/research_settings.js",
     "styles/studies.css"=>"styles/studies.css",
     "styles/plots.css"=>"styles/plots.css", "scripts/plot_controls.js"=>"scripts/plot_controls.js",
     "scripts/app.js" => "scripts/app.js", "scripts/lbm.js" => "scripts/lbm.js",
-    "scripts/campaign.js" => "scripts/campaign.js", "scripts/babylon_view.js" => "scripts/babylon_view.js",
+    "scripts/babylon_view.js" => "scripts/babylon_view.js",
     "vendor/babylon.js" => "vendor/babylon.js",
-    # Old asset URLs remain available to open tabs and local integrations.
-    "app.css" => "styles/app.css", "app.js" => "scripts/app.js",
-    "lbm.js" => "scripts/lbm.js", "campaign.js" => "scripts/campaign.js",
-    "babylon_view.js" => "scripts/babylon_view.js",
 )
 const RUN_DIR = joinpath(PRIVATE_ROOT, "results", "airfoil_runs")
 const PREVIEW_DIR = joinpath(PRIVATE_ROOT, "TEMP_DELETEABLE", "airfoil_previews")
@@ -108,7 +102,6 @@ include("output_options.jl")
 include("lowspeed_initial_flow.jl")
 include(joinpath(ROOT,"apps","common","NativeDialogs.jl"))
 include(joinpath(ROOT,"apps","common","StaticAssets.jl"))
-include(joinpath("api", "campaign_status.jl"))
 
 _header(req::HTTP.Request, name::String) = get(Dict(lowercase(String(k))=>String(v) for (k,v) in req.headers), lowercase(name), "")
 _fmt(req; default=:msgpack) = try
@@ -146,6 +139,24 @@ function _num(x, label; positive=false, nonnegative=false)
     nonnegative && y < 0 && throw(ArgumentError("$label must be nonnegative"))
     y
 end
+# Options withdrawn on 14 Nov 2026 (with every cfd_implicit_* key), each with the one value that means what the app now
+# always does. A request or saved study that names that value loads and the key is dropped; any other value is refused,
+# so that nothing runs as something else than it says.
+const REMOVED_FLOW_KEYS = Dict{String,Any}("cfd_te_topology"=>"auto", "cfd_mesh"=>"aplus_nested_refined",
+    "lowspeed_topology"=>"auto", "cfd_irsj"=>false, "cfd_sfd_enabled"=>false, "lbm_wall_model"=>false,
+    "cfd_n_base"=>nothing)
+function _drop_removed_options!(flow::AbstractDict)
+    for key in sort!(collect(keys(flow)))
+        haskey(REMOVED_FLOW_KEYS, key) || startswith(key, "cfd_implicit_") || continue
+        value = flow[key]
+        current = get(REMOVED_FLOW_KEYS, key, nothing)
+        current !== nothing && value == current ||
+            (key == "cfd_mesh" && value == "marched" && get(flow, "rans_method", "") == "newton") ||
+            throw(ArgumentError("$key = $value is no longer an option of Airfoil Lab. Set the case up again from the page."))
+        delete!(flow, key)
+    end
+    flow
+end
 function _validated_case(data; geometry_only::Bool=false)
     data isa AbstractDict || throw(ArgumentError("request must be a map"))
     foil = get(data, "airfoil", nothing)
@@ -179,7 +190,7 @@ function _validated_case(data; geometry_only::Bool=false)
     reynolds = _num(get(flow, "reynolds", 100000.0), "reynolds"; positive=true)
     ncrit = _num(get(flow, "ncrit", 9.0), "ncrit"; positive=true)
     sigma = _num(get(flow, "sigma", 1.25), "sigma"; positive=true)
-    flow_out = Dict{String,Any}(String(k)=>v for (k,v) in pairs(flow))
+    flow_out = _drop_removed_options!(Dict{String,Any}(String(k)=>v for (k,v) in pairs(flow)))
     outputs = _output_preferences(data)
     flow_out["snapshot_interval_seconds"]=60*outputs["snapshot_interval_minutes"]
     display_every = get(data,"display_every",get(flow,"display_every",nothing))
@@ -211,10 +222,11 @@ function _validated_case(data; geometry_only::Bool=false)
     domain in ("tunnel","free_fluid","underwater") || throw(ArgumentError("invalid cav_domain"))
     flow_out["cav_fluid"]=material;flow_out["cav_domain"]=domain
     method=String(get(flow_out,"rans_method","standard"))
-    method in CFDBackend.RANSAcceleration.METHODS || throw(ArgumentError("Unknown steady RANS method"))
+    method in CFDBackend.RANSAcceleration.METHODS || throw(ArgumentError(
+        "rans_method must be one of $(join(CFDBackend.RANSAcceleration.METHODS,", ")); $method is not an iteration method of Airfoil Lab"))
     if method!="standard"
         "transonic" in backend_names || throw(ArgumentError("This method selects the compressible CFD backend"))
-        String(get(flow_out,"cfd_time_mode","steady"))=="steady" || throw(ArgumentError("Implicit research methods require steady mode"))
+        String(get(flow_out,"cfd_time_mode","steady"))=="steady" || throw(ArgumentError("This iteration method requires steady mode"))
     end
     if haskey(flow_out,"rans_acceleration")
         flow_out["rans_acceleration"] isa Bool || throw(ArgumentError("rans_acceleration must be boolean"))
@@ -227,9 +239,6 @@ function _validated_case(data; geometry_only::Bool=false)
                 throw(ArgumentError("RANS acceleration requires steady Species air; it is unavailable for phase-change and physical-time runs"))
         end
     end
-    topology=String(get(flow_out,"cfd_te_topology","auto"))
-    topology in ("auto","aplus") || throw(ArgumentError("cfd_te_topology must be auto or aplus"))
-    flow_out["cfd_te_topology"]=topology
     if "cavitation" in backend_names && domain=="underwater"
         material=="water" || throw(ArgumentError("underwater requires water"))
         backend_names==["cavitation"] || throw(ArgumentError("underwater uses SI speed and a distinct physical model; select the cavitation backend alone"))
@@ -269,15 +278,11 @@ function _validated_case(data; geometry_only::Bool=false)
     end
     all(abs(a)<=90 for a in alphas) || throw(ArgumentError("alpha must lie within ±90 degrees"))
     flow_out["alpha_deg"] = alphas[1]
-    for key in ("cfd_steps", "cfd_n_base", "cav_warm_steps", "cav_frames", "cfd_history_stride")
+    for key in ("cfd_steps", "cav_warm_steps", "cav_frames", "cfd_history_stride")
         haskey(flow_out,key) || continue
         val = _num(flow_out[key], key; nonnegative=true)
         val == round(val) || throw(ArgumentError("$key must be an integer"))
         flow_out[key] = Int(val)
-    end
-    if haskey(flow_out,"cfd_n_base")
-        1 <= flow_out["cfd_n_base"] <= 8 ||
-            throw(ArgumentError("cfd_n_base must be between 1 and 8 faces per base half"))
     end
     for key in ("cav_duration_ctu", "cav_channel_height")
         haskey(flow_out,key) && (flow_out[key] = _num(flow_out[key], key; positive=true))
@@ -314,19 +319,6 @@ function _validated_case(data; geometry_only::Bool=false)
     end
     haskey(flow_out,"cfd_mass_ceiling") && (flow_out["cfd_mass_ceiling"] = _num(flow_out["cfd_mass_ceiling"], "cfd_mass_ceiling"; positive=true))
     haskey(flow_out,"cfd_mass_ceiling") && flow_out["cfd_mass_ceiling"] > 1000 && throw(ArgumentError("cfd_mass_ceiling must not exceed 1000"))
-    if haskey(flow_out, "cfd_mesh")
-        flow_out["cfd_mesh"] isa AbstractString || throw(ArgumentError("cfd_mesh must be a string"))
-        mesh = String(flow_out["cfd_mesh"])
-        mesh in ("cavitation_aplus_farfield", "aplus_nested_refined", "aplus_uniform_quality", "aplus_uniform_fixed", "legacy_sharp_cmesh") ||
-            throw(ArgumentError("Unknown cfd_mesh profile; use an available shared or experimental A-plus profile"))
-        flow_out["cfd_mesh"] = mesh
-        # An explicit experimental A-plus profile is a complete mesh choice;
-        # avoid a second topology switch that would otherwise select C+H first.
-        mesh in ("aplus_uniform_quality", "aplus_uniform_fixed") &&
-            (flow_out["cfd_te_topology"] = "aplus")
-        mesh == "legacy_sharp_cmesh" && get(flow_out,"cfd_te_thickness",0.0) > 0 &&
-            throw(ArgumentError("finite trailing-edge thickness requires an A-plus mesh"))
-    end
     if haskey(flow_out, "cfd_sfd_storage")
         storage = String(flow_out["cfd_sfd_storage"])
         storage in ("float32", "float64") ||
@@ -354,6 +346,8 @@ function _validated_case(data; geometry_only::Bool=false)
             throw(ArgumentError("cfd_resolution must be standard, fine, or very_fine"))
         flow_out["cfd_resolution"] = resolution
     end
+    # Implicit Newton (CPU) on its marched mesh: the method's own request rules.
+    CFDBackend.newton_check_request(flow_out, backend_names)
     # Gurney flap (23 Oct 2026): validated and normalized; every unsupported combination is refused with its reason.
     # Absent gurney_height leaves the request exactly as before.
     gurney = CFDBackend.gurney_check_request(flow_out, backend_names; mesh=!geometry_only)   # a geometry-only preview is not a mesh
@@ -387,27 +381,8 @@ function _put_job(id::String, changes::AbstractDict)
         JOBS[id]["updated_at"] = string(now(UTC)) * "Z"
     end
 end
-function _qualification_job_view(job)
-    visible=Dict{String,Any}(string(k)=>v for (k,v) in job)
-    result=get(job,"result",nothing)
-    result isa AbstractDict || return visible
-    rows=get(result,"results",nothing)
-    rows isa AbstractVector || return visible
-    result_view=Dict{String,Any}(string(k)=>v for (k,v) in result)
-    result_view["results"]=[p isa AbstractDict ? ResultQualification.qualify_result_point(p) : p for p in rows]
-    visible["result"]=result_view
-    unverified=any(p->p isa AbstractDict && ResultQualification.unverified_implicit_point(p),rows)
-    if unverified && get(job,"status","") in ("completed","partial","failed") && get(job,"error",nothing)===nothing
-        visible["engine_job_status"]=get(job,"engine_job_status",get(job,"status",""))
-        visible["engine_job_message"]=get(job,"engine_job_message",get(job,"message",""))
-        visible["status"],visible["message"]=_point_outcome(result_view["results"])
-        occursin("server stopped",lowercase(string(get(job,"message","")))) &&
-            (visible["message"]=string(job["message"]," ",visible["message"]))
-    end
-    visible
-end
-_public_job(job) = _qualification_job_view(merge(Dict{String,Any}(k=>v for (k,v) in job if k!="case"),
-    Dict("request"=>_job_request(get(job,"case",get(job,"request",nothing))))))
+_public_job(job) = merge(Dict{String,Any}(k=>v for (k,v) in job if k!="case"),
+    Dict("request"=>_job_request(get(job,"case",get(job,"request",nothing)))))
 
 "Cancel a live job without changing terminal jobs or deleting saved artifacts."
 function _cancel_job!(id::String)
@@ -713,12 +688,6 @@ function _point_outcome(results)
     n = length(results)
     experimental=count(p->get(p,"status","")=="experimental_physical_state",results)
     experimental>0 && return ("partial","Experimental physical states saved; startup coefficients are unqualified")
-    unverified=filter(ResultQualification.unverified_implicit_point,results)
-    if !isempty(unverified)
-        stopped=all(p->ResultQualification.implicit_flow_qualification(get(p,"diagnostics",Dict()))["solver_stop_reached"],unverified)
-        return ("partial",(stopped ? "Solver stop reached; " : "Implicit results saved; ")*
-            "full flow checks unverified. Fields and forces remain diagnostic; inspect the raw turbulence and wall-constraint checks.")
-    end
     completed = count(p -> lowercase(string(get(p,"status","completed"))) in
                              ("completed","converged","ok"), results)
     n > 0 && completed == n && return ("completed", "Analysis complete")
@@ -946,7 +915,8 @@ function _run_job_controlled(id::String)
                     nangle = length(case["alphas"])
                     if event == "iteration"
                         interval=get(case,"display_every",nothing);iteration=get(ev,"iteration",nothing)
-                        if interval isa Integer && iteration isa Integer && iteration>1 && iteration%interval!=0 && iteration!=get(ev,"total_iterations",nothing)
+                        # every_history_row: the worker reports few rows itself (the Newton march); keep each of them.
+                        if get(ev,"every_history_row",false)!==true && interval isa Integer && iteration isa Integer && iteration>1 && iteration%interval!=0 && iteration!=get(ev,"total_iterations",nothing)
                             return nothing
                         end
                         _append_history(id, backend, ev)
@@ -1051,21 +1021,17 @@ _job_request(case) = case isa AbstractDict ? Dict{String,Any}(
     "backends"=>get(case,"backends",String[]),"alphas"=>get(case,"alphas",Float64[]),
     "outputs"=>get(case,"outputs",Dict{String,Any}()),"display_every"=>get(case,"display_every",nothing)) : nothing
 function _job_summary(job)
-    visible=_qualification_job_view(job)
     request = _job_request(get(job,"case",get(job,"request",nothing)))
-    results = get(get(visible,"result",Dict()),"results",Any[])
+    result = get(job,"result",nothing)
+    results = result isa AbstractDict ? get(result,"results",Any[]) : Any[]
     results isa AbstractVector || (results = Any[])
     flow = request === nothing ? Dict{String,Any}() : request["flow"]
-    Dict{String,Any}("id"=>job["id"],"status"=>get(visible,"status",""),"message"=>get(visible,"message",""),
+    Dict{String,Any}("id"=>job["id"],"status"=>get(job,"status",""),"message"=>get(job,"message",""),
         "created_at"=>get(job,"created_at",nothing),"updated_at"=>get(job,"updated_at",nothing),
         "airfoil"=>request === nothing ? nothing : request["airfoil"],"backends"=>request === nothing ? String[] : request["backends"],
         "alphas"=>request === nothing ? Float64[] : request["alphas"],"reynolds"=>get(flow,"reynolds",nothing),
         "mach"=>get(flow,"mach",nothing),"points"=>length(results),
-        "completed_points"=>count(p->p isa AbstractDict && get(p,"status","") in ("completed","converged","ok"),results),
-        "unverified_flow_points"=>count(p->p isa AbstractDict && get(p,"backend","")=="transonic" &&
-            get(ResultQualification.implicit_flow_qualification(get(p,"diagnostics",Dict())),"required",false) &&
-            !get(ResultQualification.implicit_flow_qualification(get(p,"diagnostics",Dict())),"qualified",false),results),
-        "qualification_revision"=>1)
+        "completed_points"=>count(p->p isa AbstractDict && get(p,"status","") in ("completed","converged","ok"),results))
 end
 function _persist_job(id::String)
     job = _get_job(id)
@@ -1093,7 +1059,7 @@ function _saved_job(id::String)
         record["status"] = "partial"
         record["message"] = "The server stopped while this job was running; the points saved before the stop are shown."
     end
-    _qualification_job_view(record)
+    record
 end
 function _recent_jobs(limit::Int=20)
     entries = Tuple{Float64,String}[]
@@ -1128,10 +1094,6 @@ function _recent_jobs(limit::Int=20)
                 summary["live"] = true
             elseif get(summary,"status","") in ("queued","running","cancelling")
                 summary["status"] = "interrupted"
-            end
-            if live===nothing && get(summary,"qualification_revision",0)<1 && "transonic" in get(summary,"backends",String[])
-                saved=_saved_job(String(summary["id"]))
-                saved===nothing || merge!(summary,_job_summary(saved))
             end
             push!(items, summary)
         catch err
@@ -1237,7 +1199,8 @@ function app_handler(req::HTTP.Request)
             payload=_output_folders(String(get(HTTP.queryparams(uri),"path","")))
             return HTTP.Response(200,["Content-Type"=>"application/json; charset=utf-8","Cache-Control"=>"no-store"],JSON3.write(payload))
         elseif method == "GET" && path == "/api/health"
-            return _response(200, Dict("ok"=>true,"api_revision"=>27,"protocols"=>["msgpack","bson"],
+            return _response(200, Dict("ok"=>true,"api_revision"=>29,"protocols"=>["msgpack","bson"],
+                "rans_methods"=>collect(CFDBackend.RANSAcceleration.METHODS),
                 "result_storage"=>Dict("study_folder_default"=>true,"timestamped_job_folders"=>true,"timestamp_timezone"=>"UTC"),
                 "job_control"=>Dict("cancel"=>true,"cooperative_grace_seconds"=>30),
                 "lowspeed_initial_flow"=>Dict("checked_job_seed"=>true,"request_key"=>"lowspeed_initial_job_id","exact_continuation"=>false),
@@ -1246,10 +1209,6 @@ function app_handler(req::HTTP.Request)
                 "cavitation"=>CFDBackend.cavitation_capabilities(),"lowspeed"=>CFDBackend.lowspeed_capabilities(),
                 "gurney"=>CFDBackend.gurney_capabilities(),
                 "streamline"=>Dict("label"=>CFDBackend.STREAMLINE_DEV_LABEL, "backends"=>["lowspeed","transonic"], "admission"=>["strict","demo"], "modes"=>["viscous","inviscid"])), fmt)
-        elseif method == "GET" && path == "/api/campaign"
-            return _response(200,_campaign_cached_status(),fmt)
-        elseif method == "GET" && startswith(path,"/api/campaign/files/")
-            return _campaign_report_asset(String(path[length("/api/campaign/files/")+1:end]))
         elseif method == "GET" && path == "/api/airfoils"
             q = String(get(HTTP.queryparams(uri), "q", ""))
             items = AirfoilJXBackend.airfoil_catalog(; query=q, limit=2000)

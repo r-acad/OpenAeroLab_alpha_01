@@ -1,5 +1,5 @@
 # Host-side conforming finite-base C+H geometry for the real app preview.
-# Included inside CFDBackend. There is no fallback to an A-plus construction.
+# Included inside CFDBackend. A finite trailing edge has no other construction.
 
 function _ch_cross_count(gap,dn1;growth=1.15,minimum_count=4)
     half=0.;n=0
@@ -29,7 +29,7 @@ function _ch_wake_count(profile_count,te_ds,foil,ch,quality)
     (;count=max(profile_count,required),required,wake_length)
 end
 
-function _build_ch_mesh(af,flow;resolution="standard",solver_backend="transonic")
+function _build_ch_mesh(af,flow;resolution="standard")
     G=CMeshGen;Q=G.CMeshQualityMetrics
     conditioned=G.condition_airfoil(af;trailing_edge_thickness=_number(flow,"cfd_te_thickness",0.;lo=0,hi=.05))
     foil=conditioned.airfoil
@@ -128,17 +128,15 @@ function _build_ch_mesh(af,flow;resolution="standard",solver_backend="transonic"
     final_refinement["admitted"]=best.measured.passed
     final_refinement["admission_scope"]="final post-outlet-patch air geometry gates; no solver qualification"
     metadata=Dict{String,Any}("mesh_family"=>"conforming C + finite-base H",
-        "mesh_topology"=>"conformal_C_H_v1","topology_requested"=>"auto",
+        "mesh_topology"=>"conformal_C_H_v1",
         "geometry_pipeline_revision"=>2,"surface_evaluator"=>"natural_c2",
         "surface_distribution"=>String(best.distribution),
         "quality_passed"=>best.measured.passed,
         "quality_status"=>best.measured.passed ? "passed_air_geometry" : "refused_air_geometry",
         "quality_failures"=>best.measured.failed,
-        "solver_supported"=>solver_backend=="transonic",
+        "solver_supported"=>true,
         "solver_backends"=>["transonic"],
-        "solver_support_message"=>solver_backend=="transonic" ?
-            "Compressible C+H Run: conservative gas/energy and fully turbulent SST, steady pseudo-time, constant kinematic viscosity. Numerical convergence and aerodynamic validation are separate." :
-            "C+H Run is available for the compressible backend. The Species/cavitation app driver currently requires Legacy A-plus.",
+        "solver_support_message"=>"Compressible C+H Run: conservative gas/energy and fully turbulent SST, steady pseudo-time, constant kinematic viscosity. Numerical convergence and aerodynamic validation are separate.",
         "quality_scope"=>"geometry and air gates only; not CFD convergence or cavitation validation",
         "cavitation_quality_passed"=>all(r[5] for r in cavity),
         "cavitation_quality_failures"=>Q.gate_failures(cavity),

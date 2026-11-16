@@ -92,8 +92,6 @@ lbm_levelvisc(name::AbstractString=lbm_profile_name()) = get(lbm_profile(name), 
 const LBM_FRICTION_NOTE = "Friction (viscous) drag from the LBM surface-force routine is underestimated (measured 0.22-0.71 of exact in a laminar channel test); drag values are mostly pressure drag. Under investigation."
 "The second standing caveat of the LBM results (review of the wall-model audit, 28 Oct 2026): shown next to the friction note everywhere."
 const LBM_WALL_POSITION_NOTE = "The LBM curved-wall conditions place the effective wall about 1.1-1.3 cells inside the fluid (measured in laminar channel tests; independent of resolution), so bodies are effectively about that much thicker on each side and surface shear is misread. Root cause identified (a write-location defect in the linear Bouzidi family, a double relaxation in the grad condition, and the solid-cell marking); fixes are in development. LBM results are development-only until then."
-"The `lbm_wall_model` control's label: the solver's wall-model switch does nothing in the solver as shipped (its audit found several defects)."
-const LBM_WALL_MODEL_LABEL = "Wall model (inactive in the current solver: not validated)"
 const LBM_LEVELVISC_REFUSAL = "The physical viscosity on coarse levels needs the solver update (lbm-taufix), which is not in the app's solver snapshot; use the legacy rule."
 const LBM_LEVELVISC_TOOLTIP = "Experimental. The solver's legacy rule gives each coarse level 4^(L-l) x the physical viscosity (measured 4.005 x one level up). This option cuts it to the physical value where the stability floor tau >= 0.501 allows: at 128 cells per chord and Re 2e4, 1.3 x and 2.6 x physical on the two coarse levels of three. Its app-length stability screen (24 c/U) did not pass: the growth of the C_L fluctuation amplitude differed from the legacy twin's (1.5 x against 0.96 x); no numerical instability was seen. In that screen the peak velocity on the coarsest level after 8 c/U was 9-20 % above the legacy twin's. Results with it are not validated. Off by default; it has no effect with one level."
 const LBM_NOSLIP_REFUSAL = "No-slip top and bottom walls need the solver update (lbm-zwalls), which is not in the app's solver snapshot; use slip walls."
@@ -191,7 +189,7 @@ const LBM_AMR_T8 = (N=384, finest_area=0.2253, next_area=2.085, perimeter=2.04, 
 const LBM_AMR_REFUSAL = "The selected LBM solver profile does not support periodic-Y AMR. Select the pinned lbmtau profile to use 2 to 7 refinement levels."
 const LBM_DEFAULTS = Dict{String,Any}("lbm_span_ratio"=>0.25, "lbm_cells_per_chord"=>128, "lbm_ctu"=>5.0,
     "lbm_ramp_ctu"=>0.5, "lbm_frames"=>60, "lbm_upstream"=>2.0, "lbm_downstream"=>3.0, "lbm_height"=>2.0,
-    "lbm_plate_cells"=>2.0, "lbm_wall_model"=>false, "lbm_u_lattice"=>LBM_U_LATTICE_DEFAULT,
+    "lbm_plate_cells"=>2.0, "lbm_u_lattice"=>LBM_U_LATTICE_DEFAULT,
     "lbm_lattice"=>"d3q27", "reynolds"=>20000.0)
 
 _g(d, k, default) = haskey(d, k) ? d[k] : (haskey(d, Symbol(k)) ? d[Symbol(k)] : default)
@@ -240,7 +238,6 @@ function lbm_settings(flow::AbstractDict; pamr::Bool=lbm_pamr(), zwalls::Bool=lb
     plate = _num(flow, "lbm_plate_cells", LBM_DEFAULTS["lbm_plate_cells"], 1.5, 8.0)
     ulat = lattice == "d3q39" ? physical_mach*sqrt(cs2) :
         _num(flow, "lbm_u_lattice", LBM_DEFAULTS["lbm_u_lattice"], 0.02, 0.15)
-    wall = _bool(flow, "lbm_wall_model", LBM_DEFAULTS["lbm_wall_model"])
     shell = _num(flow, "lbm_shell_blocks", 2, 1, 16; integer=true)
     # the top and bottom (z) walls: "slip" (default) or "no_slip" (needs the lbm-zwalls solver option)
     zw = _g(flow, "lbm_z_walls", "slip")
@@ -292,7 +289,7 @@ function lbm_settings(flow::AbstractDict; pamr::Bool=lbm_pamr(), zwalls::Bool=lb
         "span"=>span_cells/N, "reynolds"=>re, "ctu"=>steps/steps_per_ctu, "ctu_requested"=>ctu, "ramp_ctu"=>ramp,
         "frames"=>frames, "upstream"=>up, "downstream"=>down, "height"=>ht, "plate_cells"=>plate, "plate_thickness"=>plate/N,
         "u_lattice"=>ulat, "lattice"=>lattice, "physical_mach"=>physical_mach, "cs2"=>cs2,
-        "tau_min"=>tau_min, "wall_model"=>wall, "domain_check"=>check, "cpu_run"=>cpu, "solver_png"=>solver_png,
+        "tau_min"=>tau_min, "domain_check"=>check, "cpu_run"=>cpu, "solver_png"=>solver_png,
         "wall_cap_s"=>cap, "max_lock_wait_s"=>lockwait, "lock_settle_s"=>settle,
         "levels"=>levels, "shell_blocks"=>shell, "wake_zone"=>wake, "finest_cells_per_chord"=>N,
         "span_quantum_cells"=>quantum, "pamr"=>pamr, "z_walls"=>zw,
@@ -596,7 +593,7 @@ function lbm_case_yaml(s::AbstractDict, alpha_app::Real; stl::AbstractString="lb
         "  high_re:",
         "    auto_levels: false",
         "    wall_model:",
-        "      enabled: $(s["wall_model"])",
+        "      enabled: false",
         "      type: \"equilibrium\"",
         "      y_plus_target: 100.0",
         "  domain:",

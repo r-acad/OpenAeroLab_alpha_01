@@ -9,7 +9,7 @@ mkpath(SCRATCH)
     else
         # The user was informed of this narrow browser-JavaScript check; Julia
         # remains the harness and all solver/data/maintenance tools remain Julia.
-        for file in ("app.js","studies.js","workflow.js","workflow_help.js","output_controls.js","research_settings.js","benchmarks.js")
+        for file in ("app.js","studies.js","workflow.js","workflow_help.js","output_controls.js","benchmarks.js","lbm.js")
             command=Cmd([node,"--check",joinpath(ROOT,"apps","airfoil_web","static","scripts",file)])
             @test success(command)
         end

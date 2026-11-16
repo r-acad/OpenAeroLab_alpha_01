@@ -35,7 +35,12 @@ function admit_settings(c,h,wallmode;allow_sst::Bool=false)
     for s in (c,h)
         s.cav==0 && s.ff_mix==0 && s.outlet_mode==0 && s.emix==0 || throw(ArgumentError("Gas prototype requires the pure thermal gas energy closure; no mixture/pressure outlet"))
         (allow_sst ? s.sst : !s.sst) && s.sfd==0 && (s.irsj==0 || (STEADY_IRSJ[] && s.irsj==1)) && s.irs_ac==0 && s.acou==0 && s.sponge_sigma==0 && s.gam==0 || throw(ArgumentError("Paired SST/filter/pseudo-time coupling is not admitted by this entry point"))
-        s.wallfun==0 && s.earsm==0 && s.characteristic_i_outlet==0 && s.air_sutherland==0 || throw(ArgumentError("Wall functions/EARSM/characteristic i outlet/dynamic Sutherland are not admitted"))
+        s.wallfun==0 && s.earsm==0 && s.characteristic_i_outlet==0 || throw(ArgumentError("Wall functions/EARSM/characteristic i outlet are not admitted"))
+        # Molecular viscosity law (CMeshSolverKA): 0 constant kinematic, 1 Sutherland, 2 constant dynamic. The gas flux,
+        # wall and clock kernels take the law; the IRS-J smoothing coefficient is formed with a constant kinematic
+        # viscosity, so IRS-J runs with law 0 only.
+        (s.air_sutherland==0 || (s.air_sutherland==1 && s.suth>0) || (s.air_sutherland==2 && s.suth==0)) && (s.air_sutherland==0 || s.irsj==0) ||
+            throw(ArgumentError("Invalid viscosity law: Sutherland needs its temperature ratio, constant dynamic none, and IRS-J requires constant kinematic viscosity"))
         s.recon in (0,1) && s.fullvisc in (0,1) && isfinite(s.nu_lam) && s.nu_lam>=0 && isfinite(s.eint) && s.eint>0 || throw(ArgumentError("Invalid gas reconstruction/stress/energy settings"))
         all(isfinite,(s.drot,s.eint_v,s.latent,s.rho_inf,s.uxi,s.uyi,s.T_inf,s.suth)) && s.drot>=0 && s.rho_inf>0 && s.T_inf>0 || throw(ArgumentError("Nonfinite/nonphysical freestream or energy parameter"))
         s.eint==0.5f0*(3.0f0+s.drot)*G.CS2 || throw(ArgumentError("Thermal energy closure differs from native gas flux heat capacity"))

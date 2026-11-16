@@ -39,8 +39,8 @@ a near wake of h/n_base over 10h (BB arms)."""
 function _strip_mesh(gap;literal=nothing,evaluator="legacy_catmull_rom",distribution="legacy")
     nb=8
     te_ds,ds,len=literal===nothing ? (round(1.5gap/(2nb);sigdigits=4),round(gap/nb;sigdigits=5),round(10gap;sigdigits=4)) : literal
-    Dict{String,Any}("cfd_te_topology"=>"auto","cfd_te_thickness"=>0.,"cfd_resolution"=>"standard",
-        "cfd_n_foil"=>256,"cfd_n_normal"=>108,"cfd_n_wake"=>164,"cfd_n_base"=>nb,
+    Dict{String,Any}("cfd_te_thickness"=>0.,"cfd_resolution"=>"standard",
+        "cfd_n_foil"=>256,"cfd_n_normal"=>108,"cfd_n_wake"=>164,
         "cav_mesh_dn1"=>5e-5,"cav_mesh_growth"=>1.2,"cav_mesh_smooth"=>80,"cav_mesh_le_ds"=>3e-4,
         "cav_mesh_te_ds"=>te_ds,"cav_mesh_wake_near_ds"=>ds,"cav_mesh_wake_near_len"=>len,
         "cav_mesh_surface_evaluator"=>evaluator,"cav_mesh_surface_distribution"=>distribution,
@@ -158,7 +158,7 @@ function _caltech(run,alpha,sigma,v_fts,p_psia,cl,cd,cm,nominal,closure,cp;flag=
 end
 
 # The author table is a closed contour (its traversal starts and ends at x/c 1.01924), so
-# Auto selects the sharp C mesh. It takes the strip family's sharp control (BS, 2 Oct 2026):
+# it is meshed as a sharp C. It takes the strip family's sharp control (BS, 2 Oct 2026):
 # N60R's wall, nose and near-wake settings with no base.
 # The near-wake setting is refused here (minimum corner sine 0.08 in the H/c 1.28 channel, as in
 # the strip stage-1 stress set), and CMeshQualityV1 cannot meet G2a (68.8 against 65 degrees),
@@ -168,7 +168,7 @@ end
 # At 5e-5 the wake-cut first-row cells (as thick as dn1) bound the SST clock once the wake turned turbulent:
 # dt fell fivefold at 0.6 CTU with one stage-2 rejection per accepted step (LRX, 20 Oct 2026, stopped).
 const LEROUX_MESH=let m=_strip_mesh(0.;literal=(0.,0.,0.),evaluator="natural_c2")
-    foreach(k->delete!(m,k),("cfd_n_base","cav_mesh_te_ds","cav_mesh_wake_near_ds","cav_mesh_wake_near_len"))
+    foreach(k->delete!(m,k),("cav_mesh_te_ds","cav_mesh_wake_near_ds","cav_mesh_wake_near_len"))
     m["cfd_n_wake"]=136;m["cav_mesh_quality"]="none";m["cav_mesh_dn1"]=1.2e-4;m
 end
 
@@ -181,7 +181,7 @@ function _leroux()
         "roughness_note"=>"No verified roughness/trip specification was recovered in the local reference audit; the Caltech roughness is not substituted",
         "geometry_note"=>"Author table keeps the original published x/c units and closes at x/c=1.019240; its mapping to the nominal 0.150-m manufactured chord remains unresolved")
     numerical=_numerical(5.33;mesh_note="sharp C mesh (the author table is closed): N60R's nose settings with the wall spacing at the Caltech meshes' y+ (dn1 1.2e-4 at Re 0.8e6), 136 wake columns, no near-wake hold (refused in this channel); natural C2 surface evaluator (the Catmull-Rom sawtooth reaches a 1.53 spacing ratio on this section). CMeshQualityV1 is not met here (worst face 70.8 against 65 degrees).")
-    numerical["mesh_topology"]="C (sharp trailing edge; Auto selects C+H only for a finite base)"
+    numerical["mesh_topology"]="C (sharp trailing edge; C+H is the mesh of a finite base)"
     numerical["held_out"]="Leroux is a held-out case: its settings are the Caltech series', fixed at run 132"
     reference=Dict{String,Any}("name"=>"Leroux 8-degree cloud-cavitation reference",
         "source_url"=>LEROUX_URL,"kind"=>"published frequency and maximum attached cavity length",
@@ -206,7 +206,7 @@ function _leroux()
         "notes"=>[
             "The exact 101-point author table is whitelisted. The older tools/naca66mod312_a08.dat omits the N=1.1 forebody modification and is not substituted.",
             "Published coordinate scale is preserved; the extended-tail/chord convention remains unresolved. This source is not an admitted manufacturing reconstruction.",
-            "The author table closes at x/c 1.01924, so Auto meshes it as a sharp C (N60R's nose settings, the wall spacing at the Caltech meshes' y+, 136 wake columns) with the natural C2 surface evaluator; the near-wake hold and CMeshQualityV1 cannot be met in this H/c 1.28 channel.",
+            "The author table closes at x/c 1.01924, so it is meshed as a sharp C (N60R's nose settings, the wall spacing at the Caltech meshes' y+, 136 wake columns) with the natural C2 surface evaluator; the near-wake hold and CMeshQualityV1 cannot be met in this H/c 1.28 channel.",
             "Model and rates are the Caltech series' version-1 configuration (soft model liquid a2l 1.4 and density ratio 100, Merkle 300/5, no Reboud correction, option H, CFL 0.9); Leroux is held out and informs no setting. Published reference parity is not established.",
             "The 18-Hz and St=0.304 targets use maximum attached cavity length and wall-pressure spectra. No measured CL/CD/CM or digitized Cp values are invented.",
             "The 12-CTU horizon holds about six published shedding periods (1.97 CTU each); it is not a claim that the solution settles or that shedding is reproduced."],

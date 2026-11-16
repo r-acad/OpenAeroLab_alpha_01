@@ -3,7 +3,7 @@
 window.AirfoilStudies = (() => {
   const $ = id => document.getElementById(id);
   let path=null, etag=null, resultLink=null, dirty=false, busy=false, restoring=false, edits=0;
-  const controls=()=>[...document.querySelectorAll('.setup-column input[id],.setup-column select[id],#cfd-te-topology,#preview-resolution')]
+  const controls=()=>[...document.querySelectorAll('.setup-column input[id],.setup-column select[id]')]
     .filter(node=>!['file','button','submit'].includes(node.type)&&!['recent-select','airfoil-search','benchmark-select'].includes(node.id));
   function captureControls() { return Object.fromEntries(controls().map(node=>[node.id,node.type==='checkbox'?node.checked:node.value])); }
   const defaults=captureControls();
@@ -28,7 +28,6 @@ window.AirfoilStudies = (() => {
     for(const id of ['study-new','study-open','study-save','study-save-as'])$(id).disabled=busy;
   }
   function markDirty() { if(restoring)return;dirty=true;edits++;status('Unsaved changes'); }
-  function closeMenus(){document.querySelectorAll('.top-menu[open]').forEach(node=>node.open=false);}
   function detach() {
     state.datImportGeneration=(state.datImportGeneration||0)+1;
     clearTimeout(state.pollTimer);clearTimeout(state.historyTimer);state.pollGeneration++;
@@ -36,7 +35,7 @@ window.AirfoilStudies = (() => {
     state.cavitationReferenceSelection++;
     state.finishAnalysis?.();state.finishAnalysis=null;
     Object.assign(state,{job:null,result:null,analysisCase:null,analysisGeometryKey:null,analysisMeshKey:null,preview:null,
-      previewReference:null,requestedAlpha:null,liveField:null,liveFieldLoading:null,liveAutoShown:false,meshKeys:'',embeddedAirfoil:null,studyFlowExtras:{}});
+      previewReference:null,requestedAlpha:null,liveField:null,liveFieldLoading:null,liveAutoShown:false,meshKeys:'',embeddedAirfoil:null,presetFlow:{}});
     state.fullMeshes.clear();state.meshLoading.clear();state.fullFields.clear();state.fieldLoading.clear();state.fieldErrors?.clear();
     chartMemory.clear();spatialMemory.geometry=null;spatialMemory.field=null;
     resetLog();window.AirfoilBabylon?.hide();clearError();
@@ -60,11 +59,11 @@ window.AirfoilStudies = (() => {
     if(busy||!await allowReplace())return;
     restoring=true;
     try {
-        detach();restoreControls(defaults);window.AirfoilResearchSettings?.restore();path=null;etag=null;resultLink=null;
+        detach();restoreControls(defaults);path=null;etag=null;resultLink=null;
         window.WingLegends?.restore(null);
       state.machEdited=false;state.reynoldsEdited=false;
-      updateSetup();scheduleGeometryPreview();await window.AirfoilBenchmarks.restore(null);
-      switchTab('geometry');window.AirfoilWorkflow?.select('model');dirty=false;status('New study. Save to choose its location.');closeMenus();
+      updateSetup();window.AirfoilWorkflow?.revealAdvanced({collapse:true});scheduleGeometryPreview();await window.AirfoilBenchmarks.restore(null);
+      switchTab('geometry');window.AirfoilWorkflow?.select('model');dirty=false;status('New study. Save to choose its location.');
     } finally {restoring=false;}
   }
   async function openPath(file) {
@@ -78,15 +77,10 @@ window.AirfoilStudies = (() => {
       // applying the snapshot. No network fetch is needed for UIUC geometry.
       applySavedRequestToForm(study.request);
       restoreControls(study.controls);
-      // Explicit request numerics take precedence over stale UI snapshots from
-      // an older app that could not represent these research selections.
-      window.AirfoilResearchSettings?.restore(study.request.flow);
       const foil=study.request.airfoil;
       state.embeddedAirfoil=['uiuc','dat'].includes(foil.kind)?{kind:foil.kind,id:foil.id,coordinates:{x:study.geometry.x,y:study.geometry.y}}:null;
       updateSetup();
-      // Retain API-only numerical settings without resurrecting optional GUI
-      // controls (e.g. a flap or trip after its checkbox is switched off).
-      restoreSavedFlowExtras(study.request.flow);
+      window.AirfoilWorkflow?.revealAdvanced({collapse:true});
       path=data.path;etag=data.etag;resultLink=study.results;
       window.WingLegends?.restore(study.view?.color_scales);
         if(study.view?.color_scales?.palettes?.flow)window.LudwigPalettes?.set(study.view.color_scales.palettes.flow);
@@ -101,7 +95,7 @@ window.AirfoilStudies = (() => {
       window.AirfoilWorkflow?.refresh();
       if(study.view?.workflow_panel)requestAnimationFrame(()=>window.AirfoilWorkflow?.select(study.view.workflow_panel));
       dirty=false;status(data.message+(resultsOpened?' · Linked results opened.':''));
-      $('study-open-dialog').close();closeMenus();return true;
+      $('study-open-dialog').close();return true;
     } catch(error) {displayError(error);status(error.message);return false;}
     finally {restoring=false;busy=false;status();}
   }
@@ -113,7 +107,7 @@ window.AirfoilStudies = (() => {
     } catch(error){displayError(error);}
   }
   async function showOpen() {
-    closeMenus();const dialog=$('study-open-dialog');dialog.showModal();
+    const dialog=$('study-open-dialog');dialog.showModal();
     const list=$('study-recent-list');list.textContent='Loading saved studies…';
     try {
       const data=await api('recent');list.replaceChildren();
@@ -130,7 +124,7 @@ window.AirfoilStudies = (() => {
     if(busy)return false;
     busy=true;status();
     try {
-      const request=collectCase({allowUnavailable:true}),controls=captureControls(),revision=edits;
+      const request=collectCase(),controls=captureControls(),revision=edits;
       let destination=path,expected=etag;
       if(asNew||!destination) {
         const selected=await api('choose-save',{path:path||'',title:'Save Airfoil Lab study as'});
@@ -141,7 +135,7 @@ window.AirfoilStudies = (() => {
       const data=await api('save',{path:destination,etag:expected,request,controls,results:link,
         view:{tab:state.activeTab,workflow_panel:window.AirfoilWorkflow?.selected,benchmark_id:window.AirfoilBenchmarks.selectedId,color_scales:window.WingLegends?.capture()}});
       path=data.path;etag=data.etag;resultLink=data.study.results;dirty=edits!==revision;
-      status(data.message+(dirty?' Newer edits still need saving.':''));closeMenus();return true;
+      status(data.message+(dirty?' Newer edits still need saving.':''));return true;
     } catch(error){displayError(error);status(error.message);return false;}
     finally {busy=false;status();}
   }

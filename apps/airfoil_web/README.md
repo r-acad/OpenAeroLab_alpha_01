@@ -6,25 +6,65 @@ The app uses the repository's solver `src/` and bundled `solvers/` sources. Save
 studies use their own folder for new results; unsaved studies and lookup records
 use the sibling private development directory (or `LUDWIG_PRIVATE_ROOT`).
 
-The visible workflow tabs follow **Study, Airfoil, Flow, Flap, Mesh, Solver,
-Files, Results, Display, Validation and Help**. There are no top-menu flyouts
-or collapsed setup groups. **Airfoil** opens an XFOIL `.dat` file, **Flow** sets
-Reynolds number and angle, and **Flap** adds an optional Gurney plate. Then
-**Run analysis** creates the mesh and solves the case. Low-speed 2D CFD and
-automatic numerical settings are the defaults, with matching clean/flap settings.
+## Workflow
 
-Each control has one location: mesh resolution/topology in Mesh, freestream
-conditions in Flow, iteration/stopping settings in Solver, and output choices
-in Files. Mesh also opens geometry inspection; **Create mesh** previews the
-same grid without running the flow. Inapplicable solver options and output
-formats are hidden. Result views appear when corresponding fields, surface
-data, histories or logs exist; a polar needs more than one angle. Study keeps
-the single saved-run list. Display groups palette, grid and probe settings.
+Choose the **Solver** first. Its selector stays above the setup steps, and every
+step then shows only the inputs that solver uses. Low-speed 2D CFD is the
+default; the others are Compressible CFD, Species / cavitation CFD, LBM 3D,
+JXfoil, XFOIL and four comparison runs.
+
+The tab row is the order of work:
+
+1. **Airfoil**: open an XFOIL `.dat` file or pick a built-in section. The
+   optional Gurney flap is here (low-speed CFD and LBM 3D).
+2. **Flow**: Reynolds number and angle, Mach where the solver uses it, and the
+   alpha sweep.
+3. **Mesh**: the mesh resolution, then **Create mesh**, which builds and shows
+   the mesh that Run will use. A panel method has no Mesh step.
+4. **Solver settings**: the method, the GPU switch and the stopping limits.
+5. **Run and outputs**: the saved files, then **Run analysis**. Run, Cancel and
+   the progress also stay below every step.
+6. **Results**: the saved result and its exported files. The result views
+   appear when the corresponding fields, surface data, histories or logs
+   exist; a polar needs more than one angle.
+
+**Study** (new, open, save and the saved-run list), **Display** (palette, grid
+and probe), **Validation** (published comparison cases) and **Help** follow a
+separator. There are no top-menu flyouts.
+
+Each control has one location. Flow, Mesh, Solver settings and Run and outputs
+each have one **Advanced** group for rarely needed settings: freestream
+turbulence and air viscosity; trailing-edge thickness, flap-tip refinement and
+streamline alignment; steady limits, statistics block, RK weights, mass ceiling
+and SFD precision; history cadence, snapshot interval, reports and renders. A group
+is closed by default and opens when a loaded study, saved job or preset uses a
+setting in it. There is one mesh resolution control per solver family, in Mesh;
+Create mesh and Run both send it.
+
+The mesh topology follows the section and is not a choice. A finite (blunt)
+trailing edge, native or set by the trailing-edge thickness, is meshed C+H; a
+closed (sharp) one is a single C block. The section is never closed or given a
+base fan to fit a mesh. The Species free-fluid domain (water or air) on a finite
+trailing edge runs the two-block Species pair on the same C+H mesh, in physical
+time; water in the tunnel is C+H too. Two Species requests still have one C
+block only and are refused on a finite trailing edge with that reason: air in
+the tunnel, and the steady air iteration (select Physical time, or the
+Compressible solver for a steady result).
+
+Options that earlier versions offered are gone from the page and the server:
+the mesh profile choice, the single-block base-fan (A+) topology, the base-face
+count, the uniform A+ profiles, the three research implicit methods and their
+settings, the coarse low-speed mesh and the explicit low-speed topology. A
+saved study or request that names one of them with the
+value the app now always uses (`cfd_te_topology="auto"`,
+`cfd_mesh="aplus_nested_refined"`, `lowspeed_topology="auto"`, a `false`
+switch) loads and the key is dropped. Any other value is refused with a message
+that names the key and the value; nothing is run as something else.
 
 The small **i** buttons open contextual help using the mouse or keyboard;
-controls also have hover tooltips. Help provides a low-speed quick start.
-Display controls contour palettes. Mac supports JXfoil and result viewing;
-CUDA backends require Windows or Linux with compatible NVIDIA hardware.
+controls also have hover tooltips. Help lists the steps above and opens the
+workflow help. Mac supports JXfoil and result viewing; CUDA backends require
+Windows or Linux with compatible NVIDIA hardware.
 
 The app includes JXfoil, compressible C and C+H meshes, the conservative
 Species path, low speed pressure based CFD, and LBM 3D. XFOIL executable runs
@@ -70,45 +110,10 @@ opened filename; Save As chooses a different folder or name. Ctrl+S, Ctrl+Shift+
 and Ctrl+O provide the corresponding shortcuts. Unsaved changes are marked `*`;
 the app offers Save, Discard or Cancel before replacing the current setup.
 
-API-only settings from a saved study are retained and listed as saved request
-overrides in Solver. **Clear saved overrides** returns only these
-additional settings to automatic defaults for the next request. It keeps the
-current airfoil, visible flow conditions and flap controls, marks the study as
-changed, and leaves any running job untouched.
-
-An Airfoil `.ludwig-study` file contains the source coordinates, complete solver
-request, editable controls, current results tab and literature selection. UIUC
-coordinates travel with the study, so reopening does not require downloading
-them again. Results are **links to job folders**, not copies of large fields.
-Save after starting/opening an analysis to retain that link. Opening a study
-loads available linked results without starting a solver or replacing its setup.
-**Study → Open linked results** reopens them explicitly. Missing result folders
-are reported while the setup remains usable. New runs default to the saved
-study's folder, in unique `yyyymmdd_HHMMSS_sss_UTC_airfoil_<UUID>` subfolders.
-The complete native job, fields, restart data, histories and an `exports`
-subfolder stay together there. Files offers an optional parent-folder override;
-leave it empty to follow the study. Unsaved/API-only cases use private
-`results/airfoil_runs` with the same timestamp naming. A small private lookup
-record retains stable UUID links for downloads, cancellation, saved initial
-flow and reopening after a server restart. Existing UUID-only result folders
-remain readable. Imported study result pointers do not grant arbitrary file
-access. Keep the actual result folder to retain results. API revision 27
-accepts a top-level `study_path` for an existing saved Airfoil study.
-
-Files provides **Save field snapshots every, minutes** for the compressible
-solver and both sharp-C and C+H low-speed solvers. Default: 10 real-time minutes;
-0: disabled.
-This is independent of iteration history and does not change final-field saving.
-In **Results → Flow field**, use **Saved snapshot** to reopen any recorded frame.
-The recorded frames are visualization snapshots. Writes report their
-duration and reject insufficient disk space without announcing an empty file.
-
-Both low-speed workers also save final **VTU volume fields** (`flow_fields.vtu`)
-and a native **restart checkpoint** (`state_checkpoint.pbrestart`). Download
-them from **Flow field → Saved solver files** for the selected operating point.
-The native driver supports continuing a compatible
-checkpoint with `PB_RESTART`; it verifies source, mesh, physics and numerical
-settings before restoring the state. See the [native free-air driver guide](../../solvers/pbcav_s1030/tools/README_FREEAIR.md).
+A study stores the request the page built and a snapshot of its controls. On
+opening, a saved value that a selector no longer offers leaves that selector at
+its default; the page adds no option for it and sends no key that it has no
+control for.
 
 ## Steady RANS acceleration
 
@@ -144,16 +149,16 @@ Exact native continuation requires matching settings and solver source.
 The Solver pane offers **Steady solution method** for compressible CFD and
 **Try steady RANS acceleration (experimental)** for pressure/Species cases.
 Acceleration is off by default and does not appear for physical-time,
-phase-change water, panel, or LBM runs. The legacy case flow key is
+phase-change water, panel, or LBM runs. The case flow key is
 `rans_acceleration=true`; the selected method and its enabled state are saved
 in the solver's `input.toml` and result diagnostics.
 
 | RANS route | Accelerated setting |
 | --- | --- |
-| Compressible C/A-plus, CPU or GPU | Existing j-line implicit residual smoothing (IRS-J); steady local pseudo-time only. |
+| Compressible single C block, CPU or GPU | j-line implicit residual smoothing (IRS-J); steady local pseudo-time only. |
 | Compressible C+H, CPU or GPU | IRS-J on both blocks. |
 | Low-speed sharp C and C+H | The pressure solver already uses implicit backward Euler. The option raises its requested pseudo-time ceiling from 0.25 to 0.5 c/U; nonlinear rejected steps are reduced and later regrown by the solver. |
-| Steady Species air | Existing wall-normal line-implicit relaxation. |
+| Steady Species air | Wall-normal line-implicit relaxation. |
 
 The setting changes convergence behavior, not the physical-time integrator or
 the convergence criteria. One-step and three-step smoke cases verify method
@@ -168,16 +173,41 @@ the 0.25 c/U control; the setting is particularly case dependent there.
 
 Selecting RAE 2822 applies **AGARD Case 9 corrected free-air conditions**:
 M=0.734, Re=6.5 million, alpha=2.79°, trips at 0.03c, constant dynamic viscosity.
-Selecting ONERA OAT15A applies the measured **2.5° steady comparison**:
-M=0.73, Re=3 million, static T=271 K, trips at 0.07c, Sutherland viscosity.
-The source menu and Results both offer the other bundled measured angles and
-RAE Case 6. OAT15A angles 3.25°, 3.5° and 3.9° select physical time, for comparison
-of the post-burn-in mean with measured mean Cp. The numerical duration and step
-limit are editable starting choices, not claims of converged buffet statistics.
+Results also offers RAE Case 6. The RAE 2822 section has a closed trailing edge,
+so both cases run on the single C block with their prescribed trips and
+viscosity law.
 
-Presets clear previous sweeps, flaps and trailing-edge overrides. They explicitly
-select the A-plus GPU path because the current C+H driver uses fully turbulent
-SST and constant kinematic viscosity. Experimental curves appear immediately in
+Selecting ONERA OAT15A applies the DPW conditions: M=0.73, Re=3 million, trips
+at 0.07c on both sides, Sutherland viscosity at 271 K, at alpha 2.5°, 3.0° and
+3.1° (steady) and 3.25°, 3.5° and 3.9° (physical time, 100 CTU with 20 CTU of
+burn-in). The section has a finite trailing edge, so these cases run on the
+two-block C+H mesh.
+
+The compressible C+H driver has three options beside its default (steady,
+fully turbulent SST, constant kinematic viscosity):
+
+- Prescribed trips (`trip_upper`, `trip_lower`, per side; 0 or the Native
+  transition setting: none). Both SST productions are zero ahead of the trip
+  station of each side, rise linearly over 0.02c and are unchanged behind it,
+  as in the single-block solver. The strip block behind the base has no trip.
+  The result records the trips applied and the surface faces they made laminar.
+- Viscosity law (`cfd_viscosity_model`): Sutherland or constant dynamic in the
+  gas stresses and heat flux and in the SST diffusion, blending functions and
+  wall omega. Residual smoothing (IRS-J) is available with constant kinematic
+  viscosity only.
+- Physical time (`cfd_time_mode="physical"`): one global timestep for both
+  blocks, started from the freestream. The run ends at `cfd_duration_ctu` or at
+  the step limit; forces are sampled at least every `cfd_force_sample_dt_ctu`
+  and their means after `cfd_burnin_ctu` are reported with their sampling
+  status. The Cp and the fields are those of the final instant; no time-mean
+  Cp is computed. The timestep is the explicit stability limit of the smallest
+  cell: on a wall-resolved mesh at the OAT15A conditions it is of the order of
+  1e-7 CTU, so the step limit ends such a run long before its duration.
+
+These options have unit tests and short CPU runs behind them, not a converged
+or a GPU validation run.
+
+Presets clear previous sweeps, flaps and trailing-edge overrides. Experimental curves appear immediately in
 Results, independently of CFD jobs. Edited conditions are labelled as different;
 Apply published case restores them. CFD convergence and mesh/time independence
 remain separate checks. Sources, tunnel corrections and ONERA redistribution
@@ -196,7 +226,7 @@ percentage of currently available VRAM. The GUI shows the resolved GB value. Cre
 mesh reports the resolved geometry estimate and refuses it if it exceeds the
   target; the ceiling follows detected free VRAM with a device reserve.
 
-Files selects applicable VTK/native fields, images and CSV files,
+Run and outputs selects applicable VTK/native fields, images and CSV files,
 an optional results parent folder, HTML reports, Makie PNG/SVG/PDF charts, and LBM 3D PNG
 renders. A unique job folder preserves existing files. The display interval
 controls solver output in iterations. LBM follows the exact requested cadence;
@@ -211,11 +241,15 @@ quality and solver convergence are reported with each result.
 The sharp C mesh also concentrates surface columns near the leading edge in
 Standard, Fine, and Very Fine. The low-speed sharp Standard profile uses 384
 surface cells, 128 remapped wall-normal cells, and a 7e-6 chord first wall
-spacing. Automatic uses the recommended profile for the detected trailing
-edge. The low-speed native C+H Standard profile has about 175,000 cells for NACA
-0012/4412; Fine subdivides it once more, with four times as many cells. The
-native C+H route retains the same host mesh with and without a flap;
-flap-tip refinement is an explicit Mesh comparison. The app reports the
+spacing. The low-speed mesh choice is Standard, the recommended profile for the
+detected trailing edge. The low-speed native C+H Standard profile has about
+175,000 cells for NACA 0012/4412; Fine subdivides it once more, with four times
+as many cells. On a sharp trailing edge Fine uses the same generator settings as
+Standard, so the page offers Fine on C+H only. The native C+H route retains the
+same host mesh with and without a flap; flap-tip refinement is off unless
+Standard or Fine is chosen in the Advanced group of Mesh. The C+H starting flow
+and base turbulence treatment (Advanced group of Solver settings) are sent only
+when the section runs on C+H. The app reports the
 audit for every generated section. A quality pass does not establish grid
 independence or stall accuracy.
 The pressure worker writes `rejection_history.csv` with the accepted step,
@@ -234,7 +268,7 @@ this specified reference point is not an inferred aerodynamic center.
 Incomplete CFD surface distributions and polar points remain visible with their
 convergence status, including experimental overlays.
 
-The **Validation** menu loads RAE 2822 Case 9, ONERA OAT15A steady conditions, or
+The **Validation** tab loads RAE 2822 Case 9 or
 the NACA 0012 pressure-solver stall sweep (10–18 degrees, every 2 degrees).
 References appear without requiring a solver run. The NACA comparison uses
 Ladson's tripped CL/CD data; its incompressible, fully turbulent approximation
@@ -245,17 +279,17 @@ Numeric flow fields use the Boxer palettes and editable automatic/manual
 limits. The legend offers numeric limits, sliders, palette selection and
 collapse. **Mach = 1** draws a black sonic contour on compressible 2D fields.
 
-The compressible A-plus mesher reduces tangential drift in near-body columns,
+The compressible single-block mesher reduces tangential drift in near-body columns,
 fading smoothly into the outer mesh. It preserves the wall, first eight cell
 rows, wake, trailing-edge neighborhood and outer boundary. Quality checks
 reduce the correction or retain the parent mesh if necessary. Metadata records
 the applied correction; an improved shape alone does not establish accuracy.
 
-The A-plus mesh also adds smoothly graded normal rows through the off-wall
+The single-block mesh also adds smoothly graded normal rows through the off-wall
 shock envelope. Fine uses a nominal 0.004-chord height cap through 0.65 chord
 from the surface, followed by gradual growth to the far field. The first twelve
 wall layers and the wall/outer contours remain exact. This increases the total
-cell count (about 2.5–2.7 times for the Fine RAE/OAT examples). Mesh metadata
+cell count (about 2.5–2.7 times for the Fine RAE example). Mesh metadata
 records the actual row count, cap and any quality fallback. Both upper and lower
 sides share one row map to keep the nose and trailing-edge joins continuous.
 
@@ -275,91 +309,81 @@ force checks remain active; relative reduction and plateau ratios are diagnostic
 Snapshot output is controlled by wall time (default ten minutes), independently
 of iteration-history updates. Final fields are retained even without convergence.
 
-## Experimental steady methods
+## Steady solution methods
 
-For **Compressible CFD**, choose **Steady pseudo-time**, the single-block
-**A+** trailing-edge topology, then **Steady solution method**. The choices are
-standard explicit iteration, j-line residual smoothing, line-implicit, native
-Newton–Krylov, and Newton–Krylov using Krylov.jl GMRES. The coupled C+H mesh
-supports standard iteration and residual smoothing. These methods run on CPU
-or GPU; the advanced settings are stored in the study.
+For **Compressible CFD**, choose **Steady pseudo-time** and the **Steady
+solution method** in Solver settings. There are three: the standard explicit
+iteration, implicit residual smoothing (IRS-J, experimental; single C block and
+C+H, CPU or GPU) and Implicit Newton (CPU, development, below). The request key
+is `rans_method` with `standard`, `irsj` or `newton`; any other name is refused.
 
-The three new implicit methods are research tools. CPU and GPU integration
-checks pass, but dependable full-airfoil convergence and a speed advantage
-have not been demonstrated. An optional bounded explicit recovery burst can
-help Newton–Krylov escape rejected updates; it is disabled by default and does
-not weaken convergence checks. Krylov settings do not apply to line-implicit.
-
-Diagnostics separates stable loads from settled equations. Implicit runs write
-`implicit_history.csv` and `steady_assessment_history.csv`, including four
-flow-equation errors, turbulence update defects, signed global mass balance,
-CL, CD and CM. Additional columns record the raw SST transport equations
-before clipping and the separate prescribed wall-omega constraint. These
-unscaled equations have no qualified app stopping limits yet; passing the
-monitored checks does not certify complete equation convergence.
-An implicit result whose solver stop monitor passes is labelled **Solver stop
-reached; full flow checks unverified** until raw turbulence transport and the
-prescribed wall constraint pass explicit qualified limits. Such points remain
-diagnostic: fields and forces can be inspected, but the polar uses diagnostic
-markers. The API reports `solver_stop_unverified` and a partial job, preserving
-the original engine guard and stop reason. Older saved completed records and
-their Recent results summaries receive the same qualification when reopened;
-the stored evidence is retained. A qualified-limits flag alone is insufficient:
-raw checks must explicitly pass and all required finite values must meet their
-limits, along with the flow, mass and load guard. Current raw SST exports do
-not yet have qualified stopping limits.
-Full fields and surface Cp remain available after an incomplete or rejected run.
-Checked restart files require matching mesh, physical settings and solver source,
-including reconstruction, implicit helpers, metrics and the velocity lattice.
-Older checkpoints without those source identities are refused and start cold.
-
-Experimental HTTP/study flow controls retain their existing defaults:
-
-- `cfd_implicit_basis`: restart storage, 2–96 (default 16).
-- `cfd_implicit_linear_maxiter`: independent total linear iterations, 1–10000
-  (default one restart); `cfd_implicit_linear_tolerance`: true relative linear
-  residual target (default 0.01).
-- `cfd_implicit_globalization`: `steady` (default) or `pseudo_transient`.
-  The latter checks the actual backward-Euler defect and caps relative density
-  and energy changes with `cfd_implicit_physical_fraction` (default 0.2).
-- `cfd_implicit_max_cfl`: requested controller ceiling (default 2, or the
-  initial CFL if larger). Steady globalization remains capped at 10;
-  pseudo-transient permits up to 100000. The standard diagonal still contains
-  its viscous floor, so a larger requested ceiling does not guarantee Newton
-  behavior. `kinetic_weno_fullvisc_block_adi` is an optional stronger
-  `cfd_implicit_preconditioner`; its `..._unfloored_adi` variant is a separate
-  experiment. Neither is a qualified fast default.
-
-The worker rejects an oversized restart before allocation using a conservative
-workspace estimate, a 2 GiB cap and half the remaining GPU memory. Saved result
-metadata records the actual controls, estimate and numerical source hashes.
-Increasing total iterations does not increase restart storage.
-
-For the optional strict finite-base mesh use `cfd_mesh="aplus_uniform_quality"`.
-The HTTP API derives the A+ topology for this explicit profile; a second
-topology selection is optional. Its default parent dimensions are
-384 foil, 64 wake, 112 normal and 2 base intervals; it uses the checked uniform
-refinement profile without the normal collar or shock remapping. General-air,
-wake and convexity gates are mandatory for this profile. Geometric admission
-does not establish mesh-independent forces or a converged result.
-
-`cfd_mesh="aplus_uniform_fixed"` uses the same strict construction with the
-outer contour fixed in the chord frame at zero degrees. Physical `alpha_deg`
-remains independent. It records `mesh_angle_deg` and `flow_alpha_deg` separately
-and refuses a nonzero `cfd_farfield_angle_deg`. This supports angle sweeps on a
-single geometrically admitted mesh; boundary-control tests do not establish
-converged high-angle flow or remove the need for residual checks.
+Diagnostics separates stable loads from settled equations. Full fields and
+surface Cp remain available after an incomplete run. Checked restart files
+require matching mesh, physical settings and solver source, including
+reconstruction, metrics and the velocity lattice; checkpoints without those
+source identities are refused and start cold.
 
 The pressure-based low-speed solver is already implicit. Its acceleration
 checkbox raises the requested pseudo-time ceiling while retaining automatic
 rejection and retry. A native steady stop is accepted only after final equation
 and mass-balance checks; stable coefficients alone do not make a run converged.
 
+### Implicit Newton (CPU) on the marched mesh
+
+Development result, not validated. For **Compressible CFD** in **Steady
+pseudo-time**, the **Steady solution method** entry **Implicit Newton (CPU)**
+(`rans_method="newton"`) runs the pseudo-transient Newton–Krylov march of
+`src/compressible/cmesh_steady_newton_ka.jl` with SST, on the CPU in Float64,
+whatever the GPU switch says.
+
+- Mesh: always the marched regular mesh (`src/cmesh/cmesh_marched.jl`), which no
+  other method uses; the request names the method only. Sizes (surface, wake per side, wall-normal cells):
+  standard 768 × 128 × 96, fine 1152 × 192 × 128, very fine 1536 × 256 × 160.
+  The wall spacing follows the Reynolds number as in the other compressible
+  meshes. Create mesh shows the mesh of the run.
+- Mesh report: the page states the geometric check that passed (positive cell
+  areas; for one block also convex cells) and names every CMeshQualityV1 air
+  threshold the mesh lies outside, with the measured value and the limit. These
+  thresholds are the ones reported for the app's single C block and
+  C+H mesh; for the marched mesh they are comparative and refuse nothing.
+- Page: the method is chosen in Solver settings. The GPU switch, smart stop, RK
+  weights, scaled mass ceiling, SFD precision and streamline alignment do not
+  apply to it; they are hidden and not sent.
+- Topology follows the section after the usual conditioning (including
+  `cfd_te_thickness`): a closed trailing edge runs one C block, a finite one
+  runs two blocks (C+H, the base is a wall of the strip block). The equation
+  NACA four-digit sections have a finite trailing edge.
+- Start: cold at every angle, three mesh levels (every fourth node, every
+  second node, all nodes). No checkpoint is read or written.
+- Steps: `cfd_steps` limits the fine level, at most 600 (the page sets 300);
+  each coarse level takes at most 200.
+- Transition: forced trips on the surface (`trip_upper`, `trip_lower`, the
+  app's defaults when absent); the strip behind a finite base has no trip.
+  Viscosity: Sutherland, constant dynamic or constant kinematic. Constant
+  kinematic is covered by the method's small tests only.
+- History: one row every second step with a single counter over the three
+  levels. The plotted residual is the RMS continuity residual divided by the
+  freestream density; `residual_l2` is the largest of the four flow-equation
+  RMS residuals and `residual_linf` the larger of the k and omega RMS
+  residuals (the march computes no maximum norm). `newton_history.csv` holds
+  all six, the mesh level, the CFL and the linear iterations of every row.
+  The history interval of the output settings does not thin these rows.
+- Status: a point is **completed** only when the march reports that CL and CD
+  settled on the fine level (relative span below 1e-4 over 20 steps); its stop
+  guard then reads `early_stop_eligible`. Otherwise the guard reads
+  `loads_not_settled` and the point is **not_converged**; its fields and
+  coefficients remain a saved diagnostic state. The six equation residuals are
+  recorded without qualified limits and do not enter the status.
+- Files: one block writes the files of the single-block compressible points;
+  two blocks write the files of the C+H points (`fields_blocks*.msgpack`,
+  `field_C_full`, `field_H_full`, `wall_force_faces.csv`).
+- `LUDWIG_NEWTON_THREADS` limits the worker's threads (default: all).
+
 ## Source layout
 
 | Directory | Contents |
 | --- | --- |
-| `src/api/` | Job and campaign status helpers. |
+| `src/api/` | Job progress and study helpers. |
 | `src/backends/` | CFD, JXfoil, and XFOIL adapters and orchestration. |
 | `src/diagnostics/` | Convergence, residual, and time-history analysis. |
 | `src/lbm/` | LBM case construction, fields, and backend. |

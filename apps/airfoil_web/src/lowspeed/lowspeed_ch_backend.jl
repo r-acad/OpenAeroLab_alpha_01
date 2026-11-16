@@ -17,12 +17,10 @@
 const LOWSPEED_CH_SNAPSHOT_DEFAULT = LOWSPEED_SNAPSHOT_DEFAULT
 const LOWSPEED_CH_COMMIT_PINNED = LOWSPEED_COMMIT_PINNED
 lowspeed_ch_snapshot() = normpath(get(ENV, "AIRFOIL_LOWSPEED_CH_SNAPSHOT", lowspeed_pin().snapshot))
-"C+H mesh presets: the demo's C-block sizes (PB_MESH), with the base cells set per base height by _lowspeed_ch_knobs."
+"C+H mesh presets: the C-block sizes (PB_MESH), with the base cells set per base height by _lowspeed_ch_knobs."
 const LOWSPEED_CH_MESHES = Dict(
     "standard"=>(mesh="192,128,3e-5,1.10,80,64", dn1=3e-5,
              label="Standard C+H: graded base and wake with one nested refinement level; wall spacing about 1.5e-5 c"),
-    "demo"=>(mesh="192,72,3e-5,1.20,80,64", dn1=3e-5,
-             label="Demo (fast) C+H: 192 foil x 72 normal cells + 2 x 64 wake legs, H block 64 stations x (2 x base cells), first wall spacing 3e-5 c, column remap with the graded strip"),
     "fine"=>(mesh="192,128,3e-5,1.10,80,64", dn1=3e-5,
              label="Fine C+H: standard topology subdivided once more, including the base and wake; four times standard cells"),
     "smoke"=>(mesh="64,40,1e-3,1.30,40,16", dn1=1e-3,
@@ -62,7 +60,7 @@ function lowspeed_ch_configuration(flow::AbstractDict)
     topo = String(_get(flow, "lowspeed_topology", "auto"))
     topo in ("auto", "sharp", "ch_native") || throw(ArgumentError("lowspeed_topology must be auto, sharp or ch_native"))
     res = String(_get(flow, "lowspeed_resolution", LOWSPEED_DEFAULTS["lowspeed_resolution"]))
-    haskey(LOWSPEED_CH_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be standard, fine or demo (or smoke for tests)"))
+    haskey(LOWSPEED_CH_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be standard or fine (or smoke for tests)"))
     _number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05) > 0 && throw(ArgumentError(gurney_enabled(flow) ?
         "The Gurney flap and the CFD trailing-edge thickness override both set the trailing edge: clear the CFD trailing-edge thickness (the flap is a baffle on the section's own finite trailing edge, which it keeps)." :
         "the low-speed CFD's C+H path takes the native trailing edge: clear the CFD trailing-edge thickness override"))

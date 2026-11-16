@@ -38,9 +38,14 @@ end
 @testset "Required saved flow is refused by actual CPU workers before any cold projection or march" begin
     for topology in ("sharp","ch_native")
         dir=mktempdir(SCRATCH)
-        flow=Dict{String,Any}("reynolds"=>3e6,"alpha_deg"=>12.,"lowspeed_topology"=>topology,
-            "lowspeed_resolution"=>topology=="sharp" ? "smoke" : "demo","lowspeed_max_steps"=>1)
+        # A request cannot name the topology: the backend resolves it from the section. Both worker paths are
+        # exercised here by setting the resolved key after validation.
+        flow=Dict{String,Any}("reynolds"=>3e6,"alpha_deg"=>12.,"lowspeed_resolution"=>"smoke","lowspeed_max_steps"=>1)
         case=A._validated_case(Dict("airfoil"=>Dict("kind"=>"naca4","id"=>"4412"),"backends"=>["lowspeed"],"flow"=>flow))
+        @test_throws ArgumentError A._validated_case(Dict("airfoil"=>Dict("kind"=>"naca4","id"=>"4412"),"backends"=>["lowspeed"],
+            "flow"=>merge(flow,Dict("lowspeed_topology"=>topology))))
+        # the smoke mesh is the sharp path's; its wall spacing cannot resolve this section's base on C+H
+        flow=merge(flow,Dict{String,Any}("lowspeed_topology"=>topology,"lowspeed_resolution"=>topology=="sharp" ? "smoke" : "standard"))
         source=A.AirfoilJXBackend.resolve_airfoil(case["airfoil"]).airfoil
         path=joinpath(dir,"airfoil.dat");A._save_geometry(source,path)
         snap,head=B._lowspeed_snapshot_check();ls=B.lowspeed_configuration(flow)
@@ -100,7 +105,7 @@ body(response)=A.AirfoilWire.decode(copy(response.body),:msgpack)
     @test selected.root==registered.root
     @test A._initial_confined(joinpath(first(selected.points),"state_checkpoint.jls"),selected.root)==realpath(joinpath(first(selected.points),"state_checkpoint.jls"))
     health=A.AirfoilWire.decode(copy(A.app_handler(A.HTTP.Request("GET","/api/health")).body),:msgpack)
-    @test health["api_revision"]>=25
+    @test health["api_revision"]>=29
     @test health["lowspeed_initial_flow"]["checked_job_seed"]===true
     @test health["lowspeed_initial_flow"]["exact_continuation"]===false
 end

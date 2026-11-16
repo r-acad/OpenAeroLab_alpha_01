@@ -8,17 +8,21 @@ include(joinpath(ROOT,"src","compressible","cmesh_solver_ka.jl"))
 const G=CFDBackend.CMeshGen
 const M=CMeshSolverKA
 
-@testset "Fixed mesh frame retains the physical flow angle" begin
-    af=G.naca4_points(2412;n=401)
+@testset "An explicit mesh frame retains the physical flow angle" begin
+    # The single C block of a closed trailing edge (RAE 2822), built in the chord frame while the flow is at 12 degrees.
+    af=G.read_airfoil_dat(joinpath(ROOT,"apps","airfoil_web","data","references","rae2822_agard.dat"))
+    @test hypot(af.x[1]-af.x[end],af.y[1]-af.y[end])<=1e-8
     dn1=.7/(3e6*sqrt((.026*(3e6)^(-1/7))/2))
-    args=(n_foil=384,n_wake=64,n_normal=112,dn1,alpha_deg=12.,trip_upper=0.,trip_lower=0.,
-        n_base=2,mesh_refinement=:aplus_uniform_fixed,normal_collar=false,shock_layer=false)
+    args=(n_foil=256,n_wake=64,n_normal=112,dn1,alpha_deg=12.,trip_upper=0.,trip_lower=0.,farfield_angle_deg=0.)
     built=CFDBackend._build_transonic_mesh(af;args...)
     @test built.metadata["mesh_angle_deg"]==0.
     @test built.metadata["flow_alpha_deg"]==12.
+    @test built.metadata["n_base"]==0 && built.surface_indices==built.foil_indices
     @test built.metadata["quality_report"]["air_reference_gates"]["passed"]
     @test CFDBackend.CMeshMetrics.gcl_check(built.metrics)[1] <= 2eps(Float32)
-    @test_throws ArgumentError CFDBackend._build_transonic_mesh(af;args...,farfield_angle_deg=12.)
+    @test_throws ArgumentError CFDBackend._build_transonic_mesh(af;args...,farfield_angle_deg=120.)
+    # A finite trailing edge is not closed and gets no base fan: it is refused here and meshed C+H.
+    @test_throws ArgumentError CFDBackend._build_transonic_mesh(G.naca4_points(2412;n=401);args...)
     cx,cy,cz,w,_,_=build_d3q39_static()
     s=M.build_sol_ka(CPU(),built.metrics;drot=2f0,cxv=cx,cyv=cy,czv=cz,wv=w)
     s.gam=0f0;s.nu_lam=0f0;s.recon=Int32(1);s.fullvisc=Int32(1)

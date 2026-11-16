@@ -33,7 +33,7 @@ function streamline_settings(flow::AbstractDict)
     (; mode, admission=adm, fallback=_boolean(flow, "cfd_streamline_fallback", false))
 end
 
-const STREAMLINE_CH_ONLY = "Streamline alignment runs on the C+H mesh of a finite trailing edge (TE topology Auto); this section's CFD mesh is not C+H (a sharp trailing edge, or Legacy A-plus). Untick the alignment, or use a section with a finite trailing edge."
+const STREAMLINE_CH_ONLY = "Streamline alignment runs on the C+H mesh of a finite trailing edge; this section has a sharp trailing edge and is meshed as a single C block. Untick the alignment, or use a section with a finite trailing edge."
 const STREAMLINE_NO_COMPRESSIBLE_GURNEY = "Streamline alignment with a Gurney flap is offered on the low-speed CFD only: the Gurney flap is a baffle, which only the low-speed solver has (the compressible C+H solver has no interior walls)."
 
 "Validate the keys of a request (server side, before any work); refuses the alignment where no backend supports it."
@@ -46,14 +46,10 @@ function streamline_check_request(flow::AbstractDict, backends)
     any(==("cavitation"), backends) && throw(ArgumentError(
         "Streamline alignment is not offered for the Species / cavitation CFD (its driver builds its own mesh). Untick it, or choose the low-speed or compressible CFD."))
     ls || tr || throw(ArgumentError(
-        "Streamline-aligned meshes are available for the low-speed CFD (C+H mesh: a Gurney flap, or the native-base control) and for the compressible CFD on a finite trailing edge (C+H); choose one of them."))
+        "Streamline-aligned meshes are available for the low-speed CFD and the compressible CFD, on the C+H mesh of a finite trailing edge; choose one of them."))
     ls && !_lowspeed_ch_selected(flow) && throw(ArgumentError(
-        "Streamline alignment runs on the low-speed CFD's C+H mesh: add a Gurney flap (or the native-base C+H control, lowspeed_topology = ch_native)."))
-    if tr
-        gurney_enabled(flow) && throw(ArgumentError(STREAMLINE_NO_COMPRESSIBLE_GURNEY))
-        String(_get(flow, "cfd_te_topology", "aplus")) == "auto" || throw(ArgumentError(
-            "Streamline alignment on the compressible CFD runs on the C+H mesh: select TE topology Auto (a finite trailing edge)."))
-    end
+        "Streamline alignment runs on the low-speed CFD's C+H mesh, which needs a finite trailing edge."))
+    tr && gurney_enabled(flow) && throw(ArgumentError(STREAMLINE_NO_COMPRESSIBLE_GURNEY))
     s
 end
 

@@ -10,7 +10,7 @@ const JC=A.AirfoilJobControl
 
 function test_job(status="queued";sweep=false)
     case=A._validated_case(Dict("airfoil"=>Dict("kind"=>"naca4","id"=>"0012"),"backends"=>["lowspeed"],
-        "flow"=>Dict("reynolds"=>3e6,"alpha_deg"=>4.,"lowspeed_resolution"=>"demo","lowspeed_max_steps"=>20),
+        "flow"=>Dict("reynolds"=>3e6,"alpha_deg"=>4.,"lowspeed_resolution"=>"standard","lowspeed_max_steps"=>20),
         "sweep"=>Dict("enabled"=>sweep,"start"=>4.,"stop"=>6.,"step"=>2.)))
     id=string(uuid4())
     lock(A.JOB_LOCK) do

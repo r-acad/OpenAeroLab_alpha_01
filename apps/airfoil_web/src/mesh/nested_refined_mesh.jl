@@ -1,4 +1,4 @@
-# Opt-in pinned-node nested i refinement for the external-flow A-plus C-grid.
+# Pinned-node nested i refinement for the external-flow single-block C-grid.
 # Julia Base only: no SciPy or optimizer is needed at runtime.
 
 function _nested_factors(mesh, n_base::Int, scale::Float64, slope::Float64;

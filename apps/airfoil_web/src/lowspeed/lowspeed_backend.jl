@@ -76,8 +76,6 @@ lowspeed_hardware(ls) = get(ls, "gpu", false) ?
 const LOWSPEED_MESHES = Dict(
     "standard"=>(mesh="384,128,7e-6,1.18,80,96", le_ds=2e-4,
               label="Standard: 384 foil cells, 128 remapped normal cells, 96 cells per wake leg; first wall spacing 7e-6 c"),
-    "demo"=>(mesh="192,72,3e-5,1.20,80,64", le_ds=0.0,
-              label="Demo (fast): 192 foil x 72 normal cells + 2 x 64 wake, 23,040 cells, first wall spacing 3e-5 c"),
     "fine"=>(mesh="384,128,7e-6,1.18,80,96", le_ds=2e-4,
               label="Fine stall study: 384 foil x 128 remapped normal cells + 2 x 96 wake, first wall spacing 7e-6 c, leading-edge interval 2e-4 c"),
     # API-only smoke mesh for the app's own tests; coarse wall (y+ >> 1 at high Re): not a result mesh.
@@ -90,15 +88,16 @@ const LOWSPEED_DEFAULTS = Dict{String,Any}("lowspeed_resolution"=>"standard", "l
     "lowspeed_steady_tol"=>1e-6, "lowspeed_turb_steady_tol"=>1e-7)
 
 """Validated low-speed settings from a request's flow map (ArgumentError on a bad value). Mach is not an input.
-A Gurney flap (gurney_height) or the hidden key lowspeed_topology = "ch_native" selects the C+H path
-(lowspeed_ch_configuration); every other request is the sharp-trailing-edge path, unchanged."""
+The topology follows the section: a finite trailing edge (and every Gurney flap) is the C+H path
+(lowspeed_ch_configuration), a closed one the sharp-trailing-edge path. The backend records its choice in the resolved
+flow as lowspeed_topology (_lowspeed_resolve_flow); a request cannot name it."""
 function lowspeed_configuration(flow::AbstractDict)
     _lowspeed_ch_selected(flow) && return lowspeed_ch_configuration(flow)
     for key in ("lowspeed_start", "lowspeed_turb_mut_base")     # 28 Oct 2026: hidden C+H controls (the Gurney baffle's start and mu_t base)
-        haskey(flow, key) && throw(ArgumentError("$key applies to the low-speed CFD's C+H path only (a Gurney flap, or lowspeed_topology = ch_native)"))
+        haskey(flow, key) && throw(ArgumentError("$key applies to the low-speed CFD's C+H path only (a finite trailing edge, or a Gurney flap)"))
     end
     res = String(_get(flow, "lowspeed_resolution", LOWSPEED_DEFAULTS["lowspeed_resolution"]))
-    haskey(LOWSPEED_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be standard, fine or demo (or smoke for tests)"))
+    haskey(LOWSPEED_MESHES, res) || throw(ArgumentError("lowspeed_resolution must be standard or fine (or smoke for tests)"))
     re = _number(flow, "reynolds", 3e6; lo=1e4, hi=1e8)
     tu = _number(flow, "lowspeed_tu", LOWSPEED_DEFAULTS["lowspeed_tu"]; lo=1e-6, hi=0.19)
     mr = _number(flow, "lowspeed_mut_ratio", LOWSPEED_DEFAULTS["lowspeed_mut_ratio"]; lo=1e-4, hi=1e4)

@@ -9,7 +9,7 @@
 #
 # Request keys (flow map; all optional, defaults in AirfoilLBMCase.LBM_DEFAULTS): lbm_span_ratio, lbm_cells_per_chord
 # (finest-level cells per chord), lbm_ctu, lbm_ramp_ctu, lbm_frames, lbm_upstream, lbm_downstream, lbm_height,
-# lbm_plate_cells, lbm_wall_model, lbm_spoiler (+ lbm_spoiler_hinge, lbm_spoiler_length, lbm_spoiler_deflection), and the
+# lbm_plate_cells, lbm_spoiler (+ lbm_spoiler_hinge, lbm_spoiler_length, lbm_spoiler_deflection), and the
 # Gurney keys gurney_height / gurney_mode shared with the other CFD backends (a THICK plate here: lbm_plate_cells cells).
 # Reynolds is the request's reynolds; Mach is an input for D3Q39, while D3Q27 uses its fixed low-Mach carrier.
 # =====================================================================================================================
@@ -59,7 +59,7 @@ function lbm_capabilities()
     "gpu_memory_gb"=>capacity.total_gb,
     "gpu_free_gb"=>capacity.free_gb,"gpu_available"=>get(capacity,:available,true),
     "levels"=>AirfoilLBMCase.lbm_pamr() ? AirfoilLBMCase.LBM_LEVELS_MAX : 1,
-    "friction_note"=>AirfoilLBMCase.LBM_FRICTION_NOTE, "wall_position_note"=>AirfoilLBMCase.LBM_WALL_POSITION_NOTE, "wall_model_label"=>AirfoilLBMCase.LBM_WALL_MODEL_LABEL,
+    "friction_note"=>AirfoilLBMCase.LBM_FRICTION_NOTE, "wall_position_note"=>AirfoilLBMCase.LBM_WALL_POSITION_NOTE,
     "z_walls"=>AirfoilLBMCase.lbm_zwalls() ? ["slip", "no_slip"] : ["slip"],
     "level_viscosity"=>AirfoilLBMCase.lbm_levelvisc(), "level_viscosity_tooltip"=>AirfoilLBMCase.LBM_LEVELVISC_TOOLTIP,
     "time_fix"=>get(AirfoilLBMCase.lbm_profile(), :timefix, false) === true,
@@ -169,7 +169,7 @@ function _lbm_build(source::AbstractDict, path::AbstractString, flow::AbstractDi
         @sprintf("Re = %.4g (chord); physical Mach %.3f, lattice speed %.3g (lattice Mach %.3f); tau = %.5f%s. %s", s["reynolds"], s["physical_mach"], s["u_lattice"], s["lattice_mach"], s["tau"],
                  s["tau_clipped"] ? @sprintf(" is below the solver's floor %.3f, which it uses instead: the effective Reynolds number is about %.3g", s["tau_min"], s["reynolds_effective"]) : "",
                  s["lattice"] == "d3q39" ? "Mach is an input for the compressible D3Q39 + thermal path; inspect convergence and flow fields." : "Mach is fixed at the D3Q27 low-Mach carrier value and is not a case input."),
-        @sprintf("Wall: Grad-reconstruction Bouzidi wall on the STL; first-cell y+ estimate %.2g%s.", yplus, s["wall_model"] ? "; the wall-model switch is ON but inactive in the current solver (it changes nothing there; not validated)" : " (wall model off: a resolved wall is assumed)"),
+        @sprintf("Wall: Grad-reconstruction Bouzidi wall on the STL; first-cell y+ estimate %.2g (no wall model: a resolved wall is assumed).", yplus),
         "Angle of attack: the solver rotates the STL about +Y (basic.alpha = -alpha: LUDWIG's positive alpha raises the trailing edge); lift is +Z, drag +X.",
         s["lattice"] == "d3q39" ? "Surface-force friction drag and effective curved-wall location have not yet been measured for D3Q39; treat coefficients as development results." : AirfoilLBMCase.LBM_FRICTION_NOTE,
         s["lattice"] == "d3q39" ? "The D3Q27 laminar-channel wall audit does not establish D3Q39 wall accuracy; validate the wall and convergence before using these results." : AirfoilLBMCase.LBM_WALL_POSITION_NOTE,
@@ -628,7 +628,6 @@ function _collect_lbm_output(dir, alpha, b, r, elapsed)
                      "LBM solver steps: one solver step is one coarsest-level step = $(2^(b.lattice.levels - 1)) finest steps; physical time is computed from the step count",
             "friction_drag_note"=>(s["lattice"] == "d3q39" ? "D3Q39 surface-force friction drag has not yet been measured." : AirfoilLBMCase.LBM_FRICTION_NOTE),
             "wall_position_note"=>(s["lattice"] == "d3q39" ? "D3Q39 curved-wall position has not yet been measured." : AirfoilLBMCase.LBM_WALL_POSITION_NOTE),
-            "wall_model_label"=>AirfoilLBMCase.LBM_WALL_MODEL_LABEL,
             "profile"=>get(r, "profile", "lbmapp"), "cpu_run"=>get(r, "cpu_run", false), "z_walls"=>get(s, "z_walls", "slip"), "levels"=>s["levels"], "level_viscosity"=>get(s, "level_viscosity", "legacy"), "mask_check"=>mask === nothing ? nothing : Dict(k=>v for (k, v) in mask if k != "solver_cells"),
             "offset_max_difference"=>offset_err,
             "convergence_guard"=>Dict("status"=>settled ? "lbm_window_settled" : "lbm_window_unsettled", "reason"=>convergence)))

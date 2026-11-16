@@ -52,7 +52,6 @@
     keys.lbm_lattice=lattice;
     const autoVram=$("lbm-sizing")?.value==="vram";
     if(autoVram){const target=read("lbm-target-vram","target available VRAM (%)",1,100,false);if(target===null)return null;keys.lbm_target_vram_percent=target;}
-    keys.lbm_wall_model = !!$("lbm-wall-model")?.checked;
     const walls = $("lbm-z-walls")?.value || "slip";
     if (walls === "no_slip" && !noSlip) return fail("No-slip top and bottom walls need the solver update (lbm-zwalls); use slip walls.");
     if (walls === "no_slip" && lattice === "d3q39") return fail("D3Q39 uses the pinned solver's legacy slip walls; choose slip.");
@@ -234,7 +233,6 @@
     if ($("lbm-levels")) $("lbm-levels").value = String(Number(flow?.lbm_levels) > 1 ? flow.lbm_levels : 1);
     if ($("lbm-z-walls")) $("lbm-z-walls").value = flow?.lbm_z_walls === "no_slip" && noSlip ? "no_slip" : "slip";
     if ($("lbm-level-visc")) $("lbm-level-visc").checked = flow?.lbm_level_viscosity === "physical" && levelVisc;
-    if ($("lbm-wall-model")) $("lbm-wall-model").checked = flow?.lbm_wall_model === true;
     if ($("lbm-spoiler")) $("lbm-spoiler").checked = flow?.lbm_spoiler === true;
     for (const [id, key] of SPOILER) if (finite(Number(flow?.[key])) && $(id)) $(id).value = String(flow[key]);
   }
@@ -868,7 +866,6 @@
   // ------------------------------------------------------------------------------------------------ wiring
   for (const [id] of SPEC) $(id)?.addEventListener("input", () => { updateSetup(); invalidatePreviewMesh(); });
   ["lbm-plate-cells", "lbm-cells"].forEach(id => $(id)?.addEventListener("change", () => scheduleGeometryPreview()));
-  $("lbm-wall-model")?.addEventListener("change", () => { updateSetup(); invalidatePreviewMesh(); });
   $("lbm-levels")?.addEventListener("change", () => { updateSetup(); invalidatePreviewMesh(); });
   $("lbm-lattice")?.addEventListener("change", () => { if($("lbm-lattice").value==="d3q39"&&Number(el.mach.value)<=0)el.mach.value="0.3"; updateSetup(); invalidatePreviewMesh(); });
   $("lbm-sizing")?.addEventListener("change", () => { updateSetup(); invalidatePreviewMesh(); });

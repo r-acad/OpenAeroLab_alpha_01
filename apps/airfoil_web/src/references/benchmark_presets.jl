@@ -4,15 +4,20 @@ function benchmark_catalog()
     items = Dict{String,Any}[]
     definitions = [("rae2822-case9", "rae2822", "RAE 2822 · AGARD Case 9", 0.734, 6.5e6, 2.79, 0.03, "constant_dynamic", 288.15),
                    ("rae2822-case6", "rae2822", "RAE 2822 · NASA Case 6", 0.729, 6.5e6, 2.31, 0.03, "sutherland", 460*5/9)]
+    # ONERA OAT15A (DPW): a supercritical section with a finite trailing edge, the transonic buffet reference. The
+    # angles from 3.25 degrees are the unsteady cases and run in physical time.
     append!(definitions, [("oat15a-$(a)", "oat15a", "ONERA OAT15A · α=$(a)°", 0.73, 3.0e6, a, 0.07, "sutherland", 271.0)
                           for a in (2.5,3.0,3.1,3.25,3.5,3.9)])
+    # The RAE 2822 section has a closed trailing edge: one C block. The OAT15A section's finite trailing edge is meshed
+    # C+H. Both run with the prescribed trips and viscosity law.
     for (id,kind,label,mach,re,alpha,trip,viscosity,temp) in definitions
         unsteady = kind == "oat15a" && alpha >= 3.25
         flow = Dict{String,Any}("mach"=>mach,"reynolds"=>re,"alpha_deg"=>alpha,"ncrit"=>9.0,
             "trip_upper"=>trip,"trip_lower"=>trip,"cfd_viscosity_model"=>viscosity,
-            "cfd_freestream_temperature_k"=>temp,"cfd_te_topology"=>"aplus",
-            "cfd_mesh"=>"aplus_nested_refined","cfd_resolution"=>"fine",
+            "cfd_freestream_temperature_k"=>temp,"cfd_resolution"=>"fine",
             "cfd_gpu"=>true,"cfd_time_mode"=>unsteady ? "physical" : "steady")
+        # Application choices of an unsteady case: the physical duration and the burn-in before the force means.
+        unsteady && merge!(flow,Dict{String,Any}("cfd_duration_ctu"=>100.0,"cfd_burnin_ctu"=>20.0))
         case = Dict{String,Any}("airfoil"=>Dict("kind"=>kind,"id"=>kind),"flow"=>flow,
             "backends"=>["transonic"],"sweep"=>Dict("enabled"=>false),"alphas"=>[alpha])
         reference = reference_for_case(case)
@@ -24,7 +29,10 @@ function benchmark_catalog()
             (unsteady ? "DPW V1b unsteady case: compare time-averaged Cp after burn-in; one instantaneous field is not the measured mean." : "DPW V1a steady comparison point.")
         push!(items, Dict("id"=>id,"kind"=>kind,"label"=>label,"case"=>case,"reference"=>reference,
             "default"=>(id in ("rae2822-case9","oat15a-2.5")),"unsteady"=>unsteady,"note"=>note,
-            "numerics_note"=>"Fine A-plus mesh retains the native profile and prescribed trips/viscosity. SST, mesh resolution, time step, run duration and stopping criteria are numerical choices; convergence and time/mesh independence must be checked.",
+            "numerics_note"=>(kind == "rae2822" ? "Fine single-block C mesh on the native sharp-edged profile" :
+                "Fine two-block C+H mesh on the native profile with its finite trailing edge")*
+                ", with the prescribed trips and viscosity law. SST, mesh resolution, time step, run duration and stopping criteria are numerical choices; convergence and time/mesh independence must be checked."*
+                (kind == "oat15a" ? " The C+H solver with trips, the Sutherland law and physical time is a development path without a converged validation run; an unsteady case reports the final instantaneous Cp, not a time average." : ""),
             "conditions_url"=>kind=="oat15a" ? "https://www.aiaa-dpw.org/TestCases/testcases.html" : reference["source_url"]))
     end
     flow=Dict{String,Any}("mach"=>.15,"reynolds"=>6e6,"alpha_deg"=>10.0,"ncrit"=>9.0,

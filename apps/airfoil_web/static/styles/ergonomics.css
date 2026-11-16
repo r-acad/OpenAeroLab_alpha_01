@@ -18,12 +18,6 @@
 .hint{font-size:11px;line-height:1.45;margin-top:7px}
 .check-line{font-size:11px;line-height:1.4;margin-top:9px}
 .check-line input,.switch-line input{flex:none}
-.advanced-cfd summary{font-size:11px;padding:4px 0}
-.geometry-options{margin-top:12px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
-.geometry-options>summary{cursor:pointer;padding:9px 11px;color:var(--navy);font-size:12px;font-weight:750}
-.geometry-options>summary span{display:block;margin:3px 0 0 17px;color:var(--muted);font-size:10px;font-weight:500}
-.geometry-options:has(input:checked)>summary::after{content:"Active";float:right;margin-top:-28px;padding:2px 6px;border-radius:5px;background:var(--paper);color:var(--teal-dark);font-size:10px}
-.geometry-options-body{padding:0 11px 11px}
 .saved-results{flex:none;border-top:1px solid var(--line);background:var(--paper)}
 .saved-results>summary{cursor:pointer;padding:10px 14px;color:var(--teal-dark);font-size:12px;font-weight:750}
 .saved-results-body{max-height:min(240px,35dvh);overflow:auto;padding:0 14px 12px}
@@ -31,30 +25,38 @@
 .saved-results .recent-actions button{min-height:31px}
 .run-panel{padding:10px 14px 12px}
 .primary-button{min-height:40px;font-size:13px}
-.workflow-intro{padding:2px 14px 12px;margin:0;color:var(--muted);font-size:12px;line-height:1.55;border-bottom:1px solid var(--line)}
-.workflow-intro strong{display:block;color:var(--teal-dark);font-size:12px;margin-bottom:5px}
 .info-button{display:inline-flex;align-items:center;justify-content:center;min-width:18px;min-height:18px;width:18px;height:18px;padding:0;margin-left:5px;border:1px solid var(--line);border-radius:50%;background:var(--paper);color:var(--teal-dark);font-family:Georgia,serif;font-size:12px;font-weight:700;line-height:1;vertical-align:middle;cursor:help}
 .info-button:hover{border-color:var(--teal);background:var(--soft)}
 .field-help-dialog{width:min(500px,calc(100vw - 36px));max-height:80dvh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:22px;background:var(--paper);color:var(--ink);box-shadow:var(--shadow)}
 .field-help-dialog::backdrop{background:rgba(10,25,45,.35)}
 .field-help-dialog h2{font-size:18px;margin:0 0 12px}.field-help-dialog p{font-size:14px;line-height:1.7;margin:0 0 18px}
-#solver-numerics>summary{padding:12px 0;font-weight:700}#cancel-button{width:100%;margin-top:7px;min-height:32px}
+#cancel-button{width:100%;margin-top:7px;min-height:32px}
 .point-downloads{display:flex;flex:none;flex-wrap:wrap;gap:12px;align-items:center;padding:7px 2px;font-size:12px}.point-downloads strong{font-size:11px;color:var(--muted)}.point-downloads a{color:var(--teal-dark);text-underline-offset:3px}
 .field input:focus-visible,.field select:focus-visible,.header-control select:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 @media(max-width:980px){.workspace{grid-template-columns:minmax(285px,310px) minmax(0,1fr)}}
 @media(max-width:680px){.workspace{display:block}.setup-nav{position:sticky;top:0;z-index:6}.setup-groups{scrollbar-gutter:auto}.saved-results-body{max-height:none}}
-@media(max-width:530px){.setup-nav a{padding:8px 3px;font-size:10px}.geometry-options>summary span{font-size:10px}}
+@media(max-width:530px){.setup-nav a{padding:8px 3px;font-size:10px}}
 
-/* Airfoil workflow: visible tabs and one related group per pane, no flyouts. */
+/* Airfoil workflow: the solver choice above every step, numbered steps, secondary tabs after a separator, and one
+   closed Advanced group per step. */
 .workflow-bar{display:flex;flex-wrap:wrap;gap:5px;padding:8px 10px;align-items:center;overflow:visible}
 .workflow-bar .workflow-tab{flex:1 0 auto;min-height:36px;padding:7px 13px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);font-size:12px;font-weight:700;cursor:pointer}
 .workflow-bar .workflow-tab:hover{border-color:var(--teal);color:var(--teal-dark)}
 .workflow-bar .workflow-tab.is-active{background:var(--teal-dark);border-color:var(--teal-dark);color:#fff}
+.workflow-bar .workflow-tab:disabled{opacity:.5;cursor:default}.workflow-bar .workflow-tab:disabled:hover{border-color:var(--line);color:var(--ink)}
+.workflow-bar .step-number{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;margin-right:6px;border:1px solid var(--line);border-radius:50%;background:var(--soft);color:var(--teal-dark);font-size:11px}
+.workflow-bar .workflow-tab.is-active .step-number{border-color:#fff;background:#fff}
+.workflow-bar .workflow-separator{flex:none;align-self:stretch;width:1px;margin:2px 4px;background:var(--line)}
+.workflow-bar .workflow-secondary{flex:0 0 auto;font-weight:600}
+.solver-bar{padding:10px 14px;border-bottom:1px solid var(--line)}.solver-bar .field{margin-top:0}
+.advanced-group{margin:12px 0 4px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
+.advanced-group>summary{cursor:pointer;padding:8px 11px;color:var(--navy);font-size:12px;font-weight:750}
+.advanced-body{padding:0 11px 11px}.advanced-body h3{margin:10px 0 6px;font-size:12px;font-weight:750;color:var(--ink)}
+.step-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}.step-actions button{flex:1 0 120px;min-height:34px}
 .workflow-bar [hidden],.setup-column [hidden],.display-tabs [hidden]{display:none!important}
 .workflow-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.workflow-actions button{flex:1 0 115px;min-height:34px}
 .workflow-section{margin:12px 0;padding:9px 0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
 .workflow-section>h3{margin:0 0 8px;padding:0;font-size:12px;font-weight:750;line-height:1.5;color:var(--ink)}
-.workflow-section.geometry-options>h3{padding:0}.geometry-options-body{padding:0}
 .workflow-section.saved-results{border-top:1px solid var(--line)}.workflow-section .saved-results-body{padding:0;max-height:none}
 .workflow-section.run-status{margin:8px 0;padding:8px 0}.workflow-section.run-status>h3{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .workflow-section.run-status .run-status-body{padding:0}.workflow-steps{padding-left:20px;font-size:12px;line-height:1.8}

@@ -31,12 +31,6 @@ function gurney_check_request(flow::AbstractDict, backends; mesh::Bool=true)
     te = _get(flow, "cfd_te_thickness", 0.0)
     (te isa Real && te > 0) && throw(ArgumentError(
         "The Gurney flap and the CFD trailing-edge thickness override both set the trailing edge: clear the CFD trailing-edge thickness (the plate stands on the section's own trailing edge)."))
-    if any(b -> b in ("transonic", "cavitation", "lowspeed"), backends)
-        String(_get(flow, "cfd_te_topology", "auto")) == "auto" || throw(ArgumentError(
-            "The Gurney flap is meshed in the conforming C+H topology (TE topology Auto). Legacy A-plus with diagonal fans is deprecated for finite trailing edges and is not offered for the Gurney flap."))
-        String(_get(flow, "cfd_mesh", "aplus_nested_refined")) == "legacy_sharp_cmesh" && throw(ArgumentError(
-            "The Gurney flap needs a finite base; the Legacy sharp C mesh closes the trailing edge. Choose the refined shared mesh profile."))
-    end
     "cavitation" in backends && throw(ArgumentError(GURNEY_TUNNEL_REFUSAL))
     # a geometry-only preview (mesh=false) only draws the plate, whatever backend is selected; a mesh or a run is refused
     (mesh && "transonic" in backends) && throw(ArgumentError(GURNEY_COMPRESSIBLE_REFUSAL))

@@ -40,7 +40,7 @@
     return value;
   }
   function read() {
-    const outputs={folder:($('output-folder')?.value||'').trim()};if(document.body.dataset.workbench==='aero')outputs.folder_selected=Boolean(outputs.folder);
+    const outputs={folder:($('output-folder')?.value||'').trim()};
     const raw=$('snapshot-interval-minutes')?.value??'10', interval=Number(raw);
     if(!String(raw).trim()||!Number.isFinite(interval)||interval<0||interval>1440)throw new Error('Snapshot interval must be between 0 and 1440 minutes; use 0 to disable periodic snapshots.');
     outputs.snapshot_interval_minutes=interval;
@@ -59,8 +59,7 @@
     if(cadence!=null)$('display-every').value=String(cadence);
     for(const key of kinds)if(typeof options[key]==='boolean')$('output-'+key).checked=options[key];
     const folder=options.folder||saved?.output_directory||'';
-    const legacyTemporaryDefault=document.body.dataset.workbench==='aero'&&options.folder_selected!==true&&/(?:^|[\\/])TEMP_DELETEABLE[\\/]exports[\\/]?$/i.test(folder);
-    $('output-profile').value='custom';$('output-folder').value=legacyTemporaryDefault?'':folder;
+    $('output-profile').value='custom';$('output-folder').value=folder;
     $('output-report').value=options.report?'html':'none'; $('output-charts').value=options.charts?(options.chart_format||'png'):'none';
     $('output-render').value=options.renders_3d?'png':'none'; $('output-quantity').value=options.surface_quantity||'cp'; $('output-camera').value=options.camera||'perspective';
     const size=`${options.image_width||1600}x${options.image_height||1000}`;

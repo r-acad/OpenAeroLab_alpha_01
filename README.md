@@ -75,9 +75,20 @@ presets require those datasets. The XFOIL executable is also optional; set
 
 ## Workbench workflow
 
-The apps share compact Boxer-style Project, Model, Mesh, Analysis, Results and
-Display menus, a parameter pane, and a large viewport. Aero Lab also has a Domain
-menu. **Help → Quick start and workflow** explains the sequence in each app.
+Both apps have a setup pane and a large viewport, and neither has menus.
+
+In Aero Lab choose the **Solver** above the setup pane, then work through
+**1 Model, 2 Domain, 3 Flow, 4 Mesh, 5 Run and outputs, 6 Results**; Study,
+Display and Help follow the steps. See
+[apps/ludwig_web/README.md](apps/ludwig_web/README.md#aero-lab).
+
+In Airfoil Lab choose the **Solver** above the setup pane, then work
+through the numbered steps of its tab row: **1 Airfoil, 2 Flow, 3 Mesh,
+4 Solver settings, 5 Run and outputs, 6 Results**. Each step shows only what the
+selected solver uses and ends with its action (Create mesh, Run analysis);
+rarely needed settings wait in one closed **Advanced** group per step. Study,
+Display, Validation and Help follow the steps. See
+[apps/airfoil_web/README.md](apps/airfoil_web/README.md#workflow).
 
 In Aero Lab, open a study or import geometry, place it in the domain, create and
 inspect the mesh, choose the output folder and run the analysis. **Results** opens
@@ -86,12 +97,11 @@ study. **Display** changes guides, mesh visibility and contour palette without
 discarding loaded results. The colour choices follow JFEM-Boxer: spectrum,
 Viridis, Inferno, cool–warm and grayscale. PNGs retain their saved colours.
 
-For a symmetry boundary, **Domain → Model placement at symmetry plane** offers
-three choices: retain the current position, centre a full model at Y = 0, or place
-a prepared half model against the wall. The retained-position choice permits a
-manual Y offset and is restored without moving the model when opening a study.
-Only the positive-Y domain is solved. The pinned lbmtau backend requires automatic
-alignment; the main, thermal and D3Q19 backends support retained placement.
+For a symmetry boundary, step **2 Domain** offers three model placements: leave
+the model where it is, centre a full model at Y = 0, or put a prepared half
+model against the plane. Leaving it in place permits a manual Y offset and is
+restored without moving the model when opening a study. Only the positive-Y
+domain is solved.
 
 D3Q19 surface results now include **native wall samples**: each value comes from
 one fluid wall cell intersecting one original facet. Results → Surface sampling

@@ -67,27 +67,30 @@ window.AirfoilBenchmarks = (() => {
   function apply(item,{show=true}={}) {
     if (!item) return;
     selectedId=item.id;
-    state.studyFlowExtras={}; state.embeddedAirfoil=null;
+    state.presetFlow={}; state.embeddedAirfoil=null;
     const f=item.case.flow;
-    // Select the supported topology before updateSetup can enforce C+H's
-    // current fully-turbulent/constant-kinematic constraints.
+    // The published compressible cases run with their prescribed trips and viscosity law: RAE 2822 (closed trailing
+    // edge) on a single C block, ONERA OAT15A (finite trailing edge) on C+H, its unsteady angles in physical time.
     const values={'source-kind':item.kind,backend:item.case.backends[0],mach:f.mach,reynolds:f.reynolds,alpha:f.alpha_deg,ncrit:f.ncrit,
-      'cfd-te-topology':'aplus','cfd-mesh':f.cfd_mesh||'aplus_nested_refined','cfd-resolution':'fine','preview-resolution':'fine',
+      'preview-resolution':'fine','rans-method':'standard',
       'transition-mode':'forced','trip-upper':f.trip_upper,'trip-lower':f.trip_lower,
       'cfd-viscosity-model':f.cfd_viscosity_model,'cfd-temperature':f.cfd_freestream_temperature_k,
-      'cfd-time-mode':f.cfd_time_mode,'trailing-edge-thickness':'','cfd-sfd-storage':'float64','cfd-n-base':4,
-      'cfd-steps':item.unsteady?2000000:500000,'cfd-duration-ctu':100,'cfd-burnin-ctu':20};
+      'cfd-time-mode':f.cfd_time_mode,'trailing-edge-thickness':'','cfd-sfd-storage':'float64','cfd-steps':item.unsteady?2000000:500000};
+    if(item.unsteady)Object.assign(values,{'cfd-duration-ctu':f.cfd_duration_ctu,'cfd-burnin-ctu':f.cfd_burnin_ctu});
     for (const [id,value] of Object.entries(values)) if($(id)) $(id).value=String(value);
+    if($('cfd-viscosity-model')) $('cfd-viscosity-model').dataset.chosen='1';   // the case's own law, also on C+H
     for (const id of ['sweep-enabled','gurney-enabled','streamline-align','lbm-spoiler']) if($(id)) $(id).checked=false;
     $('cfd-gpu').checked=true; $('cfd-rk').checked=!item.unsteady; $('cfd-auto-stop').checked=!item.unsteady;
     if(item.id==='naca0012-stall'){
       $('naca-code').value='0012';$('lowspeed-gpu').checked=true;
       for(const [id,value] of Object.entries({'lowspeed-resolution':'fine','lowspeed-tu':.1,'lowspeed-mut-ratio':.1,'alpha-start':10,'alpha-stop':18,'alpha-step':2}))if($(id))$(id).value=String(value);
-      $('sweep-enabled').checked=true;state.studyFlowExtras={...f};
+      $('sweep-enabled').checked=true;
+      // the step and wall-clock limits of this case have no control: they travel with the applied case
+      state.presetFlow={lowspeed_max_steps:f.lowspeed_max_steps,lowspeed_wall_cap_s:f.lowspeed_wall_cap_s};
     }
     el['show-reference'].checked=true;
     state.machEdited=true; state.reynoldsEdited=true;
-    updateSetup(); scheduleGeometryPreview(); refresh();
+    updateSetup(); window.AirfoilWorkflow?.revealAdvanced({collapse:true}); scheduleGeometryPreview(); refresh();
     window.AirfoilStudies?.markDirty();
     if(show) switchTab(item.id==='naca0012-stall'?'polar':'results');
   }
@@ -109,10 +112,10 @@ window.AirfoilBenchmarks = (() => {
   }
   for(const id of ['benchmark-select','literature-select']) $(id).addEventListener('change',()=>apply(items.find(item=>item.id===$(id).value)));
   $('benchmark-apply').addEventListener('click',()=>apply(current()));
-  document.querySelectorAll('[data-validation]').forEach(button=>button.addEventListener('click',async()=>{try{await catalog();apply(items.find(item=>item.id===button.dataset.validation));const menu=button.closest('details');if(menu)menu.open=false;}catch(error){displayError(error);}}));
+  document.querySelectorAll('[data-validation]').forEach(button=>button.addEventListener('click',async()=>{try{await catalog();apply(items.find(item=>item.id===button.dataset.validation));}catch(error){displayError(error);}}));
   $('literature-menu').addEventListener('click',()=>{if(current()?.id==='naca0012-stall')switchTab('polar');else{switchTab('results');$('literature-panel').scrollIntoView({block:'nearest'});}});
   document.addEventListener('change',event=>{
-    if(event.target.matches('.setup-column input,.setup-column select,#cfd-te-topology,#show-reference')) refresh();
+    if(event.target.matches('.setup-column input,.setup-column select')) refresh();
   });
   return {catalog,selectSource,refresh,restore,apply,isMatch,current,get selectedId(){return selectedId;}};
 })();

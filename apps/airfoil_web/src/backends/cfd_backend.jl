@@ -9,9 +9,6 @@ end
 using ..AirfoilJobControl
 include(joinpath(@__DIR__, "rans_acceleration.jl"))
 using .RANSAcceleration
-include(joinpath(@__DIR__, "cfd_result_qualification.jl"))
-using .CFDResultQualification
-include(joinpath(@__DIR__, "..", "workers", "implicit_methods.jl"))
 include(joinpath(@__DIR__, "rans_convergence.jl"))
 include(joinpath(@__DIR__, "rans_checkpoint.jl"))
 include(joinpath(@__DIR__, "..", "protocol.jl"))
@@ -31,7 +28,7 @@ const ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", ".."))
 const SRC = joinpath(ROOT, "src")
 const LBM_F = Float32  # Required by src/collision/lattice.jl in the isolated CFD worker.
 const IS_WORKER = abspath(PROGRAM_FILE) == abspath(@__FILE__) &&
-                  !isempty(ARGS) && ARGS[1] in ("--transonic-worker","--species-worker","--ch-transonic-worker")
+                  !isempty(ARGS) && ARGS[1] in ("--transonic-worker","--species-worker","--ch-transonic-worker","--newton-worker")
 # The cohort starts before geometry/core includes and ends below, after the
 # conditional late C+H runtime includes. Checkpoints never rehash mutable disk.
 const _RANS_RESTART_SOURCE_LOAD_BEFORE = IS_WORKER ? _rans_restart_capture_source_snapshot() : nothing
@@ -186,7 +183,8 @@ end
 function _log_process(cmd::Cmd, log_path::AbstractString, progress::Function,
                       log::Function, backend::String, alpha::Float64;
                       physical_seconds_per_ctu::Union{Nothing,Real}=nothing,
-                      residual_kind::Union{Nothing,AbstractString}=nothing)
+                      residual_kind::Union{Nothing,AbstractString}=nothing,
+                      every_history_row::Bool=false)
     AirfoilJobControl.check_cancelled()
     open(log_path, "w") do io
         output = Pipe()
@@ -271,6 +269,9 @@ function _log_process(cmd::Cmd, log_path::AbstractString, progress::Function,
                                       "residual_linf"=>rraw, "residual_l2"=>rl2,
                                       "cl"=>cl, "cd"=>cd)
                         residual_kind===nothing || (event["residual_kind"]=residual_kind)
+                        # A worker that reports few rows itself (the Newton march: every second step of at most
+                        # 1000) asks the server to keep each of them instead of every display_every-th iteration.
+                        every_history_row && (event["every_history_row"]=true)
                         mass_net === nothing || (event["mass_net_frac"] = mass_net)
                         cm === nothing || (event["cm"] = cm)
                         if last_physical_clock!==nothing && last_physical_clock["iteration"]==n
@@ -353,43 +354,34 @@ end
 @inline _aerodynamic_cm(xwall, ywall, fx, fy, q) =
     -((xwall-0.25)*fy-ywall*fx)/q
 
-_strict_aplus_profile(mode)=mode in ("aplus_uniform_quality","aplus_uniform_fixed")
-function _transonic_mesh_angle(mode,flow,default_angle)
-    value=_number(flow,"cfd_farfield_angle_deg",mode=="aplus_uniform_fixed" ? 0. : default_angle;lo=-90,hi=90)
-    mode=="aplus_uniform_fixed"&&value!=0 && throw(ArgumentError("The fixed A+ mesh requires contour angle zero; flow alpha remains independent"))
-    value
-end
+"""The compressible and Species single-block mesh: one C block around a closed (sharp) trailing edge, with nested
+tangential refinement. A finite (blunt) trailing edge is meshed C+H (ch_mesh.jl) and never comes here."""
+const SINGLE_C_MESH = "aplus_nested_refined"
+_transonic_mesh_angle(flow,default_angle)=_number(flow,"cfd_farfield_angle_deg",default_angle;lo=-90,hi=90)
 
 function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=nothing;
                           species_backend::Bool=false, mesh_anchor=nothing)
+    # Implicit Newton (CPU): its own marched mesh, worker and configuration (newton_backend.jl).
+    !species_backend && _newton_selected(flow) &&
+        return _newton_point(case,path,flow,alpha,dir,progress,log,warmdir;mesh_anchor)
     if _auto_ch_selected(case,path,flow)
-        species_backend && throw(ArgumentError("The conservative Species/cavitation app driver currently uses Legacy A-plus. C+H Run is available for the Compressible backend; select that backend for the new mesh."))
+        # Species air and the free-fluid domain: the Species C+H pair in a free stream (species_ch_backend.jl).
+        species_backend && return _species_ch_point(case,path,flow,alpha,dir,progress,log)
         return _ch_transonic_point(case,path,flow,alpha,dir,progress,log,warmdir)
     end
     streamline_enabled(flow) && throw(ArgumentError(STREAMLINE_CH_ONLY))
-    mesh_mode = String(_get(flow, "cfd_mesh", "cavitation_aplus_farfield"))
-    mesh_mode in ("cavitation_aplus_farfield", "aplus_nested_refined", "aplus_uniform_quality", "aplus_uniform_fixed", "legacy_sharp_cmesh") ||
-        throw(ArgumentError("Unknown CFD mesh family"))
-    mesh_mode == "legacy_sharp_cmesh" && _number(flow,"cfd_te_thickness",0.0) > 0 &&
-        throw(ArgumentError("finite trailing-edge thickness requires an A-plus mesh"))
-    cfd_path, geometry = if mesh_mode == "legacy_sharp_cmesh"
-        _sharp_te_geometry(path, dir)
-    else
-        af = CMeshGen.read_airfoil_dat(path)
-        gap = hypot(af.x[1]-af.x[end], af.y[1]-af.y[end])
-        String(path), Dict{String,Any}(
-            "source_te_gap"=>gap,"cfd_te_gap"=>gap,
-            "transform"=>"none", "path"=>String(path))
-    end
-    geometry["mesh_mode"] = mesh_mode
+    mesh_mode = SINGLE_C_MESH
+    af = CMeshGen.read_airfoil_dat(path)
+    gap = hypot(af.x[1]-af.x[end], af.y[1]-af.y[end])
+    geometry = Dict{String,Any}("source_te_gap"=>gap,"cfd_te_gap"=>gap,
+        "transform"=>"none", "path"=>String(path), "mesh_mode"=>mesh_mode)
     resolution = String(_get(flow, "cfd_resolution", "standard"))
     mesh_sizes = get(Dict("standard"=>(256,64,112),
                           "fine"=>(384,96,144),
                           "very_fine"=>(512,128,176)), resolution, nothing)
     mesh_sizes === nothing && throw(ArgumentError("cfd_resolution must be standard, fine, or very_fine"))
-    _strict_aplus_profile(mesh_mode) && (mesh_sizes=(384,64,112))
     cfg = Dict{String,Any}(
-        "geometry"=>cfd_path, "source_geometry"=>String(path),
+        "geometry"=>String(path), "source_geometry"=>String(path),
         "mesh_mode"=>mesh_mode, "outdir"=>dir,
         "wake_cut_viscous_distance_model"=>"paired_cell_center_distance",
         "solver_ka_source_sha256"=>bytes2hex(sha256(read(joinpath(
@@ -411,7 +403,7 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "force_sample_dt_ctu"=>_number(flow,"cfd_force_sample_dt_ctu",0.1;lo=0.001,hi=1.0),
         # Validation-only outer-frame orientation; freestream remains at alpha_deg.
-        "cfd_farfield_angle_deg"=>_transonic_mesh_angle(mesh_mode,flow,
+        "cfd_farfield_angle_deg"=>_transonic_mesh_angle(flow,
                                             mesh_anchor === nothing ? alpha : mesh_anchor),
         # The earlier web defaults (20k steps, 96 wall-normal cells, bare reconstruction)
         # were startup transients. The clean-foil validation in the repository uses a
@@ -465,8 +457,6 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "n_foil"=>_integer(flow, "cfd_n_foil", mesh_sizes[1]; lo=32, hi=2048),
         "n_wake"=>_integer(flow, "cfd_n_wake", mesh_sizes[2]; lo=8, hi=512),
         "n_normal"=>_integer(flow, "cfd_n_normal", mesh_sizes[3]; lo=16, hi=512),
-        "n_base"=>_integer(flow, "cfd_n_base", _strict_aplus_profile(mesh_mode) ? 2 : 4; lo=1, hi=8),
-        "cfd_te_thickness"=>_number(flow, "cfd_te_thickness", 0.0; lo=0.0, hi=0.05),
         # Hidden validation knob; growth=1 follows the archived generator path.
         "wake_first_spacing_growth"=>_number(flow,
             "cfd_wake_first_spacing_growth", 1.0; lo=1.0, hi=2.0),
@@ -479,22 +469,21 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "trip_upper"=>_number(flow, "trip_upper", species_backend ? 0.05 : 0.03; lo=0.0, hi=1.0),
         "trip_lower"=>_number(flow, "trip_lower", 0.05; lo=0.0, hi=1.0))
     source = _get(case,"airfoil",Dict())
-    if _get(source,"kind","") == "naca4" && mesh_mode != "legacy_sharp_cmesh"
+    if _get(source,"kind","") == "naca4"
         code = String(_get(source,"id",""))
         occursin(r"^[0-9]{4}$",code) || throw(ArgumentError("invalid NACA four-digit code"))
         cfg["naca4_code"] = parse(Int,code)
     end
-    # Retain the older hidden IRS-J knob. The shared setting selects the same
-    # steady-only implementation and is reported in the result receipt.
+    # The shared acceleration setting selects IRS-J for the compressible solver (steady only) and is reported in the
+    # result receipt.
     accel = RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),
         species_backend ? :species_air : :compressible;
         physical=species_backend ?
             !(String(_get(flow,"cav_fluid","water"))=="air" && String(_get(flow,"cav_air_mode","steady"))=="steady") :
             cfg["time_mode"]=="physical")
-    legacy_irsj = !species_backend && _boolean(flow,"cfd_irsj",false)
-    cfg["rans_acceleration"] = accel.enabled || legacy_irsj
-    cfg["rans_acceleration_method"] = legacy_irsj ? "j-line implicit residual smoothing" : accel.method
-    (legacy_irsj || accel.irsj) && (cfg["irsj"] = true)
+    cfg["rans_acceleration"] = accel.enabled
+    cfg["rans_acceleration_method"] = accel.method
+    accel.irsj && (cfg["irsj"] = true)
     accel.species_line && (cfg["species_steady_line"] = true)
     # Hidden mesh knob (21 Oct 2026): the stall layer (stall_layer_mesh.jl); absence leaves the mesh intact.
     _boolean(flow,"cfd_stall_layer",false) && (cfg["stall_layer"] = true)
@@ -541,6 +530,17 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
     ok = _log_process(cmd, joinpath(dir, "solver.log"), progress, log, backend_name, alpha)
     ok || throw(ErrorException("CMESH2D worker failed: $(_solver_failure_summary(joinpath(dir,"solver.log"))); see solver.log"))
     species_backend && return _collect_species_output(dir,alpha)
+    _collect_transonic_output(dir, alpha, geometry)
+end
+
+"""Read the files of a finished single-block compressible point into the point dictionary the server sends.
+
+The body is the collection code `_transonic_point` has always run, moved here unchanged so the Implicit Newton worker
+(newton_worker.jl), which writes the same files, is read by the same code. That worker adds optional `result.toml`
+entries, which no other worker writes: `convergence_summary`, `validation_summary` and `point_notes` replace the
+generic texts, and `newton` / `newton_history_csv` are passed on.
+"""
+function _collect_transonic_output(dir, alpha, geometry)
     meta = TOML.parsefile(joinpath(dir, "result.toml"))
     mesh_preview = AirfoilWire.decode(read(joinpath(dir, "mesh_preview.msgpack")), :msgpack)
     mesh_preview["artifact"] = joinpath(dir, "mesh_full.msgpack")
@@ -621,19 +621,11 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
                           "field_csv"=>joinpath(dir, meta["field_csv"]),
                           "field_full"=>joinpath(dir, meta["field_full_msgpack"]),
                           "iteration_csv"=>joinpath(dir, meta["iteration_csv"]),
-                          "implicit_history_csv"=>get(meta,"implicit_method",false) ? joinpath(dir,"implicit_history.csv") : nothing,
-                          "steady_assessment_csv"=>get(meta,"implicit_method",false) ? joinpath(dir,"steady_assessment_history.csv") : nothing,
                           "physical_force_csv"=>haskey(meta,"physical_force_csv") ? joinpath(dir,meta["physical_force_csv"]) : nothing,
                           "log"=>joinpath(dir, "solver.log")),
         "diagnostics"=>Dict("steps"=>meta["steps"], "max_steps"=>get(meta,"max_steps",meta["steps"]),
                             "rans_method"=>get(meta,"rans_method","standard"),
-                            "implicit_method"=>get(meta,"implicit_method",false),
                             "rans_acceleration_method"=>get(meta,"rans_acceleration_method","standard"),
-                            "implicit_maturity"=>get(meta,"implicit_maturity",""),
-                            "implicit_numerical_controls"=>get(meta,"implicit_numerical_controls",Dict{String,Any}()),
-                            "implicit_raw_sst_residuals"=>get(meta,"implicit_raw_sst_residuals",Dict{String,Any}()),
-                            "implicit_accepted_steps"=>get(meta,"implicit_accepted_steps",0),
-                            "implicit_stop_reason"=>get(meta,"implicit_stop_reason",""),
                             "steady_assessment"=>get(meta,"steady_assessment",Dict()),
                             "warm_start_source"=>get(meta,"warm_start_source",""),
                             "time_mode"=>get(meta,"time_mode","steady"),"clock"=>get(meta,"clock","steady pseudo-time"),
@@ -712,7 +704,6 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
                             "mesh_topology"=>meta["geometry"]["mesh_topology"],
                             "outer_boundary_condition"=>meta["geometry"]["outer_boundary_condition"],
                             "n_base"=>meta["geometry"]["n_base"],
-                            "requested_n_base"=>get(meta["geometry"], "requested_n_base", 0),
                             "source_te_gap"=>meta["geometry"]["source_te_gap"],
                             "cfd_te_gap"=>meta["geometry"]["cfd_te_gap"],
                             "trip_upper"=>meta["trip_upper"],
@@ -720,13 +711,16 @@ function _transonic_point(case, path, flow, alpha, dir, progress, log, warmdir=n
         "notes"=>["Compressible CMESH2D with SST and a free-air C-grid. The generic mesh and solution have no case-specific validation.",
                     geometry["transform"] == "none" ? "The CFD geometry preserves the source trailing edge." :
                         "CFD geometry change: $(geometry["transform"]). XFoil uses the source section; account for the recorded geometry difference when comparing results.",
-                    meta["mesh_mode"] != "legacy_sharp_cmesh" ?
-                        "The finite trailing-edge base is included in force integrals; Cp curves show the upper and lower surfaces only." :
-                        "This explicit legacy mode uses the sharp-edge C-grid.",
                     "A completed iteration count is not a convergence certificate. The far-field correction is subsonic.",
                     physical_sanity ? "Loose force bounds passed; compare Cp and loads with XFoil/reference data." :
                                       "Loose force bounds failed; do not use these coefficients as a polar datum."])
-    qualify_result_point(point)
+    # Optional texts and records of a worker with its own stopping rule (the Implicit Newton march); absent otherwise.
+    haskey(meta,"convergence_summary") && (point["convergence"]=String(meta["convergence_summary"]))
+    haskey(meta,"validation_summary") && (point["validation"]=String(meta["validation_summary"]))
+    haskey(meta,"point_notes") && (point["notes"]=String.(meta["point_notes"]))
+    haskey(meta,"newton") && (point["diagnostics"]["newton"]=meta["newton"])
+    haskey(meta,"newton_history_csv") && (point["artifacts"]["newton_history_csv"]=joinpath(dir,meta["newton_history_csv"]))
+    point
 end
 
 """Build the same external-flow mesh as the CFD worker, without loading a solver.
@@ -735,9 +729,11 @@ The web preview runs this host-side geometry work in a separate task. It never
 allocates CUDA state or advances the flow equations.
 """
 function preview_mesh(path::AbstractString, flow::AbstractDict, outdir::AbstractString;
-                      source::AbstractDict=Dict(),solver_backend="transonic")
+                      source::AbstractDict=Dict())
     # Gurney flap (28 Oct 2026): a baffle, which only the low-speed solver has; refused here with the reason (gurney_backend.jl).
-    gurney_enabled(flow) && gurney_check_request(flow,[solver_backend])
+    gurney_enabled(flow) && gurney_check_request(flow,["transonic"])
+    # The Implicit Newton method's marched mesh (opt-in, newton_backend.jl): the mesh its Run uses.
+    _newton_selected(flow) && return _newton_preview_mesh(path,flow,outdir;source)
     resolution = String(_get(flow,"cfd_resolution","standard"))
     sizes = get(Dict("standard"=>(256,64,112), "fine"=>(384,96,144),
                      "very_fine"=>(512,128,176)), resolution, nothing)
@@ -746,20 +742,13 @@ function preview_mesh(path::AbstractString, flow::AbstractDict, outdir::Abstract
     alpha = _number(flow,"alpha_deg",0.0;lo=-90,hi=90)
     cf = 0.026*re^(-1/7)
     dn1 = 0.7/(re*sqrt(cf/2))
-    mode = String(_get(flow,"cfd_mesh","cavitation_aplus_farfield"))
-    _strict_aplus_profile(mode) && (sizes=(384,64,112))
-    mode == "legacy_sharp_cmesh" && _number(flow,"cfd_te_thickness",0.0) > 0 &&
-        throw(ArgumentError("finite trailing-edge thickness requires an A-plus mesh"))
-    equation_naca = _get(source,"kind","") == "naca4" && mode != "legacy_sharp_cmesh"
+    equation_naca = _get(source,"kind","") == "naca4"
     af = equation_naca ? CMeshGen.naca4_points(parse(Int,String(_get(source,"id","")))) :
                          CMeshGen.read_airfoil_dat(path)
-    topology=String(_get(flow,"cfd_te_topology","aplus"))
-    topology in ("auto","aplus") || throw(ArgumentError("unknown trailing-edge topology"))
     conditioned=CMeshGen.condition_airfoil(af;trailing_edge_thickness=_number(flow,"cfd_te_thickness",0.;lo=0,hi=.05))
     finite=hypot(conditioned.airfoil.x[1]-conditioned.airfoil.x[end],conditioned.airfoil.y[1]-conditioned.airfoil.y[end])>1e-8
-    if topology=="auto" && finite
-        mode=="legacy_sharp_cmesh" && throw(ArgumentError("Auto C+H preserves the native finite trailing edge; choose the shared mesh family, or explicitly choose Legacy A-plus before requesting a sharp derivative"))
-        built=_build_ch_mesh(af,flow;resolution,solver_backend)
+    if finite   # a finite trailing edge: the conforming C+H mesh
+        built=_build_ch_mesh(af,flow;resolution)
         # streamline alignment (opt-in, development): the same morph the C+H worker applies at Run (ch_streamline.jl)
         st=streamline_worker_cfg(source,flow,alpha,outdir)
         aligned=st===nothing ? nothing : _ch_streamline_apply(built,st)
@@ -773,38 +762,18 @@ function preview_mesh(path::AbstractString, flow::AbstractDict, outdir::Abstract
     n_foil = _integer(flow,"cfd_n_foil",sizes[1];lo=32,hi=2048)
     n_wake = _integer(flow,"cfd_n_wake",sizes[2];lo=8,hi=512)
     n_normal = _integer(flow,"cfd_n_normal",sizes[3];lo=16,hi=512)
-    if mode == "legacy_sharp_cmesh"
-        sharp_path, metadata = _sharp_te_geometry(path,outdir)
-        af = CMeshGen.read_airfoil_dat(sharp_path)
-        sharp = _sharp_nose_mesh(af;n_foil,n_wake,n_normal,dn1,
-            le_ds_scale=_number(flow,"cfd_le_ds_scale",1.0;lo=0.1,hi=1.0))
-        mesh = sharp.mesh
-        metadata["n_base"] = 0
-        metadata["wall_dn1"] = dn1
-        metadata["surface_distribution"] = "curvature"
-        metadata["leading_edge_target_spacing"] = sharp.le_ds
-        metadata["leading_edge_max_curvature"] = sharp.le_kappa
-        metadata["quality_report"] = _transonic_quality_report(mesh)
-    else
-        mode in ("cavitation_aplus_farfield","aplus_nested_refined","aplus_uniform_quality","aplus_uniform_fixed") ||
-            throw(ArgumentError("unknown CFD mesh family"))
-        built = _build_transonic_mesh(af;n_foil,n_wake,n_normal,dn1,
-            alpha_deg=alpha,
-            trip_upper=_number(flow,"trip_upper",0.03;lo=0,hi=1),
-            trip_lower=_number(flow,"trip_lower",0.05;lo=0,hi=1),
-            n_base=_integer(flow,"cfd_n_base",_strict_aplus_profile(mode) ? 2 : 4;lo=1,hi=8),
-            cfd_te_thickness=_number(flow,"cfd_te_thickness",0.0;lo=0,hi=0.05),
-            mesh_refinement=_strict_aplus_profile(mode) ? Symbol(mode) : mode == "aplus_nested_refined" ? :aplus_nested_refined : :none,
-            normal_collar=!_strict_aplus_profile(mode),shock_layer=!_strict_aplus_profile(mode),
-            wake_first_spacing_growth=_number(flow,"cfd_wake_first_spacing_growth",1.0;lo=1,hi=2),
-            wake_first_spacing_max=_number(flow,"cfd_wake_first_spacing_max",0.01;lo=0,hi=0.1),
-            wake_first_spacing_delay_cells=_integer(flow,"cfd_wake_first_spacing_delay_cells",0;lo=0,hi=511),
-            farfield_angle_deg=_transonic_mesh_angle(mode,flow,alpha),
-            stall_layer=_boolean(flow,"cfd_stall_layer",false),
-            le_ds_scale=_number(flow,"cfd_le_ds_scale",1.0;lo=0.1,hi=1.0))
-        mesh = built.mesh
-        metadata = built.metadata
-    end
+    built = _build_transonic_mesh(af;n_foil,n_wake,n_normal,dn1,
+        alpha_deg=alpha,
+        trip_upper=_number(flow,"trip_upper",0.03;lo=0,hi=1),
+        trip_lower=_number(flow,"trip_lower",0.05;lo=0,hi=1),
+        wake_first_spacing_growth=_number(flow,"cfd_wake_first_spacing_growth",1.0;lo=1,hi=2),
+        wake_first_spacing_max=_number(flow,"cfd_wake_first_spacing_max",0.01;lo=0,hi=0.1),
+        wake_first_spacing_delay_cells=_integer(flow,"cfd_wake_first_spacing_delay_cells",0;lo=0,hi=511),
+        farfield_angle_deg=_transonic_mesh_angle(flow,alpha),
+        stall_layer=_boolean(flow,"cfd_stall_layer",false),
+        le_ds_scale=_number(flow,"cfd_le_ds_scale",1.0;lo=0.1,hi=1.0))
+    mesh = built.mesh
+    metadata = built.metadata
     metadata["geometry_support"] = equation_naca ?
         "NACA four-digit equations evaluated at 4097 cosine-spaced support points" :
         "C2 interpolation of source coordinates"
@@ -1077,11 +1046,10 @@ function _transonic_worker(cfg_path::AbstractString)
     gpu = Bool(cfg["gpu"])
     method=String(get(cfg,"rans_method",get(cfg,"irsj",false) ? "irsj" : "standard"))
     method in RANSAcceleration.METHODS || throw(ArgumentError("Unknown RANS method: $method"))
-    implicit=RANSAcceleration.implicit_method(method)
-    implicit && physical && throw(ArgumentError("Implicit research methods require steady mode"))
+    method=="newton" && throw(ArgumentError("The Implicit Newton method runs in its own worker (--newton-worker); this worker would substitute the explicit iteration"))
     # Physical mode uses the same KA integrator on CPU and GPU. The older
     # plain CPU solver remains the unchanged default steady CPU path.
-    ka = gpu || physical || implicit
+    ka = gpu || physical
     duration_ctu = Float64(get(cfg,"duration_ctu",100.0))
     burnin_ctu = Float64(get(cfg,"burnin_ctu",50.0))
     block_ctu = Float64(get(cfg,"block_ctu",5.0))
@@ -1109,58 +1077,25 @@ function _transonic_worker(cfg_path::AbstractString)
     # the existing validated NACA0015 polar used y+ ~= 0.8. The previous
     # y+ ~= 1.1 mesh was marginal for wall-resolved SST at low Reynolds number.
     dn1 = 0.7/(re*sqrt(cf/2))
-    mesh_mode = get(cfg, "mesh_mode", "legacy_sharp_cmesh")
-    if mesh_mode in ("cavitation_aplus_farfield", "aplus_nested_refined", "aplus_uniform_quality", "aplus_uniform_fixed")
-        built = _build_transonic_mesh(af;
-            n_foil=cfg["n_foil"], n_wake=cfg["n_wake"],
-            n_normal=cfg["n_normal"], dn1=dn1,
-            alpha_deg=cfg["alpha_deg"],
-            trip_upper=cfg["trip_upper"], trip_lower=cfg["trip_lower"],
-            n_base=get(cfg, "n_base", 4),
-            cfd_te_thickness=get(cfg,"cfd_te_thickness",0.0),
-            mesh_refinement=_strict_aplus_profile(mesh_mode) ? Symbol(mesh_mode) :
-                mesh_mode == "aplus_nested_refined" ? :aplus_nested_refined : :none,
-            normal_collar=!_strict_aplus_profile(mesh_mode),shock_layer=!_strict_aplus_profile(mesh_mode),
-            wake_first_spacing_growth=get(cfg,"wake_first_spacing_growth",1.0),
-            wake_first_spacing_max=get(cfg,"wake_first_spacing_max",0.01),
-            wake_first_spacing_delay_cells=get(cfg,"wake_first_spacing_delay_cells",0),
-            farfield_angle_deg=get(cfg, "cfd_farfield_angle_deg", mesh_mode=="aplus_uniform_fixed" ? 0. : cfg["alpha_deg"]),
-            stall_layer=Bool(get(cfg, "stall_layer", false)),
-            le_ds_scale=Float64(get(cfg, "le_ds_scale", 1.0)))
-        mesh = built.mesh; met = built.metrics
-        geometry_metadata = built.metadata
-        foil_indices = built.foil_indices
-        surface_indices = built.surface_indices
-        estimated_yplus = re*Float64(geometry_metadata["wall_dn1"])*sqrt(cf/2)
-    elseif mesh_mode == "legacy_sharp_cmesh"
-        sharp = _sharp_nose_mesh(af; n_foil=cfg["n_foil"], n_wake=cfg["n_wake"],
-            n_normal=cfg["n_normal"], dn1=dn1,
-            le_ds_scale=Float64(get(cfg,"le_ds_scale",1.0)))
-        mesh = sharp.mesh
-        quality = CMeshGen.mesh_quality(mesh; reynolds=re)
-        quality.nfold == 0 && quality.area_min > 0 ||
-            error("CMESH2D mesh gate failed: folds=$(quality.nfold), min area=$(quality.area_min)")
-        met = CMeshMetrics.build_metrics(mesh;
-            trip_upper=cfg["trip_upper"], trip_lower=cfg["trip_lower"])
-        foil_indices = met.NIW+1:met.NIW+met.NIF
-        surface_indices = foil_indices
-        source_af = CMeshGen.read_airfoil_dat(get(cfg,"source_geometry",cfg["geometry"]))
-        source_gap = hypot(source_af.x[1]-source_af.x[end],source_af.y[1]-source_af.y[end])
-        cfd_gap = hypot(af.x[1]-af.x[end],af.y[1]-af.y[end])
-        geometry_metadata = Dict{String,Any}(
-            "source_te_gap"=>source_gap,"cfd_te_gap"=>cfd_gap,
-            "transform"=>source_gap>1e-8 ? "aft taper to sharp trailing edge" : "none",
-            "mesh_family"=>"CMeshGen legacy sharp-edge C-grid",
-            "mesh_topology"=>"sharp", "n_base"=>0,
-            "surface_distribution"=>"curvature",
-            "leading_edge_target_spacing"=>sharp.le_ds,
-            "leading_edge_max_curvature"=>sharp.le_kappa,
-            "wall_dn1"=>dn1, "outer_boundary_condition"=>"characteristic farfield",
-            "quality_report"=>_transonic_quality_report(mesh))
-        estimated_yplus = re*dn1*sqrt(cf/2)
-    else
-        error("unknown transonic mesh mode $mesh_mode")
-    end
+    # The single C block of a closed (sharp) trailing edge. A finite trailing edge runs in the C+H worker.
+    mesh_mode = String(cfg["mesh_mode"])
+    mesh_mode == SINGLE_C_MESH || error("unknown transonic mesh mode $mesh_mode")
+    built = _build_transonic_mesh(af;
+        n_foil=cfg["n_foil"], n_wake=cfg["n_wake"],
+        n_normal=cfg["n_normal"], dn1=dn1,
+        alpha_deg=cfg["alpha_deg"],
+        trip_upper=cfg["trip_upper"], trip_lower=cfg["trip_lower"],
+        wake_first_spacing_growth=get(cfg,"wake_first_spacing_growth",1.0),
+        wake_first_spacing_max=get(cfg,"wake_first_spacing_max",0.01),
+        wake_first_spacing_delay_cells=get(cfg,"wake_first_spacing_delay_cells",0),
+        farfield_angle_deg=get(cfg, "cfd_farfield_angle_deg", cfg["alpha_deg"]),
+        stall_layer=Bool(get(cfg, "stall_layer", false)),
+        le_ds_scale=Float64(get(cfg, "le_ds_scale", 1.0)))
+    mesh = built.mesh; met = built.metrics
+    geometry_metadata = built.metadata
+    foil_indices = built.foil_indices
+    surface_indices = built.surface_indices
+    estimated_yplus = re*Float64(geometry_metadata["wall_dn1"])*sqrt(cf/2)
     # Fail impossible export dimensions before allocating GPU state or marching.
     FullFieldArtifact.field_layout(mesh.NI,mesh.NJ)
     geometry_metadata["geometry_support"] = haskey(cfg,"naca4_code") ?
@@ -1174,7 +1109,7 @@ function _transonic_worker(cfg_path::AbstractString)
                           get(cfg,"resolution","custom"))
     println("MESH_READY,mesh_preview.msgpack")
     flush(stdout)
-    equation_probe = implicit || Bool(get(cfg,"equation_probe",false))
+    equation_probe = Bool(get(cfg,"equation_probe",false))
     equation_probe && !ka &&
         throw(ArgumentError("equation residual probe requires the KA worker"))
     rk_weight_closure = Bool(get(cfg,"rk_weight_closure",false))
@@ -1221,19 +1156,18 @@ function _transonic_worker(cfg_path::AbstractString)
         s.characteristic_i_outlet = Int32(characteristic_i_outlet)
         CMeshSolverKA.GLOBAL_DT[] = physical ? 1 : 0
     end
-    if physical || implicit
+    if physical
         s.sfd=Int32(0);s.irsj=Int32(0);s.irs_ac=Int32(0);s.acou=Int32(0)
         s.sponge_sigma=0.0f0
-        println(physical ? "CMESH2D physical clock: one global explicit timestep; no SFD, residual smoothing, acoustic filter or sponge" :
-            "CMESH2D experimental $method: raw undamped equations, explicit startup followed by the selected implicit method")
+        println("CMESH2D physical clock: one global explicit timestep; no SFD, residual smoothing, acoustic filter or sponge")
     end
     s.recon = Int32(1)    # WENO5-Z with sensor blend; production Case 9 path.
     s.fullvisc = Int32(1) # Full stress tensor; required by the validated clean-foil polar.
-    if !implicit && Bool(get(cfg,"irsj",false))
+    if Bool(get(cfg,"irsj",false))
         # The solver's existing IRS-J: the pseudo-time step follows the streamwise restriction and
         # per-column tridiagonal solves absorb the wall-normal stiffness. It smooths the residual,
         # so a converged steady state is unchanged; physical time keeps its global explicit step.
-        physical && throw(ArgumentError("cfd_irsj applies to steady pseudo-time only"))
+        physical && throw(ArgumentError("Implicit residual smoothing applies to steady pseudo-time only"))
         s.irsj = Int32(1)
         println("CMESH2D j-line implicit residual smoothing (IRS-J): on (steady pseudo-time)")
     end
@@ -1272,16 +1206,6 @@ function _transonic_worker(cfg_path::AbstractString)
         String(mesh_mode), [(name="C", solver=s)])
     if !isempty(warm_source)
         ka ? CMeshSolverKA.applyBC_ka!(s, Int32(2)) : CMeshSolver.applyBC!(s; wall=:noslip)
-    end
-    implicit_runtime=implicit ? _implicit_runtime(CMeshSolverKA,s,cfg) : nothing
-    implicit_warmup=implicit && isempty(warm_source) ? Int(get(cfg,"implicit_warmup_steps",1000)) : 0
-    implicit_stopped=false;implicit_accepted=0;implicit_failure=""
-    implicit_started=time()
-    implicit_io=implicit ? open(joinpath(cfg["outdir"],"implicit_history.csv"),"w") : nothing
-    if implicit
-        println(get(cfg,"implicit_maturity","Research method: full aerodynamic convergence and acceleration remain unverified."))
-        println("Implicit warm-up: $implicit_warmup explicit iterations; output fields remain available if the nonlinear solve stops.")
-        println(implicit_io,"iteration,wall_seconds,accepted,step_kind,flow_merit_before,flow_merit_after,pseudo_cfl,linear_iterations,linear_relative,attempts,recovery_steps,recovery_total");flush(implicit_io)
     end
     loads_now() = ka ? CMeshSolverKA.loads_ka(s) : CMeshSolver.loads(s)
     function moment_now()
@@ -1340,18 +1264,6 @@ function _transonic_worker(cfg_path::AbstractString)
     equation_file = joinpath(cfg["outdir"],"equation_residual_history.csv")
     equation_io = equation_probe ? open(equation_file,"w") : nothing
     equation_vol = equation_probe ? Array(s.vol) : nothing
-    implicit_rows=Dict{String,Any}[]
-    implicit_metrics_io=implicit ? open(joinpath(cfg["outdir"],"steady_assessment_history.csv"),"w") : nothing
-    implicit_metric_names=_implicit_metric_names()
-    implicit && (println(implicit_metrics_io,join(implicit_metric_names,','));flush(implicit_metrics_io))
-    function implicit_assessment()
-        RANSConvergence.assess(implicit_rows;
-            residual_limits=Dict(k=>.02 for k in ("mass_l2","momentum_x_l2","momentum_y_l2","energy_l2")),
-            update_limits=Dict("turb_k_update_defect"=>1e-4,"turb_omega_update_defect"=>1e-4),
-            config=RANSConvergence.Config(window_samples=20,mass_limit=mass_net_limit),
-            phase_start=implicit_warmup+1,equation_coverage_complete=false,
-            scope="Four convection-scaled flow RMS errors, safe-clock turbulence update defects, raw SST transport residuals, prescribed-wall omega constraint, mass and force history are recorded. Qualified raw-SST stopping limits are not yet configured; the existing experimental limits remain provisional.")
-    end
     if equation_io !== nothing
         println(equation_io,EquationResidualProbe.history_header())
         flush(equation_io)
@@ -1372,20 +1284,13 @@ function _transonic_worker(cfg_path::AbstractString)
     mass_net_limit = Float64(get(cfg,"mass_net_limit",0.001))
     isfinite(mass_net_limit) && mass_net_limit > 0 ||
         throw(ArgumentError("worker mass_net_limit must be finite and positive"))
-    diagnostic_stride=implicit ? min(20,max(1,Int(get(cfg,"display_every",20)))) : max(1,Int(get(cfg,"display_every",400)))
-    implicit_window=20diagnostic_stride
-    monitor = CFDConvergence.Monitor(implicit ? CFDConvergence.Config(
-        sfd_start=implicit_warmup,max_steps=cfg["steps"],window_iterations=implicit_window,
-        min_post_sfd=2implicit_window,min_samples_per_window=12,
-        confirmation_iterations=10diagnostic_stride,confirmation_checks=8,
-        residual_scaled_limit=cfg["mass_ceiling"],mass_net_limit=mass_net_limit,
-        stop_on_stall=false) : CFDConvergence.Config(
+    monitor = CFDConvergence.Monitor(CFDConvergence.Config(
         sfd_start=physical ? 0 : cfg["sfd_start"], max_steps=cfg["steps"],
         residual_scaled_limit=cfg["mass_ceiling"],
         mass_net_limit=mass_net_limit,stop_on_stall=!physical && cfg["auto_stop"]))
     last_status_time = time()
     release_start=0
-    release_enabled=!physical && !implicit && ka && get(cfg,"sfd_release",true)
+    release_enabled=!physical && ka && get(cfg,"sfd_release",true)
     profile_stages=gpu && Bool(get(cfg,"profile_stages",false))
     profile_flow_seconds=0.0;profile_sst_seconds=0.0;profile_samples=0
     try
@@ -1397,7 +1302,7 @@ function _transonic_worker(cfg_path::AbstractString)
                         (n == cfg["steps"] ||
                          (n >= mass_probe_start &&
                           (n-mass_probe_start) % mass_probe_stride == 0))
-            if !physical && !implicit && n == cfg["sfd_start"]
+            if !physical && n == cfg["sfd_start"]
                 ka ? CMeshSolverKA.sfd_seed_ka!(s) : CMeshSolver.sfd_seed!(s)
                 s.sfd = Int32(1)
                 s.sfd_chi = 0.005f0
@@ -1443,16 +1348,6 @@ function _transonic_worker(cfg_path::AbstractString)
                 if n==1
                     minimum(s.dtf)==maximum(s.dtf)==s.last_global_dt ||
                         error("physical mode did not apply one uniform global timestep")
-                end
-            elseif implicit && n>implicit_warmup
-                update=_implicit_step!(CMeshSolverKA,s,implicit_runtime,cfg)
-                _implicit_log!(implicit_io,n,update,time()-implicit_started)
-                if update.accepted
-                    implicit_accepted+=1
-                else
-                    implicit_stopped=true
-                    implicit_failure="The experimental $method step was rejected after retries. The last accepted state and all diagnostic results are saved; choose a different method or continue from a saved study."
-                    println(implicit_failure);flush(stdout)
                 end
             elseif ka
                 if probe_now
@@ -1511,7 +1406,7 @@ function _transonic_worker(cfg_path::AbstractString)
             end
             history_due=physical ? (n==1 || n%physical_history_stride==0 ||
                 elapsed_ctu>=next_force_sample_ctu || physical_duration_reached || n==cfg["steps"]) :
-                (n==1 || n%(implicit ? diagnostic_stride : display_every>0 ? display_every : 400)==0 || n==cfg["steps"] || probe_now || implicit_stopped)
+                (n==1 || n%(display_every>0 ? display_every : 400)==0 || n==cfg["steps"] || probe_now)
             if history_due
                 # step_ka! leaves raw fluxes/divergence from its last RK stage,
                 # before the final primitive update and SFD. Sample the actual
@@ -1569,13 +1464,6 @@ function _transonic_worker(cfg_path::AbstractString)
                     @printf(history_io, "%.12g\n", mass_net)
                 end
                 flush(history_io)
-                if implicit
-                    metrics=CMeshSolverKA.steady_airfoil_diagnostics_ka(s;
-                        corrected_wall_metric=sst_wall_metric_correction,nonorth_diffusion=sst_nonorth_correction)
-                    values=_implicit_metric_values(n,metrics,mass_net,cl,cd,cm_sample)
-                    push!(implicit_rows,Dict{String,Any}(zip(implicit_metric_names,values)))
-                    println(implicit_metrics_io,join(values,','));flush(implicit_metrics_io)
-                end
                 if physical
                     cm_sample=moment_now()
                     isfinite(cm_sample) || error("physical moment history became nonfinite")
@@ -1611,7 +1499,6 @@ function _transonic_worker(cfg_path::AbstractString)
                 end
                 prior_guard_status = monitor.last_status
                 decision = CFDConvergence.observe!(monitor, history[end])
-                implicit_stopped && break
                 if release_enabled && release_start==0 && n>=cfg["sfd_start"]+100000 &&
                    get(decision.metrics,"forces_stationary",0.0)==1.0
                     release_start=n
@@ -1626,12 +1513,8 @@ function _transonic_worker(cfg_path::AbstractString)
                     flush(stdout)
                 end
                 decision.abort && error("CMESH2D stopped on sustained divergence at n=$n: $(decision.reason)")
-                checked_implicit=implicit && n>implicit_warmup ? implicit_assessment() : nothing
-                implicit_checks_pass=checked_implicit!==nothing && checked_implicit["criteria_passed"]
-                if !physical && cfg["auto_stop"] && (implicit ? implicit_checks_pass : decision.stop) && (!release_enabled || (release_start>0 && s.sfd==0))
-                    stop_status=implicit ? "monitored_checks_passed" : decision.status
-                    stop_reason=implicit ? checked_implicit["reason"] : decision.reason
-                    @printf("CMESH2D smart stop [%s] at n=%d/%d: %s\n", stop_status, n, cfg["steps"], stop_reason)
+                if !physical && cfg["auto_stop"] && decision.stop && (!release_enabled || (release_start>0 && s.sfd==0))
+                    @printf("CMESH2D smart stop [%s] at n=%d/%d: %s\n", decision.status, n, cfg["steps"], decision.reason)
                     flush(stdout)
                     break
                 end
@@ -1643,15 +1526,13 @@ function _transonic_worker(cfg_path::AbstractString)
         equation_io === nothing || close(equation_io)
         mass_probe_io === nothing || close(mass_probe_io)
         physical_io === nothing || close(physical_io)
-        implicit_io === nothing || close(implicit_io)
-        implicit_metrics_io === nothing || close(implicit_metrics_io)
     end
     cl, cd = loads_now()
     isfinite(cl) && isfinite(cd) || error("CMESH2D returned nonfinite loads")
     last_record = last(history)
     actual_steps = last_record.iteration
     guard_report = CFDConvergence.convergence_report(monitor)
-    final_assessment=implicit ? implicit_assessment() : RANSConvergence.assess(history;
+    final_assessment=RANSConvergence.assess(history;
         residual_limits=Dict("residual_scaled"=>cfg["mass_ceiling"],"residual_l2"=>.02),
         config=RANSConvergence.Config(mass_limit=mass_net_limit),
         phase_start=release_start>0 ? release_start+20000 : 0,equation_coverage_complete=false,
@@ -1669,17 +1550,6 @@ function _transonic_worker(cfg_path::AbstractString)
         (physical_duration_reached ? "physical_duration_reached" : "iteration_limit_before_physical_duration") :
         actual_steps < cfg["steps"] ?
             (guard_report["status"] == "stalled_stop" ? "stopped_without_convergence" : "convergence_guard_passed") : "iteration_limit"
-    if implicit_stopped
-        guard_report["early_stop_eligible"]=false
-        guard_report["status"]="stalled_stop"
-        guard_report["termination"]="implicit_step_rejected"
-        guard_report["reason"]=implicit_failure
-    elseif implicit
-        guard_report["early_stop_eligible"]=false
-        guard_report["status"]=final_assessment["criteria_passed"] ? "monitored_checks_passed" : final_assessment["status"]
-        guard_report["reason"]=final_assessment["reason"]
-        guard_report["termination"]=final_assessment["criteria_passed"] ? "monitored_checks_passed" : "iteration_limit"
-    end
     if physical
         guard_report["steady_guard_status"]=guard_report["status"]
         guard_report["status"]=physical_duration_reached ? "physical_time_complete" : "physical_time_incomplete"
@@ -1897,16 +1767,10 @@ function _transonic_worker(cfg_path::AbstractString)
                              cl_span <= cl_span_limit && cd_span <= cd_span_limit &&
                              prior_cl_span <= cl_span_limit && prior_cd_span <= cd_span_limit &&
                              cl_mean_shift <= cl_mean_limit && cd_mean_shift <= cd_mean_limit
-    implicit && (numerically_stationary=final_assessment["gates"]["loads_stable"])
     physical_sanity = cd >= 0.0 && cd <= 1.0 && abs(cl) <= 3.0
-    if implicit
-        @printf("CMESH2D implicit final: Cl=%+.5f Cd=%+.6f mass_Rscaled=%.3e stationary=%s basic_force_sanity=%s; %s\n",
-            cl,cd,last_record.residual_scaled,string(numerically_stationary),string(physical_sanity),final_assessment["reason"])
-    else
-        @printf("CMESH2D final: Cl=%+.5f Cd=%+.6f mass_Rscaled=%.3e post-SFD ratio=%.3e Cl_span=%.3e Cd_span=%.3e stationary=%s basic_force_sanity=%s\n",
-            cl, cd, last_record.residual_scaled, residual_ratio,
-            cl_span, cd_span, string(numerically_stationary), string(physical_sanity))
-    end
+    @printf("CMESH2D final: Cl=%+.5f Cd=%+.6f mass_Rscaled=%.3e post-SFD ratio=%.3e Cl_span=%.3e Cd_span=%.3e stationary=%s basic_force_sanity=%s\n",
+        cl, cd, last_record.residual_scaled, residual_ratio,
+        cl_span, cd_span, string(numerically_stationary), string(physical_sanity))
     flush(stdout)
     time_stats=physical ? CFDTimeStatistics.time_statistics(physical_history;
         burn_in_ctu=burnin_ctu,block_duration_ctu=block_ctu,
@@ -1919,15 +1783,7 @@ function _transonic_worker(cfg_path::AbstractString)
             elapsed_ctu,duration_ctu,actual_steps,time_stats["status"]);flush(stdout)
     end
     meta = Dict{String,Any}("cl"=>cl,"cd"=>cd,"cm"=>cm,"steps"=>actual_steps,
-        "rans_method"=>method,"implicit_method"=>implicit,"implicit_accepted_steps"=>implicit_accepted,
-        "implicit_warmup_steps"=>implicit_warmup,"implicit_stop_reason"=>implicit_failure,
-        "implicit_history_csv"=>implicit ? "implicit_history.csv" : "",
-        "implicit_numerical_controls"=>implicit ? Dict(k=>v for (k,v) in cfg if startswith(k,"implicit_")) : Dict{String,Any}(),
-        "steady_assessment"=>final_assessment,"implicit_maturity"=>get(cfg,"implicit_maturity",""),
-        "implicit_raw_sst_residuals"=>Dict("available"=>implicit && s.sst && s.keps==0.0f0 && _implicit_raw_sst_available(implicit_rows),
-            "csv_columns"=>collect(_IMPLICIT_RAW_SST_METRICS),"qualified_stopping_limits"=>false,
-            "omega_prescribed_cells"=>s.keps==0.0f0 ? min(2,s.NJ)*s.NIF : 0,
-            "scope"=>"Unscaled primitive transport residuals before clipping; omega transport excludes the exact two prescribed wall rows, which have a separate relative constraint defect. The unmasked omega PDE is diagnostic only."),
+        "rans_method"=>method,"steady_assessment"=>final_assessment,
         "rans_acceleration"=>Bool(get(cfg,"rans_acceleration",false)),
         "rans_acceleration_method"=>String(get(cfg,"rans_acceleration_method","standard")),
         "irsj"=>s.irsj==Int32(1),
@@ -2034,9 +1890,15 @@ function _transonic_worker(cfg_path::AbstractString)
 end
 
 include(joinpath(@__DIR__,"species_backend.jl"))
+include(joinpath(@__DIR__,"species_ch_backend.jl"))              # Species on a finite trailing edge: the C+H pair
+include(joinpath(@__DIR__,"..","workers","species_ch_worker.jl"))
 include(joinpath(@__DIR__,"underwater_backend.jl"))
 include(joinpath(@__DIR__,"ch_transonic_backend.jl"))
 include(joinpath(@__DIR__,"..","workers","ch_transonic_worker.jl"))
+# Implicit Newton (CPU) on the marched mesh (opt-in, 14 Nov 2026): request rules, mesh, launch and collection; then
+# its worker. Both sit inside the worker source-snapshot window, which ends at the bind below.
+include(joinpath(@__DIR__,"newton_backend.jl"))
+include(joinpath(@__DIR__,"..","workers","newton_worker.jl"))
 include(joinpath(@__DIR__,"..","gpu_lock.jl"))           # the shared GPU lock (the low-speed GPU option; 24 Oct 2026)
 include(joinpath(@__DIR__,"..","lowspeed","lowspeed_backend.jl"))
 include(joinpath(@__DIR__,"..","lowspeed","lowspeed_ch_backend.jl"))
@@ -2055,4 +1917,5 @@ if abspath(PROGRAM_FILE) == abspath(@__FILE__) && !isempty(ARGS)
     ARGS[1] == "--transonic-worker" && CFDBackend._transonic_worker(ARGS[2])
     ARGS[1] == "--species-worker" && CFDBackend._species_worker(ARGS[2])
     ARGS[1] == "--ch-transonic-worker" && CFDBackend._ch_transonic_worker(ARGS[2])
+    ARGS[1] == "--newton-worker" && CFDBackend._newton_worker(ARGS[2])
 end

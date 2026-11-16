@@ -15,10 +15,28 @@ function cavitation_configuration(flow)
     material,domain
 end
 
+const SPECIES_CH_MESH = "conformal_C_H_v1"
+const SPECIES_ONE_BLOCK_EDGE = "The single-block Species mesh needs a closed (sharp) trailing edge; a finite trailing edge runs on the C+H pair."
+const SPECIES_CH_TUNNEL_AIR = "Species air in the tunnel runs on one C block, which needs a closed (sharp) trailing edge. This section has a finite trailing edge: select the free-fluid domain (C+H mesh), or run water in the tunnel."
+const SPECIES_CH_STEADY_AIR = "Species air on a finite trailing edge (C+H mesh) runs in physical time: the steady pseudo-time iteration has one C block. Select Physical time, or use the Compressible solver for a steady result."
+
+"""What a Species request on a finite (blunt) trailing edge cannot run, as the message to show; `nothing` when it runs.
+
+A finite edge is meshed C+H. Water in the tunnel is the production driver's own two-block run. Air and the free-fluid
+domain run the shared Species worker on the C+H pair in a free stream (species_ch_worker.jl), in physical time: the
+pair has no steady pseudo-time step, and the shared worker has no two-block tunnel. `run=false` checks the mesh
+alone (Create mesh does not name the air time integration)."""
+function species_finite_edge_refusal(flow;run::Bool=true)
+    material=lowercase(String(_get(flow,"cav_fluid","water")));domain=lowercase(String(_get(flow,"cav_domain","tunnel")))
+    material=="air" && domain=="tunnel" && return SPECIES_CH_TUNNEL_AIR
+    run && material=="air" && String(_get(flow,"cav_air_mode","steady"))=="steady" && return SPECIES_CH_STEADY_AIR
+    nothing
+end
+
 function cavitation_capabilities()
     Dict("fluids"=>["water","air"],"domains"=>[
         Dict("id"=>"tunnel","available"=>true,"description"=>"Slip tunnel walls, characteristic inlet and fixed static-pressure outlet"),
-        Dict("id"=>"free_fluid","available"=>true,"description"=>"Shared external mesh; characteristic outer contour with reflecting fixed-static-pressure downstream ends"),
+        Dict("id"=>"free_fluid","available"=>true,"description"=>"Shared external mesh (one C block for a closed trailing edge, C+H for a finite one); characteristic outer contour with reflecting fixed-static-pressure downstream ends"),
         Dict("id"=>"underwater","available"=>true,"experimental"=>true,
             "description"=>"Physical-time nonlinear water/vapor/air interface with gravity and an impermeable airfoil; inviscid startup only, no phase change or stall validation")],
         "air_model"=>"Isothermal ideal gas; conservative Species AUSM+-up momentum, mass and SST; no total-energy equation",
@@ -74,37 +92,35 @@ function _species_channel_metadata(channel)
         "streamwise"=>collect(channel.streamwise),"scope"=>"actual ChannelSpec used by the mesh generator")
 end
 
-"""The production driver's mesh call. A finite base with Auto topology uses the
-driver's strip construction: the conforming C block around foil plus strip and
-the H block behind the base (`TOPO_MESH_TE_TOPOLOGY=strip`). The keywords are the
+"""The production driver's mesh call. A finite base uses the driver's strip
+construction: the conforming C block around foil plus strip and the H block
+behind the base (`TOPO_MESH_TE_TOPOLOGY=strip`); a closed edge is one C block. The keywords are the
 ones `tools/cmesh_cav_movie.jl` passes for the same environment, so the preview
 and the Run build the same nodes."""
 function _generate_production_tunnel_mesh(af,p,channel)
     extra=(;)
     haskey(p,"wake_near_ds") && (extra=(;wake_near_ds=p["wake_near_ds"],wake_near_len=p["wake_near_len"],
         wake_near_growth=p["wake_near_growth"]))
-    get(p,"te_topology","aplus")=="strip" && (extra=merge(extra,(te_topology=:strip,)))
+    p["te_topology"]=="strip" && (extra=merge(extra,(te_topology=:strip,)))
     quality=get(p,"mesh_quality","none")=="v1" ?
-        (quality=CMeshGen.mesh_quality_v1(get(p,"te_topology","aplus")=="strip" ? :strip : :sharp),) : (;)
+        (quality=CMeshGen.mesh_quality_v1(p["te_topology"]=="strip" ? :strip : :sharp),) : (;)
     CMeshGen.generate_cmesh(af;n_foil=p["n_foil"],n_wake=p["n_wake"],n_normal=p["n_normal"],
         dn1=p["dn1"],growth_max=p["growth"],R_ff=25.,L_wake=25.,smooth_iters=p["smooth_iters"],bl_freeze=6,
         le_ds=p["le_ds"],channel,n_base=p["n_base"],te_ds=p["te_ds"],
         surface_evaluator=Symbol(p["surface_evaluator"]),surface_distribution=Symbol(p["surface_distribution"]),
+        surface_upper_fraction=Float64(get(p,"upper_fraction",0.)),
         extra...,quality...)
 end
 
 "One geometry/configuration plan for the production tunnel preview and driver."
 function _production_tunnel_settings(path,flow,alpha)
-    topology=String(_get(flow,"cfd_te_topology","aplus"))
-    topology in ("auto","aplus") || throw(ArgumentError(
-        "The production water tunnel accepts cfd_te_topology=auto (conforming C+H for a finite trailing edge, C for a sharp one) or aplus (Legacy A-plus)."))
     source_af=CMeshGen.read_airfoil_dat(path)
     te=_number(flow,"cfd_te_thickness",0.;lo=0,hi=.05)
     af=te>0 ? CMeshGen.condition_airfoil(source_af;trailing_edge_thickness=te).airfoil : source_af
     gap=hypot(af.x[1]-af.x[end],af.y[1]-af.y[end]);finite=gap>1e-8
-    # Auto with a finite base selects the production driver's strip topology:
-    # the C block wraps foil plus strip, and the H block extrudes the base cells.
-    strip=topology=="auto" && finite
+    # A finite base is the production driver's strip topology: the C block wraps
+    # foil plus strip, and the H block extrudes the base cells.
+    strip=finite
     model=_species_model_settings(flow;alpha,default_nut="reboud_v3",default_eos="single",
         default_init=finite ? "panel" : "uniform",default_sst_limit=finite ? .5 : -1.,
         default_reconstruction=finite,default_omega_init=finite ? "wall" : "freestream")
@@ -117,18 +133,16 @@ function _production_tunnel_settings(path,flow,alpha)
     resolution=String(_get(flow,"cfd_resolution","standard"))
     sizes=get(Dict("standard"=>(256,64,96),"fine"=>(384,96,144),"very_fine"=>(512,128,176)),resolution,nothing)
     sizes===nothing && throw(ArgumentError("invalid cfd_resolution"))
-    # Strip default: 8 faces per half-base, the validated N60R/V1 level (BB8).
-    nb=finite ? (strip ? _integer(flow,"cfd_n_base",8;lo=2,hi=16) : _integer(flow,"cfd_n_base",4;lo=1,hi=8)) : 0
+    # The strip has 8 faces per half-base, the validated N60R/V1 level (BB8).
+    nb=strip ? 8 : 0
     requested_te_ds=_number(flow,"cav_mesh_te_ds",0.;lo=0,hi=.099)
     te_ds=finite && requested_te_ds==0 ? 1.5gap/(2nb) : requested_te_ds
     nfoil=_integer(flow,"cfd_n_foil",sizes[1];lo=32,hi=2048)
     # The strip's near wake is held at h/n_base over 10 h (BB arms, 2 Oct 2026),
-    # so its wake needs more columns than the A-plus default: 136 at n_base 8.
+    # so its wake needs more columns than the sharp default: 136 at n_base 8.
     strip_wake=strip ? max(sizes[2],ceil(Int,136*nb/8),ceil(Int,1.7*10nb)) : sizes[2]
     quality=lowercase(String(_get(flow,"cav_mesh_quality","none")))
     quality in ("none","v1") || throw(ArgumentError("cav_mesh_quality must be none or v1 (CMeshQualityV1)"))
-    quality=="v1" && finite && !strip && throw(ArgumentError(
-        "cav_mesh_quality=v1 does not support the Legacy A-plus construction; select Auto (C+H)"))
     dn1=_number(flow,"cav_mesh_dn1",2e-4;lo=1e-8,hi=.01)
     evaluator=String(_get(flow,"cav_mesh_surface_evaluator","natural_c2"))
     distribution=String(_get(flow,"cav_mesh_surface_distribution","curvature"))
@@ -149,36 +163,19 @@ function _production_tunnel_settings(path,flow,alpha)
         "n_base"=>nb,"te_ds"=>te_ds,"surface_evaluator"=>evaluator,"surface_distribution"=>distribution,
         "leading_edge_max_curvature"=>le_curvature,
         "le_ds"=>_number(flow,"cav_mesh_le_ds",default_le_ds;lo=0,hi=.099),
-        "te_topology"=>strip ? "strip" : (finite ? "aplus" : "sharp"),"mesh_quality"=>quality)
-    # The near wake is the strip's default; a sharp or A-plus tunnel takes it
-    # only on request (the BS arm: the strip family's sharp control).
+        "te_topology"=>strip ? "strip" : "sharp","mesh_quality"=>quality)
+    # (15 Nov 2026) cav_mesh_upper_fraction > 0: that share of the surface cells on the suction side (the cavity's);
+    # absent or 0 keeps the split by arc length, and the key is then not stored, so every existing plan is unchanged.
+    upper_fraction=_number(flow,"cav_mesh_upper_fraction",0.;lo=0,hi=.85)
+    upper_fraction>0 && (mesh["upper_fraction"]=upper_fraction)
+    # The near wake is the strip's default; a sharp tunnel takes it only on
+    # request (the BS arm: the strip family's sharp control).
     if strip || _get(flow,"cav_mesh_wake_near_ds",nothing)!==nothing
         mesh["wake_near_ds"]=_number(flow,"cav_mesh_wake_near_ds",gap/max(nb,1);lo=1e-6,hi=.1)
         mesh["wake_near_len"]=_number(flow,"cav_mesh_wake_near_len",10gap;lo=1e-4,hi=5.)
         mesh["wake_near_growth"]=_number(flow,"cav_mesh_wake_near_growth",1.05;lo=1,hi=1.5)
     end
-    prepared_mesh=nothing
-    # Curvature redistribution can move a finite-base mesh's outer-column
-    # transition. Admit that actual geometry with the existing unrelaxed
-    # corner-sine gate before fixing the production input. Retain 80 sweeps
-    # whenever it passes; only a named corner-sine refusal triggers more
-    # smoothing. Explicit user requests are never silently changed.
-    # (The strip's C block is the sharp construction; the corner-sine retry is A-plus's.)
-    if finite && !strip && distribution=="curvature" && _get(flow,"cav_mesh_smooth",nothing)===nothing
-        attempts=Int[]
-        for sweeps in (80,400,800)
-            mesh["smooth_iters"]=sweeps;push!(attempts,sweeps)
-            try
-                prepared_mesh=_generate_production_tunnel_mesh(af,mesh,channel)
-                break
-            catch err
-                err isa ArgumentError && occursin("minimum corner sine",sprint(showerror,err)) && sweeps<800 || rethrow()
-            end
-        end
-        mesh["automatic_smoothing_attempts"]=attempts
-        mesh["automatic_smoothing_scope"]="same geometry and wall stations; first passing unchanged finite-base corner-sine gate"
-    end
-    (;source_af,af,finite,gap,te,model,channel,mesh,resolution,conditioned,prepared_mesh)
+    (;source_af,af,finite,gap,te,model,channel,mesh,resolution,conditioned)
 end
 
 function _production_cavitation_environment(plan,path,flow,alpha,cav_out,frames,reynolds,mach)
@@ -203,10 +200,13 @@ function _production_cavitation_environment(plan,path,flow,alpha,cav_out,frames,
         "CAV_MOVIE_OUT_DIR"=>String(cav_out),"CAV_MOVIE_TG"=>"0",
         "CAV_MOVIE_MAKIE"=>_boolean(flow,"cav_render_makie",true) ? "1" : "0","CAV_MOVIE_MAKIE_EVERY"=>string(frames),
         "CAV_MOVIE_BACKEND"=>_boolean(flow,"cfd_gpu",true) ? "cuda" : "cpu")
+    haskey(mesh,"upper_fraction") && (env["TOPO_MESH_UPPER_FRACTION"]=string(mesh["upper_fraction"]))
     gpu=_boolean(flow,"cfd_gpu",true)
     # CFL 0.9 is the N60R/V1 cavitating setting (its time-step error is unmeasured);
     # the ceiling knob admits it explicitly. The app default stays 0.3.
-    cfl=_number(flow,"cfd_cfl",.3;lo=.001,hi=.9)
+    # (15 Nov 2026) Values up to 4 are accepted: 0.9 with the 0.9 clock margin is an acoustic Courant number of about
+    # 0.19 on the first wall cells; 1.8 and 2.7 reproduced a 0.9 segment of a developed cavity to 2e-6 with no rejection.
+    cfl=_number(flow,"cfd_cfl",.3;lo=.001,hi=4.)
     env["TOPO_CFL"]=string(cfl)
     env["TOPO_SPECIES_CFL_MAX"]=string(max(.5,cfl))
     # The production execution recipe of the V1 launcher (deferred admission,
@@ -244,6 +244,20 @@ function _production_cavitation_environment(plan,path,flow,alpha,cav_out,frames,
     mesh["mesh_quality"]=="v1" && (env["TOPO_MESH_QUALITY"]="v1")
     window=_get(flow,"cav_frame_window",nothing)
     window===nothing || (env["CAV_MOVIE_WIN"]=join(Float64.(window),','))
+    # (15 Nov 2026) Development options of the cavitation study, passed only when the flow names them, so that every
+    # existing plan's environment is unchanged: the factors of the phase-source and SST clocks (0.25 in the driver) and the
+    # form of the SST production (strain in the driver; compressible adds the dilatation terms).
+    if _get(flow,"cav_source_clock_factor",nothing)!==nothing
+        env["TOPO_SPECIES_SOURCE_CLOCK_FACTOR"]=string(_number(flow,"cav_source_clock_factor",.25;lo=.25,hi=1.))
+    end
+    if _get(flow,"cav_sst_clock_factor",nothing)!==nothing
+        env["TOPO_SPECIES_SST_CLOCK_FACTOR"]=string(_number(flow,"cav_sst_clock_factor",.25;lo=.25,hi=1.))
+    end
+    if _get(flow,"cav_sst_production",nothing)!==nothing
+        production=lowercase(String(_get(flow,"cav_sst_production","strain")))
+        production in ("strain","compressible","kato_launder") || throw(ArgumentError("cav_sst_production must be strain, compressible or kato_launder"))
+        env["TOPO_SPECIES_SST_PRODUCTION"]=production
+    end
     env
 end
 
@@ -273,11 +287,10 @@ end
 
 function _preview_production_tunnel(path,flow,outdir)
     alpha=_number(flow,"alpha_deg",0.);plan=_production_tunnel_settings(path,flow,alpha);p=plan.mesh
-    mesh=plan.prepared_mesh===nothing ? _generate_production_tunnel_mesh(plan.af,p,plan.channel) : plan.prepared_mesh
+    mesh=_generate_production_tunnel_mesh(plan.af,p,plan.channel)
     strip=p["te_topology"]=="strip"
     metadata=Dict{String,Any}("mesh_family"=>"production Species water tunnel",
-        "mesh_topology"=>strip ? "conformal_C_H_v1" : (plan.finite ? "aplus" : "sharp"),
-        "topology_requested"=>String(_get(flow,"cfd_te_topology","aplus")),
+        "mesh_topology"=>strip ? "conformal_C_H_v1" : "sharp",
         "n_base"=>p["n_base"],"wall_dn1"=>p["dn1"],"source_te_gap"=>hypot(plan.source_af.x[1]-plan.source_af.x[end],plan.source_af.y[1]-plan.source_af.y[end]),
         "cfd_te_gap"=>plan.gap,"transform"=>plan.te>0 ? "explicit trailing-edge thickness" : "none",
         "quality_report"=>strip ? _tunnel_strip_quality_report(mesh) : _transonic_quality_report(mesh),"channel"=>_species_channel_metadata(mesh.channel),
@@ -369,14 +382,14 @@ function _species_mesh(cfg)
     settings=_species_model_settings(cfg;alpha=cfg["alpha_deg"])
     af=haskey(cfg,"naca4_code") ? CMeshGen.naca4_points(cfg["naca4_code"]) : CMeshGen.read_airfoil_dat(cfg["geometry"])
     re=cfg["reynolds"];cf=0.026re^(-1/7);dn1=0.7/(re*sqrt(cf/2))
+    # One C block: a closed (sharp) trailing edge only. A finite edge is the C+H pair's (_species_ch_mesh).
+    conditioned=CMeshGen.condition_airfoil(af;trailing_edge_thickness=0.0)
+    gap=hypot(conditioned.airfoil.x[1]-conditioned.airfoil.x[end],conditioned.airfoil.y[1]-conditioned.airfoil.y[end])
+    gap>1e-8 && throw(ArgumentError(SPECIES_ONE_BLOCK_EDGE))
     if cfg["cav_domain"]=="free_fluid"
-        cfg["mesh_mode"] in ("cavitation_aplus_farfield","aplus_nested_refined") ||
-            throw(ArgumentError("external Species requires the shared A-plus mesh"))
         built=_build_transonic_mesh(af;n_foil=cfg["n_foil"],n_wake=cfg["n_wake"],
             n_normal=cfg["n_normal"],dn1,alpha_deg=cfg["alpha_deg"],
             trip_upper=cfg["trip_upper"],trip_lower=cfg["trip_lower"],
-            n_base=cfg["n_base"],cfd_te_thickness=cfg["cfd_te_thickness"],
-            mesh_refinement=cfg["mesh_mode"]=="aplus_nested_refined" ? :aplus_nested_refined : :none,
             wake_first_spacing_growth=cfg["wake_first_spacing_growth"],
             wake_first_spacing_max=cfg["wake_first_spacing_max"],
             wake_first_spacing_delay_cells=cfg["wake_first_spacing_delay_cells"],
@@ -387,26 +400,21 @@ function _species_mesh(cfg)
         return (;af,mesh=built.mesh,met=_species_external_metrics(built.metrics),
             metadata,foil_indices=built.foil_indices,surface_indices=built.surface_indices)
     end
-    conditioned=CMeshGen.condition_airfoil(af;trailing_edge_thickness=cfg["cfd_te_thickness"])
     channel=CMeshGen.ChannelSpec(;height=settings["cav_channel_height"],xi_in=settings["cav_channel_xi_in"],xi_out=settings["cav_channel_xi_out"],
         xi_ref=settings["cav_channel_xi_ref"],ref=(0.5,0.0),angle_deg=settings["cav_channel_angle_deg"])
-    gap=hypot(conditioned.airfoil.x[1]-conditioned.airfoil.x[end],conditioned.airfoil.y[1]-conditioned.airfoil.y[end])
-    nb=gap>1e-8 ? cfg["n_base"] : 0
     mesh=CMeshGen.generate_cmesh(conditioned.airfoil;n_foil=cfg["n_foil"],n_wake=cfg["n_wake"],
         n_normal=cfg["n_normal"],dn1,growth_max=1.20,R_ff=25.0,L_wake=25.0,
-        smooth_iters=400,bl_freeze=6,channel,
-        (nb>0 ? (n_base=nb,te_ds=1.5gap/(2nb)) : (;))...)
+        smooth_iters=400,bl_freeze=6,channel)
     met=CMeshMetrics.build_metrics(mesh;trip_upper=cfg["trip_upper"],trip_lower=cfg["trip_lower"])
-    metadata=Dict{String,Any}("mesh_family"=>"CMesh tunnel","mesh_topology"=>nb>0 ? "aplus" : "sharp",
-        "n_base"=>nb,"wall_dn1"=>dn1,"source_te_gap"=>gap,"cfd_te_gap"=>gap,"transform"=>"none",
+    metadata=Dict{String,Any}("mesh_family"=>"CMesh tunnel","mesh_topology"=>"sharp",
+        "n_base"=>0,"wall_dn1"=>dn1,"source_te_gap"=>gap,"cfd_te_gap"=>gap,"transform"=>"none",
         "outer_boundary_condition"=>"slip tunnel walls, characteristic inlet, pressure outlet",
         "quality_report"=>_transonic_quality_report(mesh))
     metadata["species_boundary_conditions"]=_species_boundary_conditions("tunnel")
     metadata["channel"]=_species_channel_metadata(channel)
     metadata["species_requested_model_settings"]=settings
     foil_indices=met.NIW+1:met.NIW+met.NIF
-    surface_indices=met.NIW+nb+1:met.NIW+met.NIF-nb
-    (;af,mesh,met,metadata,foil_indices,surface_indices)
+    (;af,mesh,met,metadata,foil_indices,surface_indices=foil_indices)
 end
 
 "Build the selected Species domain without starting a flow worker or loading CUDA."
@@ -415,22 +423,20 @@ function preview_species_mesh(path,flow,outdir;source=Dict())
     gurney_enabled(flow) && gurney_check_request(flow,["cavitation"])   # Gurney flap: refused on every Species domain
     domain=="underwater" && return preview_underwater_mesh(path,flow,outdir;source)
     material=="water" && domain=="tunnel" && return _preview_production_tunnel(path,flow,outdir)
-    if String(_get(flow,"cfd_te_topology","aplus"))=="auto"
-        domain=="free_fluid" && return preview_mesh(path,flow,outdir;source,solver_backend="cavitation")
-        throw(ArgumentError("Auto C+H is currently an external-domain mesh. For the established tunnel validation mesh select Legacy A-plus explicitly; no far-boundary mesh will be substituted for tunnel walls."))
-    end
+    # Air and the free-fluid domain: the shared Species worker, on the C+H pair for a finite trailing edge and on one
+    # C block for a closed one.
+    _auto_ch_selected(Dict("airfoil"=>source),path,flow) && return _preview_species_ch_mesh(path,flow,outdir;source)
     resolution=String(_get(flow,"cfd_resolution","standard"))
     sizes=get(Dict("standard"=>(256,64,112),"fine"=>(384,96,144),"very_fine"=>(512,128,176)),resolution,nothing)
     sizes===nothing && throw(ArgumentError("invalid cfd_resolution"))
     cfg=Dict{String,Any}("geometry"=>String(path),"cav_fluid"=>material,"cav_domain"=>domain,
-        "mesh_mode"=>String(_get(flow,"cfd_mesh","cavitation_aplus_farfield")),
+        "mesh_mode"=>SINGLE_C_MESH,
         "cav_channel_height"=>_number(flow,"cav_channel_height",1.28;lo=0.2,hi=100),
         "resolution"=>resolution,"reynolds"=>_number(flow,"reynolds",3e6;lo=1e3,hi=1e9),
-        "alpha_deg"=>_number(flow,"alpha_deg",0.0),"cfd_te_thickness"=>_number(flow,"cfd_te_thickness",0.0;lo=0,hi=0.05),
+        "alpha_deg"=>_number(flow,"alpha_deg",0.0),
         "n_foil"=>_integer(flow,"cfd_n_foil",sizes[1];lo=32,hi=2048),
         "n_wake"=>_integer(flow,"cfd_n_wake",sizes[2];lo=8,hi=512),
         "n_normal"=>_integer(flow,"cfd_n_normal",sizes[3];lo=16,hi=512),
-        "n_base"=>_integer(flow,"cfd_n_base",4;lo=1,hi=8),
         "trip_upper"=>_number(flow,"trip_upper",0.03;lo=0,hi=1),"trip_lower"=>_number(flow,"trip_lower",0.05;lo=0,hi=1),
         "wake_first_spacing_growth"=>_number(flow,"cfd_wake_first_spacing_growth",1.0;lo=1,hi=2),
         "wake_first_spacing_max"=>_number(flow,"cfd_wake_first_spacing_max",0.01;lo=0,hi=0.1),
@@ -443,20 +449,11 @@ function preview_species_mesh(path,flow,outdir;source=Dict())
     (;mesh=payload,metadata=built.metadata)
 end
 
-function _species_worker(cfg_path)
-    cfg=TOML.parsefile(cfg_path);cavitation_configuration(cfg)
-    settings=_species_model_settings(cfg;alpha=cfg["alpha_deg"])
-    settings["cav_init"]=="uniform" || throw(ArgumentError("The shared Species worker currently supports cav_init=uniform; panel initialization is available in the production tunnel driver"))
-    settings["cav_sst_omega_init"]=="freestream" || throw(ArgumentError("The shared Species worker currently supports cav_sst_omega_init=freestream"))
-    material=cfg["cav_fluid"];domain=cfg["cav_domain"]
-    built=_species_mesh(cfg);(;mesh,met)=built
-    out=cfg["outdir"];metadata=built.metadata
-    metadata["geometry_support"]=haskey(cfg,"naca4_code") ? "NACA four-digit equations evaluated at 4097 cosine-spaced support points" : "C2 interpolation of source coordinates"
-    _write_mesh_artifacts(mesh,metadata,out,cfg["resolution"])
-    xhash=bytes2hex(sha256(reinterpret(UInt8,vec(mesh.X))))
-    yhash=bytes2hex(sha256(reinterpret(UInt8,vec(mesh.Y))))
-    println("MESH_READY,mesh_preview.msgpack");flush(stdout)
-    backend=cfg["gpu"] ? CUDA.CUDABackend() : KernelAbstractions.CPU()
+"""One Species carrier and its TEM on the metrics `met`, at the uniform ambient state of the configured fluid: the
+freestream, viscosity, SST, the material's EOS, the far-field mixture and the fixed-pressure ends. The C+H pair calls
+it once per block, so both blocks hold the same scalars (the pair's admission refuses any difference)."""
+function _species_carrier(backend,met,cfg,settings)
+    material=cfg["cav_fluid"]
     cx,cy,cz,w,_,_=build_d3q39_static()
     s=CMeshSolverKA.build_sol_ka(backend,met;drot=2.0f0,cxv=cx,cyv=cy,czv=cz,wv=w)
     s.wall_flux=true;s.recon=Int32(1);s.fullvisc=Int32(1)
@@ -485,6 +482,26 @@ function _species_worker(cfg_path)
     s.pexc .= Float32(p_ref).-s.rho_inf*CMeshSolverKA.CS2.*s.T
     fill!(s.am,sqrt(Float32(a2m)))
     CMeshSolverKA.set_pressure_outlet!(s,tem;p_out=p_ref,checked_mixture=true)
+    (;s,tem,p_ref,a2m,speed)
+end
+
+function _species_worker(cfg_path)
+    cfg=TOML.parsefile(cfg_path);cavitation_configuration(cfg)
+    settings=_species_model_settings(cfg;alpha=cfg["alpha_deg"])
+    settings["cav_init"]=="uniform" || throw(ArgumentError("The shared Species worker currently supports cav_init=uniform; panel initialization is available in the production tunnel driver"))
+    settings["cav_sst_omega_init"]=="freestream" || throw(ArgumentError("The shared Species worker currently supports cav_sst_omega_init=freestream"))
+    # A finite trailing edge: the C+H pair (species_ch_worker.jl).
+    get(cfg,"mesh_mode","")==SPECIES_CH_MESH && return _species_ch_worker(cfg,settings)
+    material=cfg["cav_fluid"];domain=cfg["cav_domain"]
+    built=_species_mesh(cfg);(;mesh,met)=built
+    out=cfg["outdir"];metadata=built.metadata
+    metadata["geometry_support"]=haskey(cfg,"naca4_code") ? "NACA four-digit equations evaluated at 4097 cosine-spaced support points" : "C2 interpolation of source coordinates"
+    _write_mesh_artifacts(mesh,metadata,out,cfg["resolution"])
+    xhash=bytes2hex(sha256(reinterpret(UInt8,vec(mesh.X))))
+    yhash=bytes2hex(sha256(reinterpret(UInt8,vec(mesh.Y))))
+    println("MESH_READY,mesh_preview.msgpack");flush(stdout)
+    backend=cfg["gpu"] ? CUDA.CUDABackend() : KernelAbstractions.CPU()
+    (;s,tem,p_ref,a2m,speed)=_species_carrier(backend,met,cfg,settings)
     CMeshSolverKA.GLOBAL_DT[]=1
     CMeshSolverKA.seed_channel_reference_ka!(s)
     CMeshCavSpecies.LEDGER_ENABLED[]=false
@@ -508,68 +525,98 @@ function _species_worker(cfg_path)
     println("SPECIES MODEL SETTINGS: ",settings,"; actual Reboud form=",c.reboud_form," exponent=",c.reboud_n," trip=",c.trip," SST limit=",c.sst_climit);flush(stdout)
     material=="air" && println("AIR EOS: isothermal p=c_air^2*rho, no phase change, no total-energy equation")
     println("MESH COORDINATE RECEIPT: x_sha256=$xhash y_sha256=$yhash");flush(stdout)
+    # The committed state's flux divergence and loads. The Species stage kernel does not populate dc_*, so the
+    # residual is refreshed here.
+    function sample()
+        CMeshCavSpecies._stage_residual!(c,Int32(2))
+        raw,scaled,l2,net=_species_mass_residual((s,),speed)
+        cl,cd=CMeshSolverKA.loads_ka(s;mixture_pressure=c.pressure,wallmode=Int32(2))
+        (;raw,scaled,l2,mass_net=net,cl,cd,cm=_species_moment(s,built,c.pressure))
+    end
+    advance!()=steady ? CMeshCavSpecies.step_species_steady_ka!(c,workspace,Float32(cfg["cfl"])) :
+        CMeshCavSpecies.step_species_ka!(c,Float32(cfg["cfl"]);admission=:deferred)
+    march=_species_march(cfg,c,steady,speed;advance!,sample)
+    exported=_export_species_fields(c,built,cfg,march.steps,p_ref,speed)
+    meta=_species_result_meta(cfg,settings,metadata,c,tem,march,steady,line,trip_x,speed,a2m;cm_last=exported.cm)
+    merge!(meta,Dict{String,Any}("mesh_node_x_sha256"=>xhash,"mesh_node_y_sha256"=>yhash,
+        "mesh_cells"=>met.NI*met.NJ,"full_field_mesh_sha256"=>exported.field["mesh_sha256"]))
+    open(joinpath(out,"result.toml"),"w") do io;TOML.print(io,meta);end
+    println("Conservative Species worker complete");flush(stdout)
+end
+
+"""The continuity residual of the committed state over the given carriers (one block, or the C+H pair's two), from
+the face fluxes the stage residual has just written: the largest |divergence|, the largest and the RMS divergence
+per unit volume, and the signed net over the blocks divided by rho_inf U_inf."""
+function _species_mass_residual(carriers,speed)
+    raw=0f0;worst=0.0;squares=0.0;cells=0;net=0.0
+    for s in carriers
+        CMeshSolverKA._k_residual!(s.backend)(s.dc_r,s.dc_mx,s.dc_my,s.dc_e,
+            s.Fi_r,s.Fi_mx,s.Fi_my,s.Fi_e,s.Fj_r,s.Fj_mx,s.Fj_my,s.Fj_e,
+            Int32(s.NI),Int32(s.NJ);ndrange=(s.NI,s.NJ))
+        dc=Array(s.dc_r);vol=Array(s.vol);scaled=Float64.(dc)./Float64.(vol)
+        raw=max(raw,maximum(abs,dc));worst=max(worst,maximum(abs,scaled))
+        squares+=sum(abs2,scaled);cells+=length(scaled);net+=sum(Float64,dc)
+    end
+    (raw,worst,sqrt(squares/cells),net/(Float64(first(carriers).rho_inf)*speed))
+end
+
+"""March a Species cache to the step limit, the requested physical time or the steady guard, and write
+iteration_history.csv. `advance!()` takes one accepted step of the cache `c` (one block, or the C+H pair);
+`sample()` returns `(raw, scaled, l2, mass_net, cl, cd, cm)` of the committed state."""
+function _species_march(cfg,c,steady,speed;advance!,sample)
+    s=c.solver
     monitor=CFDConvergence.Monitor(CFDConvergence.Config(sfd_start=0,max_steps=cfg["steps"],
         residual_scaled_limit=cfg["mass_ceiling"],mass_net_limit=cfg["mass_net_limit"]))
-    history=Dict{String,Any}[];dt_elapsed=0.0;start_time=time();guard=Dict{String,Any}()
-    last_raw=Inf;last_scaled=Inf;last_l2=Inf;mass_net=Inf;cl=0.;cd=0.;actual=0
-    history_path=joinpath(out,"iteration_history.csv")
-    open(history_path,"w") do io
+    history=Dict{String,Any}[];elapsed=0.0;started=time();steps=0
+    last=(raw=Inf32,scaled=Inf,l2=Inf,mass_net=Inf,cl=0.,cd=0.,cm=0.)
+    open(joinpath(cfg["outdir"],"iteration_history.csv"),"w") do io
         println(io,"iteration,residual_linf,residual_scaled,residual_l2,cl,cd,cm,mass_net_frac,t_ctu")
         for n in 1:cfg["steps"]
-            if steady
-                CMeshCavSpecies.step_species_steady_ka!(c,workspace,Float32(cfg["cfl"]))
-            else
-                CMeshCavSpecies.step_species_ka!(c,Float32(cfg["cfl"]);admission=:deferred)
-                dt_elapsed=c.elapsed*speed
-            end
-            actual=n
-            if n==1 || n%cfg["cav_history_stride"]==0 || n==cfg["steps"] || (!steady && dt_elapsed>=cfg["cav_duration_ctu"])
-                # Refresh the final committed state's real flux divergence.
-                # The Species stage kernel deliberately does not populate dc_*.
-                CMeshCavSpecies._stage_residual!(c,Int32(2))
-                CMeshSolverKA._k_residual!(s.backend)(s.dc_r,s.dc_mx,s.dc_my,s.dc_e,
-                    s.Fi_r,s.Fi_mx,s.Fi_my,s.Fi_e,s.Fj_r,s.Fj_mx,s.Fj_my,s.Fj_e,
-                    Int32(s.NI),Int32(s.NJ);ndrange=(s.NI,s.NJ))
-                dc=Array(s.dc_r);vol=Array(s.vol);scaled=Float64.(dc)./Float64.(vol)
-                last_raw=maximum(abs,dc);last_scaled=maximum(abs,scaled);last_l2=sqrt(sum(abs2,scaled)/length(scaled))
-                mass_net=sum(Float64,dc)/(Float64(s.rho_inf)*speed)
-                cl,cd=CMeshSolverKA.loads_ka(s;mixture_pressure=c.pressure,wallmode=Int32(2))
-                cm=_species_moment(s,built,c.pressure)
-                row=Dict{String,Any}("iteration"=>n,"residual_linf"=>last_raw,"residual_scaled"=>last_scaled,
-                    "residual"=>last_scaled,"residual_l2"=>last_l2,"cl"=>Float64(cl),"cd"=>Float64(cd),
-                    "cm"=>cm,"mass_net_frac"=>mass_net,"t_ctu"=>dt_elapsed)
-                push!(history,row)
-                println(io,join((n,last_raw,last_scaled,last_l2,cl,cd,cm,mass_net,dt_elapsed),','));flush(io)
-                println("ITERATION,",join((n,cfg["steps"],last_scaled,last_raw,last_l2,cl,cd,mass_net),','));flush(stdout)
+            advance!()
+            steady || (elapsed=c.elapsed*speed)
+            steps=n
+            if n==1 || n%cfg["cav_history_stride"]==0 || n==cfg["steps"] || (!steady && elapsed>=cfg["cav_duration_ctu"])
+                last=sample()
+                push!(history,Dict{String,Any}("iteration"=>n,"residual_linf"=>last.raw,"residual_scaled"=>last.scaled,
+                    "residual"=>last.scaled,"residual_l2"=>last.l2,"cl"=>Float64(last.cl),"cd"=>Float64(last.cd),
+                    "cm"=>last.cm,"mass_net_frac"=>last.mass_net,"t_ctu"=>elapsed))
+                println(io,join((n,last.raw,last.scaled,last.l2,last.cl,last.cd,last.cm,last.mass_net,elapsed),','));flush(io)
+                println("ITERATION,",join((n,cfg["steps"],last.scaled,last.raw,last.l2,last.cl,last.cd,last.mass_net),','));flush(stdout)
                 if !steady
-                    @printf("PHYSICAL_TIME,%d,%.12g,%.12g,%.12g\n",n,dt_elapsed,cfg["cav_duration_ctu"],Float64(s.last_global_dt)*speed)
+                    @printf("PHYSICAL_TIME,%d,%.12g,%.12g,%.12g\n",n,elapsed,cfg["cav_duration_ctu"],Float64(s.last_global_dt)*speed)
                     flush(stdout)
                 end
-                decision=CFDConvergence.observe!(monitor,(iteration=n,residual_scaled=last_scaled,
-                    residual_l2=last_l2,cl=Float64(cl),cd=Float64(cd),mass_net_frac=mass_net))
+                decision=CFDConvergence.observe!(monitor,(iteration=n,residual_scaled=last.scaled,
+                    residual_l2=last.l2,cl=Float64(last.cl),cd=Float64(last.cd),mass_net_frac=last.mass_net))
                 decision.abort && error("Species sustained divergence: $(decision.reason)")
                 steady && cfg["auto_stop"] && decision.stop && break
-                !steady && dt_elapsed>=cfg["cav_duration_ctu"] && break
+                !steady && elapsed>=cfg["cav_duration_ctu"] && break
             end
         end
     end
-    guard=CFDConvergence.convergence_report(monitor)
-    exported=_export_species_fields(c,built,cfg,actual,p_ref,speed)
+    (;history,elapsed,steps,started,last,guard=CFDConvergence.convergence_report(monitor))
+end
+
+"""The result.toml entries every Species worker writes: coefficients (the physical-time mean when the record
+qualifies), the residuals of the last sample, the guard, the realised model and the clock. `cm_last` is the moment
+of the exported final state. The caller adds the entries of its mesh (one block, or the C+H pair)."""
+function _species_result_meta(cfg,settings,metadata,c,tem,march,steady,line,trip_x,speed,a2m;cm_last)
+    material=cfg["cav_fluid"];domain=cfg["cav_domain"];last=march.last
     time_stats=steady ? Dict{String,Any}("available"=>false,"reason"=>"steady pseudo-time has no physical averaging clock") :
-        _species_time_statistics(history;requested_duration_ctu=cfg["cav_duration_ctu"],
+        _species_time_statistics(march.history;requested_duration_ctu=cfg["cav_duration_ctu"],
             burn_in_ctu=get(cfg,"burnin_ctu",nothing),block_duration_ctu=get(cfg,"block_ctu",5.0),
             time_step_refined=get(cfg,"physical_time_refined",false))
     averaged=!steady && get(time_stats,"available",false)
-    meta=Dict{String,Any}("backend"=>"cavitation","solver"=>"Conservative Species AUSM+-up",
-        "cl"=>averaged ? time_stats["cl_mean"] : Float64(cl),
-        "cd"=>averaged ? time_stats["cd_mean"] : Float64(cd),
-        "cm"=>averaged ? time_stats["cm_mean"] : exported.cm,
-        "cl_last"=>Float64(cl),"cd_last"=>Float64(cd),"cm_last"=>exported.cm,
+    Dict{String,Any}("backend"=>"cavitation","solver"=>"Conservative Species AUSM+-up",
+        "cl"=>averaged ? time_stats["cl_mean"] : Float64(last.cl),
+        "cd"=>averaged ? time_stats["cd_mean"] : Float64(last.cd),
+        "cm"=>averaged ? time_stats["cm_mean"] : cm_last,
+        "cl_last"=>Float64(last.cl),"cd_last"=>Float64(last.cd),"cm_last"=>cm_last,
         "coefficient_method"=>averaged ? "physical-time mean over latter half of record" : "final iterate",
         "time_statistics"=>time_stats,"field_time_scope"=>"instantaneous final state",
-        "steps"=>actual,"max_steps"=>cfg["steps"],
-        "residual_linf"=>last_raw,"residual_scaled"=>last_scaled,"residual_l2"=>last_l2,
-        "mass_net_frac"=>mass_net,"convergence_guard"=>guard,"geometry"=>metadata,
+        "steps"=>march.steps,"max_steps"=>cfg["steps"],
+        "residual_linf"=>last.raw,"residual_scaled"=>last.scaled,"residual_l2"=>last.l2,
+        "mass_net_frac"=>last.mass_net,"convergence_guard"=>march.guard,"geometry"=>metadata,
         "fluid"=>material,"domain"=>domain,"boundary_conditions"=>_species_boundary_conditions(domain),
         "gpu"=>cfg["gpu"],"reynolds"=>cfg["reynolds"],
         "mach"=>cfg["mach"],"realized_acoustic_mach"=>speed/sqrt(a2m),
@@ -585,21 +632,21 @@ function _species_worker(cfg_path)
         "eos"=>Dict("p_v"=>Float64(tem.p_v),"rho_l_sat"=>Float64(tem.rho_l_sat),
             "rho_v_sat"=>Float64(tem.rho_v_sat),"a2l"=>Float64(tem.a2l),"lq"=>Float64(tem.lq),
             "kprod"=>Float64(tem.kprod),"kdest"=>Float64(tem.kdest)),
-        "clock"=>steady ? "steady pseudo-time" : "physical time", "elapsed_ctu"=>dt_elapsed,
+        "clock"=>steady ? "steady pseudo-time" : "physical time", "elapsed_ctu"=>march.elapsed,
         "rans_acceleration"=>Bool(get(cfg,"rans_acceleration",false)),
         "rans_acceleration_method"=>String(get(cfg,"rans_acceleration_method","standard")),
         "species_steady_line"=>line,
-        "wall_seconds"=>time()-start_time,"mesh_node_x_sha256"=>xhash,"mesh_node_y_sha256"=>yhash,
-        "mesh_cells"=>met.NI*met.NJ,"full_field_mesh_sha256"=>exported.field["mesh_sha256"],
+        "wall_seconds"=>time()-march.started,
         "energy_model"=>material=="air" ? "isothermal air, no total-energy transport" : "barotropic liquid/vapour",
         "validation"=>"experimental shared-mesh Species backend; aerodynamic and stall parity unestablished")
-    open(joinpath(out,"result.toml"),"w") do io;TOML.print(io,meta);end
-    println("Conservative Species worker complete");flush(stdout)
 end
 
-function _export_species_fields(c,built,cfg,iteration,p_inf,speed)
-    s=c.solver;mesh=built.mesh;met=built.met;g=s.g;ni=met.NI;nj=met.NJ
-    rho,u,v,T,nut,p,am=map(Array,(s.rho,s.ux,s.uy,s.T,s.nut,c.pressure,s.am))
+"""Host readers of one Species block (a carrier `s` and its published `pressure`): `at(i, j)`, the values of
+`FullFieldArtifact.COLUMNS` at cell (i, j), `cp(i, j)` and the host copies the wall sums read. The vorticity is a
+centred difference of the cell values inside the block, one-sided at its edges."""
+function _species_block_fields(s,pressure,p_inf,speed)
+    g=s.g;ni=s.NI;nj=s.NJ
+    rho,u,v,T,nut,p,am=map(Array,(s.rho,s.ux,s.uy,s.T,s.nut,pressure,s.am))
     xc,yc=map(Array,(s.xc,s.yc));q=0.5Float64(s.rho_inf)*speed^2
     cp(i,j)=(Float64(p[i+g,j+g])-p_inf)/q
     function vort(i,j)
@@ -612,6 +659,12 @@ function _export_species_fields(c,built,cfg,iteration,p_inf,speed)
     end
     at(i,j)=(xc[i,j],yc[i,j],hypot(u[i+g,j+g],v[i+g,j+g])/am[i+g,j+g],cp(i,j),
         p[i+g,j+g],rho[i+g,j+g],u[i+g,j+g],v[i+g,j+g],T[i+g,j+g],vort(i,j),nut[i+g,j+g])
+    (;at,cp,xc,rho,u,v,p,q)
+end
+
+function _export_species_fields(c,built,cfg,iteration,p_inf,speed)
+    s=c.solver;mesh=built.mesh;met=built.met;g=s.g;ni=met.NI;nj=met.NJ
+    (;at,cp,xc,rho,u,v,p,q)=_species_block_fields(s,c.pressure,p_inf,speed)
     stride=max(1,ceil(Int,sqrt(ni*nj/18000)));ii=unique(vcat(collect(1:stride:ni),ni));jj=unique(vcat(collect(1:stride:nj),nj))
     open(joinpath(cfg["outdir"],"field_samples.csv"),"w") do io
         println(io,join(FullFieldArtifact.COLUMNS,','))

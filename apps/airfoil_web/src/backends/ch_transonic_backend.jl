@@ -1,8 +1,8 @@
 # App orchestration for the conservative two-block thermal-gas/SST worker.
 # Included inside CFDBackend; no GPU package is loaded in the HTTP process.
 
+"A finite (blunt) trailing edge, native or set by cfd_te_thickness, is meshed C+H; a closed one is a single C block."
 function _auto_ch_selected(case,path,flow)
-    String(_get(flow,"cfd_te_topology","aplus"))=="auto" || return false
     source=_get(case,"airfoil",Dict())
     af=_get(source,"kind","")=="naca4" ?
         CMeshGen.naca4_points(parse(Int,String(_get(source,"id","")))) :
@@ -14,17 +14,15 @@ function _auto_ch_selected(case,path,flow)
 end
 
 function _ch_transonic_config(case,path,flow,alpha,dir)
-    mode=String(_get(flow,"cfd_mesh","aplus_nested_refined"))
-    mode in ("aplus_nested_refined","cavitation_aplus_farfield") || throw(ArgumentError(
-        "Auto C+H preserves the finite trailing edge. Select the shared mesh profile to run it."))
     time_mode=String(_get(flow,"cfd_time_mode","steady"))
-    time_mode=="steady" || throw(ArgumentError(
-        "C+H currently supports steady local pseudo-time. Select Steady pseudo-time in the flow controls."))
-    viscosity=String(_get(flow,"cfd_viscosity_model","constant_kinematic"))
-    viscosity=="constant_kinematic" || throw(ArgumentError(
-        "C+H currently supports constant kinematic air viscosity. Select Constant kinematic in the flow controls."))
-    !_boolean(flow,"cfd_sfd_enabled",false) || throw(ArgumentError(
-        "C+H uses conservative coupled SSPRK3 without an SFD filter."))
+    time_mode in ("steady","physical") || throw(ArgumentError("cfd_time_mode must be steady or physical"))
+    physical=time_mode=="physical"
+    viscosity=lowercase(String(_get(flow,"cfd_viscosity_model","constant_kinematic")))
+    viscosity in ("constant_kinematic","sutherland","constant_dynamic") ||
+        throw(ArgumentError("cfd_viscosity_model must be constant_kinematic, sutherland, or constant_dynamic"))
+    # Prescribed trips are applied unless the request states the fully turbulent model; absent trips are none.
+    fully_turbulent=String(_get(flow,"cfd_transition_model",""))=="fully_turbulent" || _boolean(flow,"cfd_fully_turbulent",false)
+    requested_upper=_number(flow,"trip_upper",0.;lo=0,hi=1);requested_lower=_number(flow,"trip_lower",0.;lo=0,hi=1)
     resolution=String(_get(flow,"cfd_resolution","standard"))
     resolution in ("standard","fine","very_fine") || throw(ArgumentError("invalid C+H resolution"))
     cfg=Dict{String,Any}(
@@ -36,7 +34,8 @@ function _ch_transonic_config(case,path,flow,alpha,dir)
         # Must match _build_ch_mesh/Create Mesh, including nonzero alpha sweeps.
         "cfd_farfield_angle_deg"=>_number(flow,"cfd_farfield_angle_deg",0.;lo=-45,hi=45),
         "steps"=>_integer(flow,"cfd_steps",500000;lo=1,hi=2000000),
-        "history_stride"=>_integer(flow,"cfd_history_stride",25;lo=1,hi=1000000),
+        # Physical time records at least every force-sampling interval; its iteration stride is the single-block one.
+        "history_stride"=>_integer(flow,"cfd_history_stride",physical ? 400 : 25;lo=1,hi=1000000),
         "display_every"=>_integer(flow,"cfd_display_every",0;lo=0,hi=1000000),
         "snapshot_interval_seconds"=>_number(flow,"snapshot_interval_seconds",600.;lo=0,hi=86400),
         "gpu"=>_boolean(flow,"cfd_gpu",true),"time_mode"=>time_mode,
@@ -46,22 +45,33 @@ function _ch_transonic_config(case,path,flow,alpha,dir)
         "mass_ceiling"=>_number(flow,"cfd_mass_ceiling",.1;lo=1e-6,hi=1000.),
         "mass_net_limit"=>_number(flow,"cfd_mass_net_limit",.001;lo=1e-8,hi=1.),
         "rk_weight_closure"=>true,"sst_wall_metric_correction"=>true,
-        "sfd_enabled"=>false,"trip_upper"=>0.,"trip_lower"=>0.,
-        "transition_model"=>"fully_turbulent",
-        "requested_trip_upper"=>_number(flow,"trip_upper",0.;lo=0,hi=1),
-        "requested_trip_lower"=>_number(flow,"trip_lower",0.;lo=0,hi=1))
+        "sfd_enabled"=>false,
+        "trip_upper"=>fully_turbulent ? 0. : requested_upper,"trip_lower"=>fully_turbulent ? 0. : requested_lower,
+        "transition_model"=>fully_turbulent || (requested_upper==0 && requested_lower==0) ? "fully_turbulent" : "prescribed_trips",
+        "requested_trip_upper"=>requested_upper,"requested_trip_lower"=>requested_lower)
+    viscosity=="sutherland" && (cfg["freestream_temperature_k"]=_number(flow,"cfd_freestream_temperature_k",288.15;lo=100.,hi=2000.))
+    if physical
+        cfg["duration_ctu"]=_number(flow,"cfd_duration_ctu",100.;lo=.001,hi=10000)
+        cfg["burnin_ctu"]=_number(flow,"cfd_burnin_ctu",50.;lo=0.,hi=10000)
+        cfg["block_ctu"]=_number(flow,"cfd_block_ctu",5.;lo=.001,hi=1000)
+        cfg["force_sample_dt_ctu"]=_number(flow,"cfd_force_sample_dt_ctu",.1;lo=.001,hi=1.)
+        cfg["physical_time_refined"]=_boolean(flow,"cfd_physical_time_refined",false)
+        cfg["burnin_ctu"]<cfg["duration_ctu"] || throw(ArgumentError("Burn-in time must be shorter than the physical duration"))
+        cfg["auto_stop"]=false
+    end
     source=_get(case,"airfoil",Dict())
     if _get(source,"kind","")=="naca4"
         cfg["naca4_code"]=parse(Int,String(_get(source,"id","")))
     end
     _get(flow,"cfd_ch_h_cross",nothing)===nothing || (cfg["cfd_ch_h_cross"]=String(_get(flow,"cfd_ch_h_cross","default")))
-    accel=RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),:compressible_ch)
-    legacy_irsj=_boolean(flow,"cfd_irsj",false)
-    cfg["rans_acceleration"]=accel.enabled || legacy_irsj
-    cfg["rans_acceleration_method"]=legacy_irsj ? "j-line implicit residual smoothing" : accel.method
-    # The older hidden switch remains supported.
-    (legacy_irsj || accel.irsj) && (cfg["irsj"]=true)
+    accel=RANSAcceleration.policy(_boolean(flow,"rans_acceleration",false),:compressible_ch;physical)
+    cfg["rans_acceleration"]=accel.enabled
+    cfg["rans_acceleration_method"]=accel.method
+    accel.irsj && (cfg["irsj"]=true)
     RANSAcceleration.configure_compressible!(cfg,flow;coupled=true)
+    # IRS-J forms its smoothing coefficient with a constant kinematic viscosity (CMeshSolverKA refuses it with a law).
+    cfg["irsj"] && viscosity!="constant_kinematic" && throw(ArgumentError(
+        "Implicit residual smoothing (IRS-J) is available with constant kinematic viscosity only. Select the Standard iteration for the $(replace(viscosity,'_'=>' ')) law."))
     # Opt-in stall-study keys (21 Oct 2026): written only when requested, so a default job's input is unchanged.
     _boolean(flow,"cfd_stall_layer",false) && (cfg["cfd_stall_layer"]=true)
     _get(flow,"cfd_le_ds_scale",nothing)===nothing ||
@@ -204,8 +214,10 @@ function _compact_ch_transport(point;max_point_bytes=700*1024)
     throw(ArgumentError("C+H diagnostic metadata exceeds the binary job preview budget; full artifacts are retained"))
 end
 
-function _collect_ch_transonic_output(dir,alpha)
-    meta=TOML.parsefile(joinpath(dir,"result.toml"))
+# The files every two-block (C, H) point has: the mesh preview, the sampled block fields (checked against the full mesh
+# artifact), the surface pressure and the bounded iteration history. Shared by the coupled C+H collection below and the
+# two-block Implicit Newton collection (newton_backend.jl); the statements are those the C+H collection always ran.
+function _read_block_point_files(dir,meta)
     mesh=AirfoilWire.decode(read(joinpath(dir,"mesh_preview.msgpack")),:msgpack)
     mesh["artifact"]=joinpath(dir,"mesh_full.msgpack")
     mesh["preview_artifact"]=joinpath(dir,"mesh_preview.msgpack")
@@ -234,6 +246,11 @@ function _collect_ch_transonic_output(dir,alpha)
     end
     history=Any[]
     rows=_csv_rows(joinpath(dir,meta["iteration_csv"]))
+    # A physical-time run also wrote its clock per recorded iteration.
+    clock=Dict{Int,Any}()
+    if haskey(meta,"physical_force_csv") && isfile(joinpath(dir,meta["physical_force_csv"]))
+        for row in _csv_rows(joinpath(dir,meta["physical_force_csv"]));clock[parse(Int,row["iteration"])]=row;end
+    end
     # Streaming keeps the complete live history; bound the final JSON preview.
     stride=max(1,cld(length(rows),1200))
     for k in unique(vcat(collect(1:stride:length(rows)),length(rows)))
@@ -244,28 +261,53 @@ function _collect_ch_transonic_output(dir,alpha)
             value=_float(row[key]);value===nothing || (sample[key]=value)
         end
         sample["residual"]=get(sample,"residual_scaled",nothing)
+        timed=get(clock,sample["iteration"],nothing)
+        if timed!==nothing
+            for key in ("t_ctu","applied_dt_ctu")
+                value=_float(get(timed,key,""));value===nothing || (sample[key]=value)
+            end
+        end
         push!(history,sample)
     end
+    mesh,fields,cp,history
+end
+
+function _collect_ch_transonic_output(dir,alpha)
+    meta=TOML.parsefile(joinpath(dir,"result.toml"))
+    mesh,fields,cp,history=_read_block_point_files(dir,meta)
     guard=get(meta,"convergence_guard",Dict{String,Any}("status"=>"max_steps","reason"=>"Iteration cap reached; inspect all six equation residuals"))
     converged=get(meta,"aerodynamic_converged",false) && get(guard,"all_six_equations_confirmed",false) && get(mesh,"quality_passed",false)
-    state=converged ? "completed" : get(guard,"status","")=="stalled_stop" ? "stopped_without_convergence" : "not_converged"
+    physical=get(meta,"time_mode","steady")=="physical"
+    time_statistics=get(meta,"time_statistics",Dict{String,Any}())
+    # A physical-time point is judged by its force sampling, as the single-block point is; a steady one by the guard.
+    state=physical ? (!get(time_statistics,"sampling_adequate",false) ? "insufficient_sampling" :
+            get(time_statistics,"physical_mean_eligible",false) ? "completed" : "unqualified_physical_mean") :
+        converged ? "completed" : get(guard,"status","")=="stalled_stop" ? "stopped_without_convergence" : "not_converged"
     diagnostics=Dict{String,Any}(string(k)=>v for (k,v) in meta)
     merge!(diagnostics,Dict("mesh_topology"=>"conformal_C_H_v1","mesh_cells"=>fields["full_cell_count"],
-        "time_mode"=>"steady","clock"=>"Unequal local pseudo-time; no elapsed physical time",
+        "time_mode"=>physical ? "physical" : "steady",
+        "clock"=>physical ? "One global physical timestep for both blocks" : "Unequal local pseudo-time; no elapsed physical time",
+        "time_statistics"=>time_statistics,
         "convergence_guard"=>guard,"mesh_quality_passed"=>get(mesh,"quality_passed",false),
         "residual_scope"=>"All six native conservative gas/energy/SST equations at the final accepted state",
-        "physical_time"=>false,"validated"=>false,"aerodynamic_parity_established"=>false))
+        "physical_time"=>physical,"validated"=>false,"aerodynamic_parity_established"=>false))
+    tripped=get(meta,"transition_model","fully_turbulent")=="prescribed_trips"
+    viscosity=replace(String(get(meta,"viscosity_model","constant_kinematic")),'_'=>' ')
     notes=String[
         "Conservative two-block compressible gas/energy and SST on the same C+H mesh as Create Mesh.",
-        "Fully turbulent SST with constant kinematic viscosity. Natural transition and prescribed XFOIL trips are different models.",
-        "Local pseudo-time is a steady numerical relaxation, not a physical transient. Inspect all six residuals before using coefficients."]
-    converged || push!(notes,"The final mesh, fields and coefficients are saved diagnostics; this point is not a converged polar point.")
+        (tripped ? "SST with prescribed trips at x/c=$(meta["trip_upper"]) (upper) and $(meta["trip_lower"]) (lower; 0: none): no SST production ahead of a trip, the model's own growth behind it." :
+            "Fully turbulent SST.")*" Viscosity: $viscosity. Natural transition (XFOIL Ncrit) is a different model.",
+        physical ? "Physical time with one global timestep. The coefficients and fields are the final instant; the force means and their sampling status are in the time statistics." :
+            "Local pseudo-time is a steady numerical relaxation, not a physical transient. Inspect all six residuals before using coefficients."]
+    physical || converged || push!(notes,"The final mesh, fields and coefficients are saved diagnostics; this point is not a converged polar point.")
     get(mesh,"quality_passed",false) || push!(notes,"The mesh has failed air geometry limits; inspect the mesh quality diagnostics.")
     point=Dict{String,Any}("backend"=>"transonic","alpha_deg"=>alpha,"status"=>state,
         "cl"=>meta["cl"],"cd"=>meta["cd"],"cm"=>meta["cm"],
-        "convergence"=>get(guard,"reason","Inspect all six native equation residuals"),
+        "convergence"=>physical ? "physical time; sampling status: $(get(time_statistics,"status","insufficient_sampling")); coefficient fields retain the instantaneous final state" :
+            get(guard,"reason","Inspect all six native equation residuals"),
         "validation"=>"experimental coupled C+H; aerodynamic parity unvalidated",
-        "reference_compatible"=>get(meta,"requested_trip_upper",0.)==0 && get(meta,"requested_trip_lower",0.)==0,
+        # A published reference with trips is shown only for a run that applied the trips it was asked for.
+        "reference_compatible"=>get(meta,"requested_trip_upper",0.)==get(meta,"trip_upper",0.) && get(meta,"requested_trip_lower",0.)==get(meta,"trip_lower",0.),
         "geometry"=>get(meta,"geometry",get(mesh,"geometry_metadata",Dict())),
         "mesh"=>mesh,"fields"=>fields,"cp"=>cp,"iteration_history"=>history,
         "diagnostics"=>diagnostics,"notes"=>notes,
@@ -274,18 +316,21 @@ function _collect_ch_transonic_output(dir,alpha)
             "field_preview"=>fields["artifact"],"field_full"=>fields["full_artifact"],
             "cp_csv"=>joinpath(dir,meta["cp_csv"]),"iteration_csv"=>joinpath(dir,meta["iteration_csv"]),
             "result_toml"=>joinpath(dir,"result.toml"),"log"=>joinpath(dir,"solver.log")))
+    physical && (point["artifacts"]["physical_force_csv"]=joinpath(dir,meta["physical_force_csv"]))
     _compact_ch_transport(point)
 end
 
 function _ch_transonic_point(case,path,flow,alpha,dir,progress,log,warmdir=nothing)
     cfg=_ch_transonic_config(case,path,flow,alpha,dir)
-    if warmdir !== nothing
+    if warmdir !== nothing && cfg["time_mode"]=="steady"   # a physical-time run starts from the freestream
         warm=joinpath(warmdir,"state_checkpoint.jls")
         isfile(warm) && (cfg["warm_start"]=warm)
     end
-    _deliver_log(log,"Starting coupled C+H compressible gas/energy and fully turbulent SST; steady, constant kinematic viscosity, $(cfg["gpu"] ? "GPU" : "CPU").")
-    if cfg["requested_trip_upper"]>0 || cfg["requested_trip_lower"]>0
-        _deliver_log(log,"C+H uses fully turbulent SST; requested trip locations remain reference/XFOIL settings and are recorded separately.")
+    tripped=cfg["transition_model"]=="prescribed_trips"
+    _deliver_log(log,"Starting coupled C+H compressible gas/energy and SST, $(tripped ? "prescribed trips at x/c=$(cfg["trip_upper"]) (upper) and $(cfg["trip_lower"]) (lower)" : "fully turbulent"); "*
+        "$(cfg["time_mode"]=="physical" ? "physical time, $(cfg["duration_ctu"]) CTU" : "steady"), $(replace(cfg["viscosity_model"],'_'=>' ')) viscosity, $(cfg["gpu"] ? "GPU" : "CPU").")
+    if !tripped && (cfg["requested_trip_upper"]>0 || cfg["requested_trip_lower"]>0)
+        _deliver_log(log,"This request states the fully turbulent model: its trip locations are recorded as requested and not applied to the C+H SST.")
     end
     cfg_path=joinpath(dir,"input.toml")
     open(cfg_path,"w") do io;TOML.print(io,cfg);end
