@@ -571,7 +571,7 @@ function build_tem(s; sigma, Cprod::Float64=1.0, Cdest::Float64=1.0, ratio::Floa
     #   p = p_v + a2v*(rho - rho_v_sat) = p_v*rho/rho_v_sat  ->  0 as rho -> 0
     # which is the restoring pressure that BOUNDS cavity density. The old near-flat branch tended to the
     # CONSTANT p_v as rho -> 0, so nothing pulled mass back and the cavity evacuated to the numerical
-    # floor (measured in 3D: supercavitation at every sigma below inception). See cmesh_cav_tem3d.jl.
+    # floor (measured in 3D: supercavitation at every sigma below inception).
     a2v = p_v/rho_v_sat
     # psm must be small vs BOTH the plateau depth (sigma*q) and the vapor scale (p_v), else the smooth-max
     # washes out whichever is smaller. min() keeps leg A (legacy p_v) bit-comparable to the committed runs.
@@ -1638,7 +1638,7 @@ end
             # ideal-gas vapor law at alpha=1 (p = p_v*r/rho_v_sat -> 0 as r -> 0), which is the restoring
             # pressure that bounds cavity density. A separate vapor-plateau branch is redundant and, under
             # a smooth-MAX, actively wrong (a2v*r swamps p_mix in the liquid). The smooth-max here is now
-            # only a POSITIVITY GUARD: smooth max(pmx, 0). See cmesh_cav_tem3d.jl for the measured evidence.
+            # only a POSITIVITY GUARD: smooth max(pmx, 0).
             # BUGFIX 2026-07-19: this line hardcoded the mass-weighted harmonic and IGNORED the `wallis`
             # flag that sits in this kernel's own signature -- while EVERY other evaluation of the mixture
             # stiffness (sweep/Merkle source, _k_pexc_ghost!, tem_ambient/far-field) goes through

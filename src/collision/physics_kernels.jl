@@ -27,9 +27,8 @@ include("kernel_param_packs.jl")
 include("kernel_dynamic_sgs.jl")              # Dynamic Smagorinsky (Germano 1991, Lilly 1992) — used by cumulant + entropic_d3q39
 include("kernel_cumulant.jl")
 include("kernel_regularization_d3q39.jl")   # RR-LBM Hermite projection (Latt-Chopard 2006, Coreixas 2017)
-include("kernel_regularization_d3q19.jl")   # RR-LBM D3Q19 projection — KEPT as the D3Q19 seed (2026-06-24); rebuild-from-here
-# (9 D3Q19 RR-BGK / AA-pattern implementation kernels removed 2026-06-24 with the D3Q19 retirement.
-#  Seed kept: build_d3q19_static() in lattice.jl + kernel_regularization_d3q19.jl above.)
+# (The D3Q19 RR-BGK / AA-pattern kernels and the D3Q19 Hermite projection were removed with the D3Q19
+#  retirement. The static D3Q19 tables stay: build_d3q19_static() in lattice.jl.)
 include("kernel_svv_yz_d3q39.jl")            # SVV Y-Z bi-Laplacian (Tadmor 1989, Karamanos 2000); also hosts the D3Q27 SVV launch
 include("kernel_nscbc_outlet.jl")             # NSCBC outflow BC (Poinsot-Lele 1992, Heubes 2014)
 include("kernel_larsson_pgr.jl")              # Larsson 2010 wall-model PG correction (B6 ext)

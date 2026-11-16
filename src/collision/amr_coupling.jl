@@ -7748,14 +7748,11 @@ function restrict_fine_to_parent!(
         # byte-identical (dead branch in the kernel).
         (SYMMETRIC_ANALYSIS && !GROUND_ANALYSIS) ? Int32(1) : Int32(0),
         Int32(size(parent_level.block_pointer, 2) * BLOCK_SIZE),
-        # GOLD-STANDARD STRICT CONSERVATION (2026-06-17): D3Q19 4-moment exact
-        # restriction. Host gate — D3Q19 only (the D3Q39 path has its own
-        # 13-mom-exact restriction) AND the flag on. Off ⇒ byte-identical.
-        # 2026-06-23: fires for D3Q19 (its flag) OR D3Q27 cumulant (the new flag).
-        # Both use the polynomial-eq reconstruction + the n_dirs-generic 4-moment
-        # Gram correction in the kernel body. D3Q39 has its own 13-mom-exact path.
-        ((LATTICE_TYPE == :d3q19 && AMR_RESTRICTION_CONSERVATIVE_D3Q19) ||
-         (LATTICE_TYPE == :d3q27 && AMR_RESTRICTION_CONSERVATIVE_D3Q27)) ? Int32(1) : Int32(0),
+        # GOLD-STANDARD STRICT CONSERVATION: 4-moment exact restriction. Host gate —
+        # D3Q27 cumulant AND its flag on (polynomial-eq reconstruction + the
+        # n_dirs-generic 4-moment Gram correction in the kernel body). Off ⇒
+        # byte-identical. D3Q39 has its own 13-mom-exact path.
+        (LATTICE_TYPE == :d3q27 && AMR_RESTRICTION_CONSERVATIVE_D3Q27) ? Int32(1) : Int32(0),
         _restrict_band,
         # ET-AMR Val-gated decode/encode slots — ET retired 2026-06-24, always Val(false)
         # so the kernel's ET branches const-fold away; pair arrays = opp_arr stand-in.

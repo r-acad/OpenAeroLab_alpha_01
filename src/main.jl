@@ -250,30 +250,7 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
     sim_start_datetime = Dates.now()
 
     println("\n" * "="^70)
-    # PonD per-cell conservative kinetic-FV path (opt-in via advanced.numerics.pond.enabled).
-    # The FV solver evolves conserved moments via shared face fluxes, structurally distinct from
-    # the LBM stream-collide loop below, so it dispatches HERE — not through get_collision_kernel.
-    # Same-level cross-block coupling is validated (src/collision/pond/pond_fv3d_blocks.jl); the
-    # production-case path (geometry mask + boundaries-from-moments on the block/AMR domain +
-    # surface drag) is the active integration. The current production path runs the VALIDATED
-    # single-level uniform-grid driver on a config-declared grid + immersed body (cross-block/AMR
-    # execution on the block domain is the next step; substrate validated in pond_fv3d_blocks.jl).
-    POND_ENABLED && LBMIO_BUILD_ONLY &&   # lbm-io-opts: the PonD path has its own domain; refuse rather than run it
-        error("basic.simulation.build_only is not supported with advanced.numerics.pond.enabled")
-    if POND_ENABLED
-        _pdir = joinpath(@__DIR__, "collision", "pond")
-        include(joinpath(_pdir, "pond_grad.jl"))
-        include(joinpath(_pdir, "pond_fv3d_gpu.jl"))
-        include(joinpath(_pdir, "pond_fv3d_dugks.jl"))
-        include(joinpath(_pdir, "pond_fv3d_driver.jl"))
-        include(joinpath(_pdir, "pond_case_runner.jl"))
-        # invokelatest: the files were just include()d (newer world age) ⇒ Julia 1.12 forbids a
-        # direct call from this (older) world. invokelatest bridges it; non-pond runs never load these.
-        return Base.invokelatest(run_pond_fv_case!, runtime_selection, output_claim)
-    end
-    lattice_label = LATTICE_TYPE == :d3q39 ? "D3Q39" :
-                    LATTICE_TYPE == :d3q19 ? "D3Q19" :
-                    LATTICE_TYPE == :pond  ? "PonD-FV" : "D3Q27"
+    lattice_label = LATTICE_TYPE == :d3q39 ? "D3Q39" : "D3Q27"
     if COMPRESSIBLE_MODE
         solver_mode = "$(lattice_label) | COMPRESSIBLE SUPERSONIC"
     elseif COMPRESSIBILITY_CORRECTION
@@ -296,7 +273,7 @@ function solve_main(runtime_selection::CaseIDContract.RuntimeSelection,
     global CS2_PHYSICS = CS2_LATTICE
     global CS4_PHYSICS = CS2_PHYSICS * CS2_PHYSICS
 
-    c_wale = haskey(CFG["advanced"]["numerics"], "c_wale") ? Float32(CFG["advanced"]["numerics"]["c_wale"]) : C_SMAGO
+    c_wale = Float32(C_SMAGO)   # advanced.numerics.c_wale, read once by the configuration loader
     inlet_turb = INLET_TURBULENCE_INTENSITY
     nu_sgs_bg = NU_SGS_BACKGROUND
     use_temporal = TEMPORAL_INTERPOLATION

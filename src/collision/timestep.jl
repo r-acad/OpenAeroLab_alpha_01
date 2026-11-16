@@ -256,105 +256,6 @@ function _phase_print_split_timers!()
     return nothing
 end
 
-@inline function _host_d3q19_samelevel_shell_ready(
-    ix::Int, iy::Int, iz::Int,
-    gx::Int, gy::Int, gz::Int,
-    b_idx::Int,
-    block_size::Int,
-    nx_global::Int, ny_global::Int, nz_global::Int,
-    neighbor_table,
-)
-    is_block_shell =
-        ix == 1 || ix == block_size ||
-        iy == 1 || iy == block_size ||
-        iz == 1 || iz == block_size
-    is_block_shell || return false
-    if gx <= 1 || gx >= nx_global ||
-       gy <= 1 || gy >= ny_global ||
-       gz <= 1 || gz >= nz_global
-        return false
-    end
-    @inbounds for k in 1:19
-        sx = ix - Int(C_X[k])
-        sy = iy - Int(C_Y[k])
-        sz = iz - Int(C_Z[k])
-        if sx < 1 || sx > block_size ||
-           sy < 1 || sy > block_size ||
-           sz < 1 || sz > block_size
-            nb_off_x = sx < 1 ? -1 : (sx > block_size ? 1 : 0)
-            nb_off_y = sy < 1 ? -1 : (sy > block_size ? 1 : 0)
-            nb_off_z = sz < 1 ? -1 : (sz > block_size ? 1 : 0)
-            dir_idx = (nb_off_x + 1) + (nb_off_y + 1) * 3 + (nb_off_z + 1) * 9 + 1
-            neighbor_table[b_idx, dir_idx] > Int32(0) || return false
-        end
-    end
-    return true
-end
-
-@inline function _host_d3q19_bspline_macro_ready(
-    parent_ptr,
-    parent_dim_x::Int, parent_dim_y::Int, parent_dim_z::Int,
-    fine_gx::Int, fine_gy::Int, fine_gz::Int,
-    block_size::Int,
-)
-    p0x = div(fine_gx + 1, 2)
-    p0y = div(fine_gy + 1, 2)
-    p0z = div(fine_gz + 1, 2)
-    @inbounds for iz in -3:3
-        pgz = p0z + iz
-        pbz = div(pgz - 1, block_size) + 1
-        (1 <= pbz <= parent_dim_z) || return false
-        for iy in -3:3
-            pgy = p0y + iy
-            pby = div(pgy - 1, block_size) + 1
-            (1 <= pby <= parent_dim_y) || return false
-            for ix in -3:3
-                pgx = p0x + ix
-                pbx = div(pgx - 1, block_size) + 1
-                (1 <= pbx <= parent_dim_x) || return false
-                parent_ptr[pbx, pby, pbz] > Int32(0) || return false
-            end
-        end
-    end
-    return true
-end
-
-@inline function _host_d3q19_bspline_halo_ready(
-    ix::Int, iy::Int, iz::Int,
-    gx::Int, gy::Int, gz::Int,
-    b_idx::Int,
-    block_size::Int,
-    neighbor_table,
-    parent_ptr,
-    parent_dim_x::Int, parent_dim_y::Int, parent_dim_z::Int,
-)
-    @inbounds for k in 1:19
-        cx = Int(C_X[k])
-        cy = Int(C_Y[k])
-        cz = Int(C_Z[k])
-        sx = ix - cx
-        sy = iy - cy
-        sz = iz - cz
-        if sx < 1 || sx > block_size ||
-           sy < 1 || sy > block_size ||
-           sz < 1 || sz > block_size
-            nb_off_x = sx < 1 ? -1 : (sx > block_size ? 1 : 0)
-            nb_off_y = sy < 1 ? -1 : (sy > block_size ? 1 : 0)
-            nb_off_z = sz < 1 ? -1 : (sz > block_size ? 1 : 0)
-            dir_idx = (nb_off_x + 1) + (nb_off_y + 1) * 3 + (nb_off_z + 1) * 9 + 1
-            if neighbor_table[b_idx, dir_idx] <= Int32(0)
-                _host_d3q19_bspline_macro_ready(
-                    parent_ptr,
-                    parent_dim_x, parent_dim_y, parent_dim_z,
-                    gx - cx, gy - cy, gz - cz,
-                    block_size,
-                ) || return false
-            end
-        end
-    end
-    return true
-end
-
 # (D3Q19 halo-fallback / residual / pi-ready host-helper cluster removed 2026-06-24 — closed dead cluster after D3Q19 retirement.)
 @kernel function _update_block_shift_kernel!(block_shift, block_shift_next, vel, obstacle, amr_covered, sponge, wall_dist,
                                              local_shift_wall_guard, map_x,
@@ -1394,7 +1295,7 @@ function perform_timestep_v2!(
         LOCAL_LATTICE_SHIFT_ENABLED ? Int32(1) : Int32(0),
         TRANSVERSE_FREESTREAM_BOUNDARY ? Int32(1) : Int32(0),
         Float32(TRANSVERSE_FREESTREAM_BLEND),
-        OUTLET_FREESTREAM_BOUNDARY ? Int32(1) : Int32(0),
+        Int32(0),   # outlet_freestream_boundary: the boolean config alias is gone; the kernel parameter is always 0
         Int32(OUTLET_BOUNDARY_MODE),
         Float32(OUTLET_FREESTREAM_BLEND),
         Int32(INLET_DENSITY_MODE),

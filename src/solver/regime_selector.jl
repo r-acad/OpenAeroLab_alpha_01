@@ -3,8 +3,7 @@
 # ==============================================================================
 # Maps the user's physical inputs (velocity, characteristic length, fluid) to the
 # best solver + the gold-standard feature set NEEDED for that flow regime — "no
-# more, no less" — with per-setting user override. See the locked plan in
-# docs/2026-06-24_solver_architecture_and_regime_selector.md.
+# more, no less" — with per-setting user override.
 #
 # Two solvers (D3Q19 retired 2026-06-24):
 #   Ma ≤ MA_REGIME_THRESHOLD (0.6) → D3Q27 + cumulant   (incompressible high-Re)
@@ -93,20 +92,4 @@ function resolve_regime_solver(CFG, Ma::Real, Re::Real)
 
     return (regime = regime, lattice = lattice, operator = operator,
             lattice_auto = !lattice_explicit, operator_auto = !operator_explicit)
-end
-
-"""
-    regime_feature_default(CFG, regime, keys...; incompressible, compressible) -> value
-
-Helper for per-feature regime defaults with user-override. Returns the user's
-explicitly-set value when `keys` are present in CFG; otherwise the regime-appropriate
-default (`incompressible` or `compressible`). Used by load_case_configuration to set
-the ~12 user-facing feature flags per the matrix in the plan doc.
-"""
-function regime_feature_default(CFG, regime::Symbol, keys::Vararg{String};
-                                incompressible, compressible)
-    if config_has_path(CFG, keys...)
-        return safe_get(CFG, keys...)
-    end
-    return regime === :compressible ? compressible : incompressible
 end

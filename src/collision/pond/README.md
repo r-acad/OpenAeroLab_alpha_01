@@ -4,12 +4,10 @@ Aero Lab's `pond_thermal` backend is **Thermal kinetic FV (experimental)**.
 It uses the native LBM Cartesian mesh builder and advances five conservative
 variables: density, three momentum components, and total energy. Its face flux
 is analytic Maxwellian kinetic flux-vector splitting (KFVS), evaluated through
-half-space moments. It does not use the historical PonD gauge evolution,
-discrete-population clipping, or a DUGKS collision flux.
-
-The historical `pond_fv*`, `pond_gauge`, and `pond_case_runner` modules remain
-separate research implementations. Selecting the new backend does not select
-that legacy uniform-grid sphere driver.
+half-space moments. It does not use the earlier Particles-on-Demand population evolution (gauge
+transform, discrete-population clipping, DUGKS collision flux): those research
+files were removed from this directory on 14 November 2026 and remain in the
+repository history.
 
 ## Mesh ownership and conservation
 
@@ -65,8 +63,7 @@ the same normalization, rather than borrowing an LBM relaxation time.
 
 The native case selects `advanced.numerics.pond_thermal.enabled: true` and uses
 `lattice: d3q27` for the common CPU mesh construction. That lattice choice does
-not determine the thermal finite-volume equations. The legacy PonD option must
-remain disabled. Additional keys under `pond_thermal` are `gamma` (default
+not determine the thermal finite-volume equations. Additional keys under `pond_thermal` are `gamma` (default
 1.4), `temperature_k` (288.15), `gas_constant` (287.05), `prandtl` (0.72), `cfl` (0.25), and
 `wall_model` (`slip` or `noslip`). The current case runner admits freestream
 Mach 0.05 to 1.5. `POND_THERMAL_DEVICE` selects `auto`, `cpu`, or `cuda`.

@@ -49,8 +49,8 @@ global OUTPUT_FREQ = 100
 global SLICE_OUTPUT_FREQ = 100
 global SLICE_COSMETIC_FILTERING = false  # Default to no spatial smoothing; contrast remaps in derived views like schlieren are still allowed.
 # Per-iteration slice field-set. :production (lean, default) or :all (full
-# debug set — every field × every plane). Set `advanced.slice.field_set: "all"`
-# for solver-debug runs. 2026-05-29.
+# debug set — every field × every plane). Set `advanced.slice.mode: "debug"`
+# for solver-debug runs.
 global SLICE_FIELD_SET = :production
 global DOMAIN_LENGTH_COVERED = 0.0  # 0.0 = use 'steps' directly; >0 = compute steps from domain traversals
 
@@ -150,7 +150,6 @@ global INTERFACE_TEMPORAL_WEIGHT_BIAS_DECAY_U_START = 1.0f0
 global INTERFACE_TEMPORAL_WEIGHT_BIAS_DECAY_U_END = 1.0f0
 global RESTRICT_FINE_TO_PARENT = true
 global INTERFACE_ENTROPIC_H_SCALE = 0.0f0
-global INTERFACE_FILTERING = false
 
 global CUMULANT_OMEGA_BULK      = 1.0f0
 global CUMULANT_OMEGA_3         = 1.0f0
@@ -163,8 +162,6 @@ const VALID_CUMULANT_LIMITERS = Set([:none, :factored, :positivity])
 
 # Entropic KBC parameters
 global ENTROPIC_ALPHA_SOLVER = :taylor      # :taylor (default), :bisection, :newton, :approximate
-global ENTROPIC_ALPHA_MAX_ITER = 10         # Max iterations for alpha solver
-global ENTROPIC_ALPHA_TOLERANCE = 1.0f-5    # Convergence tolerance (newton only)
 global ENTROPIC_SIGMA = 0.0f0              # h-component damping: 0=off (pure KBC), 1=full regularization
 
 const VALID_ENTROPIC_SOLVERS = Set([:bisection, :newton, :approximate, :taylor])
@@ -174,11 +171,7 @@ global LATTICE_TYPE = :d3q27
 global N_DIRS = Int32(27)
 global NUMERICAL_EQUILIBRIUM = false
 
-# PonD per-cell co-moving conservative kinetic-FV solver (path A; opt-in, default OFF).
-# Enable via `advanced.numerics.pond.enabled: true`. When off, every existing case is
-# byte-identical. The PonD FV path evolves conserved MOMENTS (ρ,ρu) via shared face fluxes,
-# NOT populations via stream-collide — it is dispatched separately from the LBM operators.
-global POND_ENABLED = false
+# Thermal kinetic finite volumes on the LBM mesh (src/collision/pond/pond_thermal_*.jl; `advanced.numerics.pond_thermal.enabled`).
 global POND_THERMAL_ENABLED = false
 
 # Phase C (2026-06-24): automatic regime selection. Populated in load_case_configuration.
@@ -187,9 +180,9 @@ global REGIME_RE = 0.0
 global REGIME_SELECTION = (regime = :incompressible, lattice = :d3q27, operator = :cumulant,
                            lattice_auto = true, operator_auto = true)
 
-# 2026-06-24 consolidation: D3Q19 retired (seed kept in lattice.jl + kernel_regularization_d3q19.jl).
+# 2026-06-24 consolidation: D3Q19 retired (its static tables stay in lattice.jl: build_d3q19_static).
 # Two active solvers — D3Q27 (cumulant, Ma≤0.6) and D3Q39 (entropic, Ma>0.6).
-const VALID_LATTICE_TYPES = Set([:d3q27, :d3q39, :pond])
+const VALID_LATTICE_TYPES = Set([:d3q27, :d3q39])
 
 # Compressible mode (Phase 3): sets Ma_lattice = Ma_physical for true supersonic flow.
 # When enabled, u_lattice is auto-computed from the physical Mach number so that
@@ -375,7 +368,7 @@ global SPONGE_TANH_SIGMA = 0.18f0    # Normalized width of tanh transition (frac
 global SPONGE_OUTLET_STRENGTH = 1.0f0
 global SPONGE_INLET_STRENGTH = 0.05f0
 global SPONGE_TRANSVERSE_STRENGTH = 0.10f0
-global OUTLET_BOUNDARY_MODE = Int32(0)  # 0=legacy bool path, 1=freestream, 2=zero-gradient, 3=interior extrapolate
+global OUTLET_BOUNDARY_MODE = Int32(2)  # 1=freestream, 2=zero-gradient, 3=interior extrapolate
 
 global BLOCK_SIZE_CONFIG = 8
 # Mesh-efficiency default (2026-05-30): tightened from 2→1 block. Verified on the
@@ -434,12 +427,6 @@ global FEATHER_DEPTH = 0
 global FEATHER_NU_MAX = 0.005f0
 global FEATHER_X_ONLY = false
 global AMR_REGULARIZATION_DEPTH = 0
-# Pass178: tensor-product axis-degraded fallback at AMR boundaries is now
-# hardcoded-skipped in physics_interpolation.jl (the gate is `if false`).
-# A global flag here triggered an InvalidIRError when accessed inside the
-# GPU kernel — Julia globals can't be JIT-compiled to PTX. If the original
-# behavior is needed, change the `if false` in physics_interpolation.jl
-# back to `if !accept_cubic_macros` (around line 1396).
 global AMR_INTERFACE_SHELL_SYNC = false
 global AMR_SHELL_EQ_SHIFT = true
 global AMR_SHELL_WELL_BALANCED_REBUILD = false
@@ -589,23 +576,16 @@ global AMR_RESTRICTION_CONSERVATIVE_RHOE = false
 # the case config. Implies `restriction_conservative_feq: true` because
 # the legacy stress-carrier path is bypassed entirely on the flow side.
 global AMR_RESTRICTION_CONSERVATIVE_13MOM = false
-# ── GOLD-STANDARD STRICT CONSERVATION (2026-06-17): D3Q19 4-moment exact ──
-# When true (D3Q19 only), the fine→coarse restriction adds a 4-moment (mass +
-# 3·momentum) correction that drives the parent populations to EXACT conservation
-# to FP32 round-off — the D3Q19 analogue of the D3Q39 13-moment-exact path.
-# v1 applies to full-coverage parents; frontier cells keep current behavior.
-# Default false ⇒ byte-identical.
-global AMR_RESTRICTION_CONSERVATIVE_D3Q19 = false
 # ── GOLD-STANDARD STRICT CONSERVATION (2026-06-23): D3Q27 cumulant 4-moment exact ──
-# The D3Q27 cumulant analogue of the above. D3Q27 restriction reconstructs the
-# parent from the polynomial equilibrium (round-trip-consistent with the cumulant
-# collision) but leaves a small mass+momentum residual after the positivity floor,
-# worst at ragged frontier cells. When true, the SAME n_dirs-generic 4-moment Gram
-# correction (solve_shell_moment4) the D3Q19 path uses drives the parent populations
+# The D3Q27 cumulant analogue of the D3Q39 13-moment-exact path. D3Q27 restriction
+# reconstructs the parent from the polynomial equilibrium (round-trip-consistent with
+# the cumulant collision) but leaves a small mass+momentum residual after the positivity
+# floor, worst at ragged frontier cells. When true, the n_dirs-generic 4-moment Gram
+# correction (solve_shell_moment4) drives the parent populations
 # to EXACT ρ + 3·momentum. D3Q27 is a full isotropic lattice (Σ w_k c_α c_β = cs²δ),
 # so the {1, c} correction is orthogonal to the traceless stress — shear untouched.
-# Default false ⇒ byte-identical. The kernel reuses the restriction_conservative_d3q19
-# parameter (now a generic "apply the 4-moment Gram correction" flag fed per-lattice).
+# Default false ⇒ byte-identical. The kernel parameter that carries it is named
+# restriction_conservative_d3q19 (a generic "apply the 4-moment Gram correction" flag).
 global AMR_RESTRICTION_CONSERVATIVE_D3Q27 = false
 # C2/C4 quintic B-spline AMR prolongation (2026-06-04). When true (D3Q27 only;
 # gated on LATTICE_TYPE == :d3q27 in timestep.jl), the coarse→fine macro
@@ -797,7 +777,6 @@ global MASS_CONTROL_RESCALE_EPS = 1.0f-2    # max per-step |Δρ|/ρ for :rescal
 global BOUNDARY_METHOD = :bounce_back
 global TRANSVERSE_FREESTREAM_BOUNDARY = false
 global TRANSVERSE_FREESTREAM_BLEND = 1.0f0
-global OUTLET_FREESTREAM_BOUNDARY = false
 global OUTLET_FREESTREAM_BLEND = 1.0f0
 global INLET_DENSITY_MODE = Int32(0)  # 0=freestream rho, 1=local boundary rho
 global SPAN_PERIODIC_Y = false
@@ -926,8 +905,6 @@ global MOMENT_CENTER_CONFIG = [0.0, 0.0, 0.0]
 global NET_FORCE_EXPORT_ENABLED = false
 
 global DIAG_FREQ = 100
-global STABILITY_CHECK_ENABLED = true
-global PRINT_TAU_WARNING = true
 global THERMAL_INTERFACE_DIAGNOSTICS = false
 global AMR_INTERFACE_DIAGNOSTICS = false
 # Default: amr_seam_*.csv emitted only at t_step ∈ {100, 200, 400}. When
@@ -1040,8 +1017,6 @@ global IC_SPIEGEL_RADIUS      = 0.1
 global IC_SPIEGEL_AMPLITUDE   = 0.05
 
 global GPU_ASYNC_DEPTH = 8
-global USE_STREAMS = true
-global PREFETCH_NEIGHBORS = true
 
 # Multi-GPU (Strategy C: replicated coarse + partitioned fine)
 global MULTI_GPU_ENABLED = false
@@ -1073,17 +1048,6 @@ function config_has_path(dict, keys...)
         current = current[key]
     end
     return true
-end
-
-# Resolve a feature flag whose DEFAULT depends on the active solver preset.
-# An explicit per-case value (anywhere on the path) always wins; otherwise the
-# preset-specific default is used. `pristine` and `vanilla` give the two
-# baselines. Call AFTER SOLVER_PRESET is set.
-function preset_flag(cfg, keys...; pristine, vanilla)
-    if config_has_path(cfg, keys...)
-        return safe_get(cfg, keys...)
-    end
-    return SOLVER_PRESET == "vanilla" ? vanilla : pristine
 end
 
 function parse_symmetric_analysis_mode(raw_value)
@@ -1291,7 +1255,7 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     global STEPS = Int(safe_get(CFG, "basic", "simulation", "steps"; default=0))
     global RAMP_STEPS = Int(safe_get(CFG, "basic", "simulation", "ramp_steps"))
     local ramp_profile_raw = replace(lowercase(String(safe_get(CFG, "basic", "simulation", "ramp_profile"; default="half_cosine"))), "-" => "_")
-    local ramp_profile = Symbol(ramp_profile_raw == "cosine" ? "half_cosine" : ramp_profile_raw)
+    local ramp_profile = Symbol(ramp_profile_raw)
     if !(ramp_profile in VALID_RAMP_PROFILES)
         error("Unknown basic.simulation.ramp_profile: \"$ramp_profile_raw\". Valid: $(join(sort(collect(VALID_RAMP_PROFILES)), ", "))")
     end
@@ -1305,16 +1269,12 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     # SLICE EXPORT MODE (2026-06-22, user request): "debug" = export ALL slice fields
     # + the amr_seam_*.csv diagnostics; "production" = export only the 7 inspection
     # fields (velocity, velocity_highpass, vorticity, pressure, density, mach,
-    # schlieren) and NO seam CSVs. Accepts the legacy `field_set` key too.
-    let _sm_raw = lowercase(string(safe_get(CFG, "advanced", "slice", "mode";
-                       default=safe_get(CFG, "advanced", "slice", "field_set"; default="production"))))
-        global SLICE_FIELD_SET = _sm_raw == "debug" ? :all :
-                                 _sm_raw == "production" ? :production :
-                                 Symbol(_sm_raw)   # allow legacy :geometric/:amr_debug etc.
-        if !(SLICE_FIELD_SET in (:all, :production, :geometric, :amr_debug))
+    # schlieren) and NO seam CSVs.
+    let _sm_raw = lowercase(string(safe_get(CFG, "advanced", "slice", "mode"; default="production")))
+        if !(_sm_raw in ("debug", "production"))
             @warn "Unknown advanced.slice.mode '$_sm_raw' — falling back to 'production'."
-            global SLICE_FIELD_SET = :production
         end
+        global SLICE_FIELD_SET = _sm_raw == "debug" ? :all : :production
         println("[Init]    Slice export mode: $_sm_raw ⇒ $SLICE_FIELD_SET")
     end
     # lbm-io-opts (27 Oct 2026): opt-in slice/IO keys and build-only mode; the parser and
@@ -1428,8 +1388,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     if !(ENTROPIC_ALPHA_SOLVER in VALID_ENTROPIC_SOLVERS)
         error("Unknown entropic alpha_solver: \"$ENTROPIC_ALPHA_SOLVER\". Valid: $(join(sort(collect(VALID_ENTROPIC_SOLVERS)), ", "))")
     end
-    global ENTROPIC_ALPHA_MAX_ITER = Int(safe_get(CFG, "advanced", "numerics", "entropic", "alpha_max_iter"; default=10))
-    global ENTROPIC_ALPHA_TOLERANCE = Float32(safe_get(CFG, "advanced", "numerics", "entropic", "alpha_tolerance"; default=1.0e-5))
     global ENTROPIC_SIGMA = Float32(safe_get(CFG, "advanced", "numerics", "entropic", "sigma"; default=0.0))
 
     global COMPRESSIBILITY_CORRECTION = safe_get(CFG, "advanced", "numerics", "compressibility_correction"; default=false)
@@ -1482,22 +1440,15 @@ function _load_case_configuration_values!(validated_case_id, config_path,
 
     # ── Lattice type (Phase C: from the regime selector; user-pinned value respected) ──
     global LATTICE_TYPE = REGIME_SELECTION.lattice
-    # PonD opt-in (default OFF ⇒ byte-identical existing cases). When enabled it overrides
-    # the regime lattice choice: PonD uses the 39-velocity set for the 2nd-order Grad closure.
-    global POND_ENABLED = safe_get(CFG, "advanced", "numerics", "pond", "enabled"; default=false)
     local _thermal_fv_enabled = safe_get(CFG, "advanced", "numerics", "pond_thermal", "enabled"; default=false)
     _thermal_fv_enabled isa Bool || error("advanced.numerics.pond_thermal.enabled must be true or false")
     global POND_THERMAL_ENABLED = _thermal_fv_enabled
-    POND_THERMAL_ENABLED && POND_ENABLED && error("Select either legacy PonD or thermal kinetic FV, not both")
     POND_THERMAL_ENABLED && LATTICE_TYPE != :d3q27 && error("Thermal kinetic FV uses lattice: d3q27 for the shared CPU mesh build; it evolves its own conserved fields")
-    if POND_ENABLED
-        global LATTICE_TYPE = :pond
-    end
     if !(LATTICE_TYPE in VALID_LATTICE_TYPES)
         error("Unknown lattice type: \"$LATTICE_TYPE\". Valid: $(join(sort(collect(VALID_LATTICE_TYPES)), ", "))")
     end
-    global N_DIRS = (LATTICE_TYPE == :d3q39 || LATTICE_TYPE == :pond) ? Int32(39) : Int32(27)
-    global NUMERICAL_EQUILIBRIUM = (LATTICE_TYPE == :d3q39)  # PonD uses closed-form Grad, not the Newton eq
+    global N_DIRS = LATTICE_TYPE == :d3q39 ? Int32(39) : Int32(27)
+    global NUMERICAL_EQUILIBRIUM = (LATTICE_TYPE == :d3q39)
     if LATTICE_TYPE == :d3q39 && COLLISION_OPERATOR != :entropic
         error("D3Q39 lattice requires collision_operator: entropic. " *
               "The cumulant operator uses D3Q27-specific structure (Chimera transform).")
@@ -1941,9 +1892,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     # useful for quasi-2D cylinders: generate a closed, longer STL for robust
     # ray tests, but keep its end caps outside the computational span.
     global DOMAIN_SPAN_OVERRIDE = Float64(safe_get(CFG, "advanced", "domain", "span_override"; default=-1.0))
-    if DOMAIN_SPAN_OVERRIDE == -1.0
-        global DOMAIN_SPAN_OVERRIDE = Float64(safe_get(CFG, "advanced", "domain", "y_size_override"; default=-1.0))
-    end
     if DOMAIN_SPAN_OVERRIDE == 0.0 || DOMAIN_SPAN_OVERRIDE < -1.0
         error("advanced.domain.span_override must be positive, or omitted/negative to disable.")
     end
@@ -2302,9 +2250,7 @@ function _load_case_configuration_values!(validated_case_id, config_path,
         # the conservative-feq guard on so the diagnostics stay consistent.
         global AMR_RESTRICTION_CONSERVATIVE_FEQ = true
     end
-    # GOLD-STANDARD STRICT CONSERVATION (2026-06-17): D3Q19 4-moment exact restriction
-    global AMR_RESTRICTION_CONSERVATIVE_D3Q19 = safe_get(CFG, "advanced", "refinement",
-                                                         "restriction_conservative_d3q19"; default=false)
+    # GOLD-STANDARD STRICT CONSERVATION (2026-06-23): D3Q27 cumulant 4-moment exact restriction
     global AMR_RESTRICTION_CONSERVATIVE_D3Q27 = safe_get(CFG, "advanced", "refinement",
                                                          "restriction_conservative_d3q27"; default=false)
     global QUINTIC_BSPLINE_PROLONGATION = safe_get(CFG, "advanced", "refinement",
@@ -2480,14 +2426,12 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     global TRANSVERSE_FREESTREAM_BLEND = Float32(safe_get(CFG, "advanced", "boundary", "transverse_freestream_blend"; default=1.0))
     (TRANSVERSE_FREESTREAM_BLEND < 0.0f0 || TRANSVERSE_FREESTREAM_BLEND > 1.0f0) &&
         error("advanced.boundary.transverse_freestream_blend must be in [0, 1]")
-    global OUTLET_FREESTREAM_BOUNDARY = safe_get(CFG, "advanced", "boundary", "outlet_freestream"; default=false)
-    outlet_mode_raw = safe_get(CFG, "advanced", "boundary", "outlet_mode"; default=OUTLET_FREESTREAM_BOUNDARY ? "freestream" : "zerogradient")
+    outlet_mode_raw = safe_get(CFG, "advanced", "boundary", "outlet_mode"; default="zerogradient")
     outlet_mode_sym = Symbol(lowercase(String(outlet_mode_raw)))
-    outlet_mode_sym in (:legacy, :freestream, :zerogradient, :extrapolate) ||
-        error("advanced.boundary.outlet_mode must be \"legacy\", \"freestream\", \"zerogradient\", or \"extrapolate\" (got \"$outlet_mode_raw\")")
+    outlet_mode_sym in (:freestream, :zerogradient, :extrapolate) ||
+        error("advanced.boundary.outlet_mode must be \"freestream\", \"zerogradient\", or \"extrapolate\" (got \"$outlet_mode_raw\")")
     global OUTLET_BOUNDARY_MODE = outlet_mode_sym == :freestream ? Int32(1) :
-                                  outlet_mode_sym == :zerogradient ? Int32(2) :
-                                  outlet_mode_sym == :extrapolate ? Int32(3) : Int32(0)
+                                  outlet_mode_sym == :zerogradient ? Int32(2) : Int32(3)
     # AUDIT FIX (2026-06-03): `outlet_mode: extrapolate` (mode 3) shares this
     # blend knob with `freestream` (mode 1). The legacy default of 1.0 silently
     # turned "extrapolate" into a full freestream-equilibrium clamp (the interior
@@ -2630,8 +2574,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     global NET_FORCE_EXPORT_ENABLED = safe_get(CFG, "advanced", "forces", "net_force_export"; default=false)
     
     global DIAG_FREQ = Int(safe_get(CFG, "advanced", "diagnostics", "freq"; default=500))
-    global STABILITY_CHECK_ENABLED = safe_get(CFG, "advanced", "diagnostics", "stability_check"; default=true)
-    global PRINT_TAU_WARNING = safe_get(CFG, "advanced", "diagnostics", "print_tau_warning"; default=true)
     global THERMAL_INTERFACE_DIAGNOSTICS = safe_get(CFG, "advanced", "diagnostics", "thermal_interface_diagnostics"; default=false)
     global AMR_INTERFACE_DIAGNOSTICS = safe_get(CFG, "advanced", "diagnostics", "amr_interface_diagnostics"; default=false)
     global AMR_SEAM_DIAGNOSTIC_ALL_STEPS = safe_get(CFG, "advanced", "diagnostics", "amr_seam_all_steps"; default=false)
@@ -2787,9 +2729,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     global FORCE_OUTPUT_FREQ = FORCE_OUTPUT_FREQ_CONFIG == 0 ? OUTPUT_FREQ : FORCE_OUTPUT_FREQ_CONFIG
     
     global GPU_ASYNC_DEPTH = Int(safe_get(CFG, "advanced", "gpu", "async_depth"; default=8))
-    global USE_STREAMS = safe_get(CFG, "advanced", "gpu", "use_streams"; default=true)
-    # (D3Q19 workgroup + AMR-interior-split config retired 2026-06-24 with the D3Q19 solver.)
-    global PREFETCH_NEIGHBORS = safe_get(CFG, "advanced", "gpu", "prefetch_neighbors"; default=true)
     global MULTI_GPU_ENABLED = safe_get(CFG, "advanced", "gpu", "multi_gpu"; default=false)
     global GPU_SPLIT_LEVEL = Int(safe_get(CFG, "advanced", "gpu", "split_level"; default=2))
     
@@ -2967,7 +2906,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     println("[Init]    AMR halo equilibrium projection: $AMR_HALO_EQ_PROJECTION")
     println("[Init]    AMR halo constrained kinetic completion: $AMR_HALO_CONSTRAINED_COMPLETION")
     println("[Init]    AMR restriction f_neq filter (Lagrava box, default off): $AMR_RESTRICTION_PI_NEQ_FILTER")
-    println("[Init]    AMR restriction STRICT-CONSERVATIVE D3Q19 4-moment (mass+3mom exact, default off): $AMR_RESTRICTION_CONSERVATIVE_D3Q19")
     println("[Init]    AMR restriction STRICT-CONSERVATIVE D3Q27 4-moment (mass+3mom exact, default off): $AMR_RESTRICTION_CONSERVATIVE_D3Q27")
     println("[Init]    AMR restriction moment-correction passes: $AMR_RESTRICTION_CORRECTION_PASSES")
     println("[Init]    AMR restriction conservative f_eq (Tier 1 #1e, exact ρ+j after Newton): $AMR_RESTRICTION_CONSERVATIVE_FEQ")
@@ -2993,7 +2931,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
             "legacy: tau_l - 1/2 = (tau_f - 1/2)·2^(L-l) (each coarser level 4× the physical viscosity of the next finer)")
     println("[Init]    Transverse freestream boundary: $TRANSVERSE_FREESTREAM_BOUNDARY")
     println("[Init]    Transverse freestream blend: $TRANSVERSE_FREESTREAM_BLEND")
-    println("[Init]    Outlet freestream boundary: $OUTLET_FREESTREAM_BOUNDARY")
     println("[Init]    Outlet boundary mode: $OUTLET_BOUNDARY_MODE")
     println("[Init]    Outlet freestream blend: $OUTLET_FREESTREAM_BLEND")
     println("[Init]    Inlet density mode: $(INLET_DENSITY_MODE == Int32(1) ? "local" : "freestream")")
@@ -3023,10 +2960,6 @@ function _load_case_configuration_values!(validated_case_id, config_path,
     elseif COLLISION_OPERATOR == :entropic
         println("[Init]    Entropic KBC settings:")
         println("[Init]       α solver: $ENTROPIC_ALPHA_SOLVER")
-        println("[Init]       Max iterations: $ENTROPIC_ALPHA_MAX_ITER")
-        if ENTROPIC_ALPHA_SOLVER == :newton
-            @printf("[Init]       Tolerance: %.1e\n", ENTROPIC_ALPHA_TOLERANCE)
-        end
         if ENTROPIC_SIGMA > 0.0f0
             @printf("[Init]       Sigma (h-damping): %.3f\n", ENTROPIC_SIGMA)
         end

@@ -1,8 +1,8 @@
 # Compressible C-mesh solver
 
-`cmesh_solver_ka.jl` is the active CPU/GPU carrier. `cmesh_solver.jl` is the legacy CPU version. Mesh generation and the shared flux, EOS, wall, and outlet modules remain in `../cmesh/`; the cavitation solver also uses the carrier.
+`cmesh_solver_ka.jl` is the KernelAbstractions CPU/GPU carrier. `cmesh_solver.jl` is the CPU-only core: Airfoil Lab uses it for a steady CPU run with an explicit method, and the carrier for GPU runs, time-accurate runs and the implicit methods. Mesh generation and the shared flux, EOS, wall, and outlet modules remain in `../cmesh/`; the cavitation solver also uses the carrier.
 
-Airfoil Lab loads the active solver from `apps/airfoil_web/src/backends/cfd_backend.jl`. The old paths in `../cmesh/` are compatibility includes for existing scripts.
+Airfoil Lab loads both from `apps/airfoil_web/src/backends/cfd_backend.jl`.
 
 The Julia controller API also accepts the experimental `linear_solver=:native_cgs2`.
 It currently requires a Float64 free-air thermal state and original-node MUSCL

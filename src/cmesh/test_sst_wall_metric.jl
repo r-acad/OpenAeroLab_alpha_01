@@ -6,8 +6,8 @@ include(joinpath(@__DIR__, "..", "collision", "lattice.jl"))
 include(joinpath(@__DIR__, "cmesh_gen.jl"))
 include(joinpath(@__DIR__, "cmesh_metrics.jl"))
 
-include(joinpath(@__DIR__, "cmesh_solver.jl"))
-include(joinpath(@__DIR__, "cmesh_solver_ka.jl"))
+include(joinpath(@__DIR__, "..", "compressible", "cmesh_solver.jl"))
+include(joinpath(@__DIR__, "..", "compressible", "cmesh_solver_ka.jl"))
 
 """Manufactured no-slip tangential shear on a straight or circular foil wall."""
 function couette_fixture(; curved::Bool=false, scalar_type::Type{<:AbstractFloat}=Float32)

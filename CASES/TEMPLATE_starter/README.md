@@ -17,5 +17,3 @@ The inputs-only workflow. **You specify the physics; the solver picks itself.**
 ## Overriding
 Any explicitly-set key wins. Set `advanced.numerics.lattice` / `collision_operator` /
 `variable_nu_sgs.enabled` to pin a choice. See the comments in `config.yaml`.
-
-Full design: `docs/2026-06-24_solver_architecture_and_regime_selector.md`.

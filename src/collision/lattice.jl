@@ -311,11 +311,6 @@ Weights, OPP, and mirror mappings are index-based and remain invariant under the
 """
 function initialize_lattice!(lattice_type::Symbol;
                              shift_x::Int32=Int32(0), shift_y::Int32=Int32(0), shift_z::Int32=Int32(0))
-    # PonD uses the D3Q39 velocity set (cs²=2/3) for its 2nd-order Grad closure, UNSHIFTED —
-    # the co-moving frame is per-cell (handled in the FV flux), not a global Galilean shift.
-    if lattice_type == :pond
-        lattice_type = :d3q39
-    end
     if lattice_type == :d3q19
         cx, cy, cz, w, opp, my = build_d3q19_static()
         global C_X      = cx

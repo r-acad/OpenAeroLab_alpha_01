@@ -22,8 +22,7 @@ REM launch. Safe, correct, slow (~6-15 min JIT on first batch).
 REM
 REM Usage:
 REM   run.bat                                 (runs cases_to_run.yaml, full check)
-REM   run.bat src/PREPOST/freestream_gate_check.jl CASES/013_freestream_AMR_gate
-REM                                           (runs the gate check)
+REM   run.bat path/to/script.jl arguments     (runs that script with the same flags)
 REM
 REM Falls back to src/main.jl when no argument is supplied.
 REM ==============================================================================

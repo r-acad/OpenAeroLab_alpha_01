@@ -8,6 +8,6 @@
 | Pressure-based low-speed/cavitation (PBCav) | `../solvers/pbcav_s1030/src/pbcav/` | `../solvers/pbcav_s1030/tools/pbcav_driver.jl` |
 | JXfoil | `../third_party/JXfoil/` | Airfoil Lab's JXfoil backend |
 
-Additional research paths remain in `barotropic/`, `collision/pond/`, and the free-surface files in `cmesh/`. They share data structures and callers with the existing source tree, so this layout change leaves their file paths intact.
+`collision/pond/` holds the thermal kinetic finite-volume solver on the LBM mesh; research paths remain in the free-surface files in `cmesh/`. They share data structures and callers with the existing source tree, so this layout change leaves their file paths intact.
 
-`cmesh/` keeps mesh generation, common C-mesh physics, and supporting modules used by more than one solver. Its four short compatibility files forward old include paths to `compressible/` and `cavitation/`. The pinned solver snapshots retain their own layout and checksums.
+`cmesh/` keeps mesh generation, common C-mesh physics, and supporting modules used by more than one solver. The solver modules themselves are included from `compressible/` and `cavitation/`. The pinned solver snapshots retain their own layout and checksums.

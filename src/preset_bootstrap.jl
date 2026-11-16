@@ -22,9 +22,6 @@
 # is loaded. A narrow text preflight rejects YAML constructs whose duplicate or
 # merge semantics could hide preset keys; the actual preset value is then read
 # with YAML.load, the same parser used by config_loader.jl at runtime.
-#
-# Unit test: tools/test_preset_bootstrap.jl (drives this file standalone
-# against synthetic case trees and an injected env Dict).
 # ==============================================================================
 
 if !isdefined(@__MODULE__, :CaseIDContract)
