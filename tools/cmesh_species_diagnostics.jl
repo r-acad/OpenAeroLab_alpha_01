@@ -290,7 +290,11 @@ function _cmesh_restart_validate(d,s,t,wallmode,reconstruction::Bool=false,kinet
     strip===nothing || (configuration=CMeshCavSpecies._pair_configuration(configuration,strip.solver,strip.tem))
     cp.configuration==configuration ||
         bad(CMeshCavSpecies._configuration_mismatch("configuration mismatch",cp.configuration,configuration))
-    cp.geometry_sha256==(strip===nothing ? CMeshCavSpecies._geometry_hash(s) : CMeshCavSpecies._geometry_hash_pair(s,strip.solver)) ||
+    # (15 Nov 2026) CAV_MOVIE_RESTART_GEOMETRY=rounding: a STUDY switch that restores a state on another backend. The hash is
+    # of the metric arrays, which the CPU and CUDA round differently in the last bits although the node coordinates are the
+    # same (the driver's MESH COORDINATE RECEIPT); the field shapes are still checked below. Unset (or "strict"): the hash.
+    get(ENV,"CAV_MOVIE_RESTART_GEOMETRY","strict")=="rounding" ||
+        cp.geometry_sha256==(strip===nothing ? CMeshCavSpecies._geometry_hash(s) : CMeshCavSpecies._geometry_hash_pair(s,strip.solver)) ||
         bad("geometry mismatch")
     _cmesh_restart_validate_fields(d.state,cp.conserved,cp.turbulence,s,bad,"")
     strip===nothing || _cmesh_restart_validate_fields(d.strip.state,cp.strip.conserved,cp.strip.turbulence,strip.solver,bad," (the strip block)")

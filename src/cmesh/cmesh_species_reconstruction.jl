@@ -201,8 +201,21 @@ end
          isfinite(pf) && pf>0f0 && isfinite(cf) && cf>0f0 && isfinite(Yf) && 0f0<=Yf<=1f0
     (face,good,phase_good)
 end
+# The limiter and the boundary faces (15 Nov 2026). The bounds lo, hi hold the cell and its in-range neighbours, but the
+# limiter (and the admission below it) tested all four faces, so the boundary face of a cell beside a wall, a block interface,
+# a tunnel wall or an outlet was held to bounds with no boundary state in them: any variation normal to the boundary gave
+# theta near 0, and the whole row or column was reconstructed at first order, in both directions. Those boundary face states
+# are read by no flux and no clock (the boundary faces take their own states). RECON_BOUNDARY_SKIP[] = 1 leaves the boundary
+# faces out of the limiter OF THE TWO VELOCITY COMPONENTS only; 0 (the default) is the previous path, bitwise.
+# The phase densities and the SST scalars keep the four-face limiter on purpose: for them the boundary face is what holds a
+# cell at its minimum (a vapour-free cell beside a boundary, k at its floor) to theta = 0, and without it the donor face value
+# of such a cell can exceed the cell's content, so vapour would leave a cell that holds none at ANY step (measured 15 Nov:
+# the first form of this option skipped the boundary face for every variable and exhausted the retries at once, on the
+# strip block's phase trial). Driver TOPO_SPECIES_RECON_BOUNDARY=velocity. A development option, not bound in the cache
+# configuration.
+const RECON_BOUNDARY_SKIP = Ref{Int32}(Int32(0))
 # Scalar arguments avoid capturing the reassigned gradient tuples in a GPU closure.
-@inline function _component_limit(U,ux,uy,offsets,z,gx,gy,i,j,g,::Val{K},NI,NJ) where K
+@inline function _component_limit(U,ux,uy,offsets,z,gx,gy,i,j,g,::Val{K},NI,NJ,bskip::Int32=Int32(0)) where K
     tk=one(z[K])
     lo=z[K];hi=z[K]
     for f in 1:4
@@ -213,6 +226,10 @@ end
         end
     end
     for f in 1:4
+        if bskip!=Int32(0)
+            ii,jj=_neighbor(i,j,f)
+            (1<=ii<=NI && 1<=jj<=NJ) || continue
+        end
         d=gx*offsets[i,j,1,f]+gy*offsets[i,j,2,f]
         if d>0f0
             tk=min(tk,(hi-z[K])/d)
@@ -261,7 +278,7 @@ end
 # halving stays the fallback for a face the phase bounds do not cover, the EOS admission, and a face still failing after it.
 @kernel function _k_states!(states,theta,status,geometry,@Const(U),@Const(ux),@Const(uy),
                             @Const(T),@Const(p),@Const(am),ep,Tmin::Float32,Tmax::Float32,single::Int32,
-                            NI::Int32,NJ::Int32,g::Int32,retreat::Int32)
+                            NI::Int32,NJ::Int32,g::Int32,retreat::Int32,bskip::Int32)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
         z=_z(U,ux,uy,i,j,g)
@@ -281,8 +298,8 @@ end
             limits=(
                 _component_limit(U,ux,uy,geometry.offsets,z,gx[1],gy[1],i,j,g,Val(1),NI,NJ),
                 _component_limit(U,ux,uy,geometry.offsets,z,gx[2],gy[2],i,j,g,Val(2),NI,NJ),
-                _component_limit(U,ux,uy,geometry.offsets,z,gx[3],gy[3],i,j,g,Val(3),NI,NJ),
-                _component_limit(U,ux,uy,geometry.offsets,z,gx[4],gy[4],i,j,g,Val(4),NI,NJ))
+                _component_limit(U,ux,uy,geometry.offsets,z,gx[3],gy[3],i,j,g,Val(3),NI,NJ,bskip),
+                _component_limit(U,ux,uy,geometry.offsets,z,gx[4],gy[4],i,j,g,Val(4),NI,NJ,bskip))
             phase=min(limits[1],limits[2])
             th=(phase,phase,limits[3],limits[4])
         end
@@ -357,7 +374,7 @@ function _reconstruct!(c,r;slot=nothing)
     # r.status is written in both modes (tests and diagnostics read it after a step);
     # a deferred owner (slot === :batched) reduces it in its next batch.
     _k_states!(s.backend)(r.states,r.theta,r.status,r.geometry,c.conserved.U,s.ux,s.uy,s.T,c.pressure,s.am,
-        Float64.(s.outlet_eos),t.Tmin,t.Tmax,Int32(c.eos_single),ni,nj,g,r.retreat;ndrange=(s.NI,s.NJ))
+        Float64.(s.outlet_eos),t.Tmin,t.Tmax,Int32(c.eos_single),ni,nj,g,r.retreat,RECON_BOUNDARY_SKIP[];ndrange=(s.NI,s.NJ))
     slot===nothing && (maximum(r.status)==0 || throw(ArgumentError("reconstruction rejected a cell/face state")))
     nothing
 end

@@ -88,6 +88,12 @@ const SMOOTH = length(MESHV) >= 5 ? Int(MESHV[5]) : 40
 # (cmesh_gen.jl, keyword le_ds). Default 0: the existing distribution, bitwise.
 const MESH_LE_DS = parse(Float64, get(ENV, "TOPO_MESH_LE_DS", "0"))
 isfinite(MESH_LE_DS) && 0 <= MESH_LE_DS < 0.1 || error("TOPO_MESH_LE_DS must lie in [0, 0.1) (got $MESH_LE_DS)")
+# Suction-side share of the surface cells (15 Nov 2026): TOPO_MESH_UPPER_FRACTION > 0 gives that share of the n_foil surface
+# cells to the upper side (cmesh_gen.jl, keyword surface_upper_fraction), where a sheet cavity sits; the production meshes
+# leave about 0.02 c per cell at mid-chord there. Default 0: the split by arc length, bitwise, with unchanged tag and log.
+const MESH_UPPER_FRACTION = parse(Float64, get(ENV, "TOPO_MESH_UPPER_FRACTION", "0"))
+isfinite(MESH_UPPER_FRACTION) && (MESH_UPPER_FRACTION == 0 || 0.2 <= MESH_UPPER_FRACTION <= 0.85) ||
+    error("TOPO_MESH_UPPER_FRACTION must be 0 or lie in [0.2, 0.85] (got $MESH_UPPER_FRACTION)")
 # The app opts into one smooth geometry/curvature station rule for preview and
 # Run. Unset controls retain the historical driver and archived meshes exactly.
 const MESH_SURFACE_EVALUATOR = Symbol(get(ENV,"TOPO_MESH_SURFACE_EVALUATOR","legacy_catmull_rom"))
@@ -277,7 +283,11 @@ const CFLV = parse(Float64, get(ENV, "TOPO_CFL", "0.30"))  # (rebuild, 22 Sep 20
 # Operational CFL ceiling (speed-up plan W1a, 30 Sep 2026): TOPO_SPECIES_CFL_MAX, default 0.5 (bitwise the previous
 # refusal); at most 1.0. A value above 0.5 is admitted for a configuration only by a registered measurement.
 const CFL_MAX_V = parse(Float64, get(ENV, "TOPO_SPECIES_CFL_MAX", "0.5"))
-isfinite(CFL_MAX_V) && 0.5 <= CFL_MAX_V <= 1.0 || error("TOPO_SPECIES_CFL_MAX must be in [0.5, 1.0] (got $CFL_MAX_V)")
+# (15 Nov 2026) The upper end was 1.0 by registration, not by measurement: W1a admitted 0.6, 0.75 and 0.9 with zero
+# rejections and never found a failing value. The face clock sums a face speed of about 2 c over the four faces of a cell,
+# so CFL 0.9 with the 0.9 clock margin is an acoustic Courant number of about 0.19 on the first wall cells. Values up to
+# 4.0 are accepted so that the real limit can be measured; nothing at or below 1.0 changes.
+isfinite(CFL_MAX_V) && 0.5 <= CFL_MAX_V <= 4.0 || error("TOPO_SPECIES_CFL_MAX must be in [0.5, 4.0] (got $CFL_MAX_V)")
 isfinite(CFLV) && 0.0 < CFLV <= CFL_MAX_V || error("TOPO_CFL must be in (0, $CFL_MAX_V] (got $CFLV)")
 # ★★ CARRIER FLUX LEVEL (2026-09-03). KSol.cav: 1 = PDP pexc split, 2 = +Layer C (the archived
 # B29-B32 production value), 3 = +negcomp floor, 4 = LOW-MACH MIXTURE FLUX (AUSM+-up on rho, u,
@@ -351,6 +361,40 @@ const SPECIES_CLOCK_MARGIN = parse(Float32, get(ENV,"TOPO_SPECIES_CLOCK_MARGIN",
 CMeshCavSpecies.CLOCK_MARGIN[] = SPECIES_CLOCK_MARGIN
 CONSERVATIVE && println("  SPECIES CLOCK MARGIN: ", SPECIES_CLOCK_MARGIN, " x the reconstructed face cap (TOPO_SPECIES_CLOCK_MARGIN; 0.9 was the unmeasured hard-coded value)")
 CMeshCavSpecies.CFL_MAX[] = Float32(CFL_MAX_V)
+# (15 Nov 2026) TOPO_SPECIES_SST_CLOCK_FACTOR: the factor of the SST clock (cmesh_species_sst.jl, SST_CLOCK_FACTOR); default 0.25,
+# the value it always had (bitwise, no banner). A study knob for the step limit of the first wall cell.
+const SPECIES_SST_CLOCK_FACTOR = parse(Float32, get(ENV,"TOPO_SPECIES_SST_CLOCK_FACTOR","0.25"))
+0.25f0 <= SPECIES_SST_CLOCK_FACTOR <= 1.0f0 || error("TOPO_SPECIES_SST_CLOCK_FACTOR must be in [0.25, 1.0] (got $SPECIES_SST_CLOCK_FACTOR)")
+CMeshCavSpecies.SST_CLOCK_FACTOR[] = SPECIES_SST_CLOCK_FACTOR
+# (15 Nov 2026) TOPO_SPECIES_SOURCE_CLOCK_FACTOR: the factor of the phase-source clock (cmesh_cav_species.jl,
+# SOURCE_CLOCK_FACTOR); default 0.25, the value it always had (bitwise, no banner). A study knob.
+const SPECIES_SOURCE_CLOCK_FACTOR = parse(Float32, get(ENV,"TOPO_SPECIES_SOURCE_CLOCK_FACTOR","0.25"))
+0.25f0 <= SPECIES_SOURCE_CLOCK_FACTOR <= 1.0f0 || error("TOPO_SPECIES_SOURCE_CLOCK_FACTOR must be in [0.25, 1.0] (got $SPECIES_SOURCE_CLOCK_FACTOR)")
+CMeshCavSpecies.SOURCE_CLOCK_FACTOR[] = SPECIES_SOURCE_CLOCK_FACTOR
+# (15 Nov 2026) TOPO_SPECIES_SST_PRODUCTION: the form of the species SST's production terms (cmesh_species_sst.jl,
+# _sst_coefficients): strain (default: nu_t S^2 of the full strain tensor, bitwise, no banner, unchanged tag), compressible
+# (nu_t (S^2 - (2/3)(div u)^2) with the dilatation terms -(2/3) k div u and -(2/3) gamma omega div u), kato_launder (nu_t S Omega).
+# A development option: it is not bound in the cache configuration, so a restart may change it.
+const SPECIES_SST_PRODUCTION_RAW = get(ENV,"TOPO_SPECIES_SST_PRODUCTION","strain")
+SPECIES_SST_PRODUCTION_RAW in ("strain","compressible","kato_launder") || error("TOPO_SPECIES_SST_PRODUCTION must be strain, compressible or kato_launder (got $SPECIES_SST_PRODUCTION_RAW)")
+CMeshCavSpecies.SST_PRODUCTION[] = SPECIES_SST_PRODUCTION_RAW == "compressible" ? Int32(1) : SPECIES_SST_PRODUCTION_RAW == "kato_launder" ? Int32(2) : Int32(0)
+CONSERVATIVE && SPECIES_SST_PRODUCTION_RAW != "strain" && println("  SPECIES SST PRODUCTION: ", SPECIES_SST_PRODUCTION_RAW, " (TOPO_SPECIES_SST_PRODUCTION; strain is the default and the previous form)")
+# (15 Nov 2026) TOPO_SPECIES_RECON_BOUNDARY: limit (default: the limiter tests all four faces of a cell for every variable,
+# bitwise, no banner) or velocity (the boundary faces of the cells beside a wall, an interface, a tunnel wall or an outlet are
+# left out of the limiter of the two velocity components, so those rows' velocity is no longer reconstructed at first order;
+# the phase densities and the SST scalars keep the four-face limiter, which their positivity needs:
+# cmesh_species_reconstruction.jl, RECON_BOUNDARY_SKIP). A development option, not bound in the cache configuration.
+const SPECIES_RECON_BOUNDARY_RAW = get(ENV,"TOPO_SPECIES_RECON_BOUNDARY","limit")
+SPECIES_RECON_BOUNDARY_RAW in ("limit","velocity") || error("TOPO_SPECIES_RECON_BOUNDARY must be limit or velocity (got $SPECIES_RECON_BOUNDARY_RAW)")
+CMeshCavSpecies.RECON_BOUNDARY_SKIP[] = SPECIES_RECON_BOUNDARY_RAW == "velocity" ? Int32(1) : Int32(0)
+CONSERVATIVE && SPECIES_RECON_BOUNDARY_RAW != "limit" && println("  SPECIES RECONSTRUCTION BOUNDARY FACES: ", SPECIES_RECON_BOUNDARY_RAW, " (TOPO_SPECIES_RECON_BOUNDARY; limit is the default and the previous path)")
+# (15 Nov 2026) CAV_MOVIE_RESTART_GEOMETRY=rounding: a study switch, restore a checkpoint although the metric hash differs
+# (a CUDA state on the CPU backend). Unset or "strict": the hash must match.
+get(ENV,"CAV_MOVIE_RESTART_GEOMETRY","strict") in ("strict","rounding") || error("CAV_MOVIE_RESTART_GEOMETRY must be strict or rounding")
+CMeshCavSpecies.RESTART_GEOMETRY_ROUNDING[] = get(ENV,"CAV_MOVIE_RESTART_GEOMETRY","strict") == "rounding"
+CMeshCavSpecies.RESTART_GEOMETRY_ROUNDING[] && println("  ⚠ STUDY SWITCH: CAV_MOVIE_RESTART_GEOMETRY=rounding (a checkpoint restores although the metric hash differs)")
+CONSERVATIVE && SPECIES_SOURCE_CLOCK_FACTOR != 0.25f0 && println("  SPECIES SOURCE CLOCK FACTOR: ", SPECIES_SOURCE_CLOCK_FACTOR, " x the rate bounds (TOPO_SPECIES_SOURCE_CLOCK_FACTOR; 0.25 is the default and the previous hard-coded value)")
+CONSERVATIVE && SPECIES_SST_CLOCK_FACTOR != 0.25f0 && println("  SPECIES SST CLOCK FACTOR: ", SPECIES_SST_CLOCK_FACTOR, " / R (TOPO_SPECIES_SST_CLOCK_FACTOR; 0.25 is the default and the previous hard-coded value)")
 CONSERVATIVE && CFL_MAX_V != 0.5 && println("  SPECIES CFL CEILING: ", CFL_MAX_V, " (TOPO_SPECIES_CFL_MAX; 0.5 is the default and the previous hard refusal)")
 CONSERVATIVE && println("  SPECIES LEDGER: ", SPECIES_LEDGER ? "on (per-step boundary/source accounting; TOPO_SPECIES_LEDGER=1)" :
                                                               "off (inventory mass_error/vapor_error columns are NaN; TOPO_SPECIES_LEDGER=0)")
@@ -625,6 +669,7 @@ tag = @sprintf("cavmov_sig%.2f_m%dx%dd%.0e_T%.0f", SIGMA, MESH[1], MESH[2], MESH
 isempty(FOIL)     || (tag *= "_f" * splitext(basename(FOIL))[1][1:min(12,length(splitext(basename(FOIL))[1]))])
 GROWTH != 1.3     && (tag *= @sprintf("_g%g", GROWTH))
 MESH_LE_DS > 0    && (tag *= @sprintf("_le%.3g", MESH_LE_DS))
+MESH_UPPER_FRACTION > 0 && (tag *= @sprintf("_uf%.3g", MESH_UPPER_FRACTION))
 # Trailing-edge mesh knobs (2 Oct 2026): named only when set, so default tags are unchanged. The foil fragment is 12
 # characters and cannot tell a blunt section file from its sharp companion; _nb does. The wake column count is named
 # whenever a trailing-edge knob is set, because the near-wake ladders change it.
@@ -759,6 +804,7 @@ mesh = generate_cmesh(foilpts; n_foil=MESH[1], n_wake=NWAKE, n_normal=MESH[2],
                       dn1=FIXED_OUTER_SETTINGS === nothing ? MESH[3] : FIXED_OUTER_SETTINGS.reference_dn1,
                       growth_max=GROWTH, R_ff=25.0, L_wake=25.0, smooth_iters=SMOOTH, bl_freeze=6, le_ds=MESH_LE_DS,
                       surface_evaluator=MESH_SURFACE_EVALUATOR,surface_distribution=MESH_SURFACE_DISTRIBUTION,
+                      (MESH_UPPER_FRACTION > 0 ? (surface_upper_fraction=MESH_UPPER_FRACTION,) : (;))...,
                       channel=channel, (MESH_TE_SETTINGS === nothing ? (;) : MESH_TE_SETTINGS)...,
                       (MESH_QUALITY === nothing ? (;) : (quality=MESH_QUALITY,))...)
 const FIXED_OUTER_PROVENANCE = if FIXED_OUTER_SETTINGS === nothing
@@ -785,7 +831,7 @@ println("MESH COORDINATE RECEIPT: x_sha256=", bytes2hex(sha256(reinterpret(UInt8
 println("SURFACE STATION RECEIPT: evaluator=",MESH_SURFACE_EVALUATOR,
         " distribution=",MESH_SURFACE_DISTRIBUTION,
         " version=",MESH_SURFACE_DISTRIBUTION===:curvature ? "curvature_v1" : "legacy",
-        " le_ds=",MESH_LE_DS)
+        " le_ds=",MESH_LE_DS, MESH_UPPER_FRACTION > 0 ? string(" upper_fraction=",MESH_UPPER_FRACTION) : "")
 # The mesh quality receipt (15 Oct 2026), only with TOPO_MESH_QUALITY=v1: the canonical parameters (the readers rebuild the
 # mesh from them) and the generator's own measurement of the delivered mesh (CMeshGen.LAST_QUALITY_BUILD: the G2 quantities,
 # the pre-reparameterisation ratio, the cell count and, with the strip, the base faces' range).

@@ -846,9 +846,22 @@ end
 
 # The phase-change source kernel. sm (10 Oct 2026): 1 the Schnerr-Sauer source with sp = (c3, alpha_nuc), any other value the
 # Merkle source with kp, kd and the weighting bw, through the existing calls, unchanged.
+# The factor of the phase-source clock (15 Nov 2026). Every bound of the clock carries 0.25 (0.25 / rate, 0.25 x the time to
+# fill, 0.25 x the time to drain), so the clock is `scale` x the coded one with scale = factor / 0.25; factor 0.25 multiplies by
+# 1.0, which is exact (bitwise the clock it always was). In a vapour-free liquid cell just under p_v the rate is the EOS
+# pressure feedback kprod a2l (rho_l - rho_v), a floor of 7.5e-6 on the step at the production rates whatever the mesh and
+# the CFL; forward Euler keeps 0 <= q <= rho up to factor 1. A study knob (TOPO_SPECIES_SOURCE_CLOCK_FACTOR), not a
+# validated setting.
+const SOURCE_CLOCK_FACTOR = Ref{Float32}(0.25f0)
+# (15 Nov 2026) A STUDY switch: true lets a checkpoint restore on a cache whose geometry hash differs, for restoring a CUDA
+# state on the CPU backend (the two round the metric arrays differently in the last bits; the node coordinates are the same
+# and the field shapes are still checked). false (the default): the hash must match, as always. Driver:
+# CAV_MOVIE_RESTART_GEOMETRY=rounding.
+const RESTART_GEOMETRY_ROUNDING = Ref(false)
+
 @kernel function _k_species_source!(source,source_dt,@Const(U),@Const(vol),
                                     ep::NTuple{7,Float64},kp::Float32,kd::Float32,single::Int32,bw::Int32,
-                                    sm::Int32,sp::NTuple{2,Float64},
+                                    sm::Int32,sp::NTuple{2,Float64},scale::Float64,
                                     NI::Int32,NJ::Int32,g::Int32)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
@@ -868,7 +881,7 @@ end
         end
         weighted=Float32(gamma*Float64(vol[i,j]))
         source[i,j]=weighted
-        source_dt[i,j]=isfinite(gamma) && isfinite(weighted) && cap>0.0 ? cap : 0.0
+        source_dt[i,j]=isfinite(gamma) && isfinite(weighted) && cap>0.0 ? cap*scale : 0.0
     end
 end
 
@@ -1690,7 +1703,7 @@ function build_species_ka(s::CMeshSolverKA.KSol,t::CMeshCavTEM.TEMState;
             size(checkpoint.conserved)==size(conserved.U) && eltype(checkpoint.conserved)==Float64 &&
             checkpoint.steps>=0 && isfinite(checkpoint.elapsed) && checkpoint.elapsed>=0 ||
             throw(ArgumentError("species checkpoint format/configuration/state mismatch"))
-        checkpoint.geometry_sha256==c.geometry_sha256 ||
+        RESTART_GEOMETRY_ROUNDING[] || checkpoint.geometry_sha256==c.geometry_sha256 ||
             throw(ArgumentError("species checkpoint geometry/boundary/reference mismatch"))
         copyto!(conserved.U,checkpoint.conserved); c.steps=checkpoint.steps; c.elapsed=checkpoint.elapsed
         # A restored cache enters its first residual published, like a fresh one (rebuild, 22 Sep 2026): the
@@ -1973,7 +1986,8 @@ function _source_terms!(c;slot=nothing)
     s,t=c.solver,c.tem
     target=slot===nothing ? c.source_dt : slot     # deferred: the clock slot's bank slice
     _k_species_source!(s.backend)(c.source,target,c.conserved.U,s.vol,Float64.(s.outlet_eos),t.kprod,t.kdest,
-        Int32(c.eos_single),Int32(c.source_beta),c.source_model,(c.ss[3],c.ss[4]),Int32(s.NI),Int32(s.NJ),Int32(s.g);ndrange=(s.NI,s.NJ))
+        Int32(c.eos_single),Int32(c.source_beta),c.source_model,(c.ss[3],c.ss[4]),Float64(SOURCE_CLOCK_FACTOR[])/0.25,
+        Int32(s.NI),Int32(s.NJ),Int32(s.g);ndrange=(s.NI,s.NJ))
     slot===nothing || return nothing
     cap=minimum(c.source_dt)
     if !(cap>0.0f0)

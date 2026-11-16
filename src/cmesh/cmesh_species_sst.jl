@@ -336,7 +336,21 @@ end
 # every existing call) multiplies nu_t S^2 by 1.0f0, which is exact: the production, the sources and the clock are bitwise the
 # previous ones. The production-consistent Reboud form passes the Reboud factor (P_k from the corrected nu_t, as OpenFOAM's
 # kOmegaSST forms G = nut GbyNu0 when its nut is corrected); the omega production gamma min(S^2, ...) does not read nu_t.
-@inline function _sst_coefficients(k,w,d,nu,rho,dudx,dudy,dvdx,dvdy,gkw,fp=1.0f0)
+# gt: the trip intermittency of the cell, a factor of both productions after their limiters (0 ahead of a prescribed trip,
+# 1 behind it), as the single-block solver applies it. 1 (the default and every call of this file) multiplies by 1.0f0, which
+# is exact; only the gas C+H adapter passes another value.
+# pm (15 Nov 2026): the form of the production terms. 0 (the default and every existing call): nu_t S^2 with S^2 = 2 S_ij S_ij
+# of the FULL strain tensor and no dilatation term, bitwise the previous arithmetic. That form assumes a solenoidal velocity;
+# in a cavitating mixture the dilatation of the phase change (up to 300 per transit time on the Caltech cases, against a shear
+# of about 100 in the closure layer) then PRODUCES turbulence: with the eddy-viscosity limiter active k grows as (volume
+# ratio)^0.44 through an expansion, 5.6 times across a 50-fold one, where the compressible form gives 0.23 times.
+# 1: the compressible form of the model (the NASA Turbulence Modeling Resource's P = tau_ij du_i/dx_j with
+#    tau_ij = mu_t (2 S_ij - (2/3) div u delta_ij) - (2/3) rho k delta_ij): production nu_t (S^2 - (2/3)(div u)^2) under the same
+#    limiter, plus the dilatation terms -(2/3) k div u in the k equation and -(2/3) gamma omega div u in the omega equation
+#    (the latter as OpenFOAM's kOmegaSST carries it); both enter the clock's rate by their magnitude.
+# 2: strain times vorticity, nu_t S Omega (Kato and Launder), which a dilatation does not feed either; no dilatation terms.
+# In a boundary layer div u is negligible and S equals Omega, so 1 and 2 leave attached flow as it is.
+@inline function _sst_coefficients(k,w,d,nu,rho,dudx,dudy,dvdx,dvdy,gkw,fp=1.0f0,gt=1.0f0,pm::Int32=Int32(0))
     Sxy=0.5f0*(dudy+dvdx)
     S2=2.0f0*(dudx*dudx+dvdy*dvdy+2.0f0*Sxy*Sxy);S=sqrt(S2)
     CD=max(2.0f0*0.856f0/w*gkw,1.0f-10/rho);sqk=sqrt(k)
@@ -344,16 +358,31 @@ end
     arg2=min(max(2.0f0*sqk/(0.09f0*w*d),500.0f0*nu/(d*d*w)),4.0f0)
     F1=tanh(arg1^4);F2=tanh(arg2^2)
     D=max(0.31f0*w,S*F2);nut=0.31f0*k/D
-    P=min(fp*(nut*S2),10.0f0*0.09f0*k*w)
     sigk=F1*0.85f0+(1.0f0-F1);sigw=F1*0.5f0+(1.0f0-F1)*0.856f0
     beta=F1*0.075f0+(1.0f0-F1)*0.0828f0;gam=F1*(5.0f0/9.0f0)+(1.0f0-F1)*0.44f0
-    # P/nut cancels k analytically. Do not suppress omega production when nut
-    # is small but positive by flooring its denominator.
-    Pw=gam*min(S2,(10.0f0*0.09f0/0.31f0)*w*D);cross=2.0f0*(1.0f0-F1)*0.856f0/w*gkw
-    sk=P-0.09f0*w*k;sw=Pw-beta*w*w+cross
-    rate=max(P/k+0.09f0*w,(Pw+abs(cross))/w+beta*w)
+    cross=2.0f0*(1.0f0-F1)*0.856f0/w*gkw
+    if pm==Int32(0)
+        P=gt*min(fp*(nut*S2),10.0f0*0.09f0*k*w)
+        # P/nut cancels k analytically. Do not suppress omega production when nut
+        # is small but positive by flooring its denominator.
+        Pw=gt*(gam*min(S2,(10.0f0*0.09f0/0.31f0)*w*D))
+        sk=P-0.09f0*w*k;sw=Pw-beta*w*w+cross
+        rate=max(P/k+0.09f0*w,(Pw+abs(cross))/w+beta*w)
+        return (nut,sigk,sigw,sk,sw,rate)
+    end
+    th=dudx+dvdy
+    Sp2=pm==Int32(1) ? max(S2-(2.0f0/3.0f0)*th*th,0.0f0) : S*abs(dudy-dvdx)
+    P=gt*min(fp*(nut*Sp2),10.0f0*0.09f0*k*w)
+    Pw=gt*(gam*min(Sp2,(10.0f0*0.09f0/0.31f0)*w*D))
+    dk=pm==Int32(1) ? -(2.0f0/3.0f0)*th*k : 0.0f0
+    dw=pm==Int32(1) ? -(2.0f0/3.0f0)*gam*th*w : 0.0f0
+    sk=P+dk-0.09f0*w*k;sw=Pw+dw-beta*w*w+cross
+    rate=max((P+abs(dk))/k+0.09f0*w,(Pw+abs(dw)+abs(cross))/w+beta*w)
     (nut,sigk,sigw,sk,sw,rate)
 end
+# The production form of the species SST (see _sst_coefficients): 0 strain squared (default, bitwise), 1 compressible,
+# 2 strain times vorticity. A development option (driver TOPO_SPECIES_SST_PRODUCTION), not bound in the cache configuration.
+const SST_PRODUCTION = Ref{Int32}(Int32(0))
 
 # Reboud density correction, DENSITY form (V1, 2026-09-20; kept verbatim, selected by nut_density=:reboud_v1 since
 # 10 Oct 2026; Reboud, Stutz and Coutier-Delgosha 1998): the eddy viscosity of the mixture is formed with f(rho) = rho_v + (rho - rho_v)^n / (rho_l - rho_v)^(n-1) in
@@ -420,7 +449,7 @@ end
                                        @Const(Six),@Const(Siy),@Const(Sjx),@Const(Sjy),@Const(vol),
                                        nu::Float32,reboud_n::Float32,rform::Int32,rprod::Int32,rho_l::Float32,rho_v::Float32,
                                        veos::NTuple{4,Float32},NI::Int32,NJ::Int32,g::Int32,
-                                       NIW::Int32,NIF::Int32,wf::Int32,ctx)
+                                       NIW::Int32,NIF::Int32,wf::Int32,pm::Int32,ctx)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
         ia=i+g;ja=j+g
@@ -450,7 +479,7 @@ end
         # rho*vol -- the first version of 20 Sep passed `rv` and the identity test caught the factor at 0.006 instead of 0.022)
         fac=reboud_n>0.0f0 ? _reboud_select(rform,rho[ia,ja],alpha[ia,ja],pressure[ia,ja],rho_l,rho_v,veos,reboud_n) : 1.0f0
         n,ak,aw,Sk,Sw,R=_sst_coefficients(tk[ia,ja],tom[ia,ja],max(wdist[i,j],1.0f-8),nu,
-            rho[ia,ja],uxg,uyg,vxg,vyg,kx*wx+ky*wy,(reboud_n>0.0f0 && rprod==Int32(1)) ? fac : 1.0f0)
+            rho[ia,ja],uxg,uyg,vxg,vyg,kx*wx+ky*wy,(reboud_n>0.0f0 && rprod==Int32(1)) ? fac : 1.0f0,1.0f0,pm)
         rv=rho[ia,ja]*vol[i,j];Sk*=rv;Sw*=rv
         good=isfinite(n) && n>=0.0f0 && isfinite(ak) && isfinite(aw) &&
             isfinite(Sk) && isfinite(Sw) && isfinite(R) && R>=0.0f0
@@ -484,7 +513,7 @@ function _sst_prepare!(c;slot=nothing)
     _k_sst_species_coeff!(s.backend)(s.nut,a.sigk,a.sigw,a.sk,a.sw,a.rate,status,s.rho,c.tem.alpha,c.pressure,s.tk,s.tom,
         s.ux,s.uy,s.wdist,s.gammat,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,s.nu_lam,c.reboud_n,c.reboud_form,c.reboud_prod,
         c.tem.rho_l_sat,c.tem.rho_v_sat,_reboud_eos(s),
-        Int32(s.NI),Int32(s.NJ),Int32(s.g),Int32(s.NIW),Int32(s.NIF),_wall_function(s),_strip_ctx(c);ndrange=(s.NI,s.NJ))
+        Int32(s.NI),Int32(s.NJ),Int32(s.g),Int32(s.NIW),Int32(s.NIF),_wall_function(s),SST_PRODUCTION[],_strip_ctx(c);ndrange=(s.NI,s.NJ))
     slot===nothing && (maximum(c.status)==0 || throw(ArgumentError("nonfinite conservative SST coefficient or source")))
     _sst_bc!(c;nut_only=true)                     # only nut changed
 end
@@ -777,12 +806,18 @@ end
     end
 end
 
+# The factor of the SST clock, cap = factor / R with R the cell's summed outflow, diffusion and source rates (15 Nov 2026).
+# 0.25 is the value the kernel always had (bitwise). In the first wall cell R is the destruction rate beta* omega of the wall
+# value (about 1e4 on the 5e-5 c production meshes), which caps the global step at 2.6e-5 once the CFL is raised above 2.4;
+# forward Euler keeps k and omega positive up to factor 1. A study knob (TOPO_SPECIES_SST_CLOCK_FACTOR), not a validated setting.
+const SST_CLOCK_FACTOR = Ref{Float32}(0.25f0)
+
 @kernel function _k_sst_species_residual!(dck,dcw,cap,@Const(Fik),@Const(Fiw),@Const(Fjk),@Const(Fjw),
                                           @Const(Fmi),@Const(Fmj),@Const(sk),@Const(sw),@Const(rate),@Const(rk),@Const(rw),faces,terms,
                                           @Const(rho),@Const(nut),@Const(sigk),@Const(sigw),
                                           @Const(xc),@Const(yc),@Const(Six),@Const(Siy),@Const(Sjx),@Const(Sjy),@Const(vol),
                                           nu::Float32,wallmode::Int32,NI::Int32,NJ::Int32,NIW::Int32,NIF::Int32,g::Int32,wf::Int32,
-                                          climit::Float32,ctx)
+                                          climit::Float32,cfac::Float32,ctx)
     i,j=@index(Global,NTuple)
     @inbounds if i<=NI && j<=NJ
         dck[i,j]=Fik[i+1,j]-Fik[i,j]+Fjk[i,j+1]-Fjk[i,j]-sk[i,j]
@@ -856,7 +891,7 @@ end
                 isfinite(ok) && ok>=0f0 && isfinite(ow) && ow>=0f0 && isfinite(R) && R>=0f0 &&
                 isfinite(dck[i,j]) && isfinite(dcw[i,j])
         end
-        cap[i,j]=good ? (R>0.0f0 ? 0.25f0/R : Inf32) : 0.0f0
+        cap[i,j]=good ? (R>0.0f0 ? cfac/R : Inf32) : 0.0f0
     end
 end
 
@@ -876,7 +911,7 @@ function _sst_residual!(c;slot=nothing,faces_slot=nothing)
     target=slot===nothing ? c.source_dt : slot     # deferred: the clock slot's bank slice
     _k_sst_species_residual!(s.backend)(a.dck,a.dcw,target,a.Fik,a.Fiw,a.Fjk,a.Fjw,s.Fi_r,s.Fj_r,
         a.sk,a.sw,a.rate,a.rk,a.rw,faces,terms,s.rho,s.nut,a.sigk,a.sigw,s.xc,s.yc,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,s.nu_lam,c.wallmode,
-        ni,nj,Int32(s.NIW),Int32(s.NIF),g,_wall_function(s),c.sst_climit,ctx;ndrange=(s.NI,s.NJ))
+        ni,nj,Int32(s.NIW),Int32(s.NIF),g,_wall_function(s),c.sst_climit,SST_CLOCK_FACTOR[],ctx;ndrange=(s.NI,s.NJ))
     slot===nothing || return nothing
     cap=minimum(c.source_dt)
     cap>0.0f0 || throw(ArgumentError("invalid or unresolved conservative SST transport/source clock"))

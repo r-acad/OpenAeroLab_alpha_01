@@ -642,7 +642,7 @@ end
 # restart tool then overwrites it with the saved rollback payload, which is the same state.
 function _strip_restore!(c,checkpoint)
     x=c.strip
-    checkpoint.geometry_sha256==c.geometry_sha256 ||
+    RESTART_GEOMETRY_ROUNDING[] || checkpoint.geometry_sha256==c.geometry_sha256 ||
         throw(ArgumentError("species checkpoint geometry/boundary/reference mismatch (the strip pair's 18 arrays and kinds)"))
     copyto!(c.conserved.U,checkpoint.conserved);copyto!(x.conserved.U,checkpoint.strip.conserved)
     c.steps=checkpoint.steps;c.elapsed=checkpoint.elapsed;x.steps=checkpoint.steps
@@ -673,7 +673,7 @@ function _sst_coeff_block!(q;slot=nothing)
     _k_sst_species_coeff!(s.backend)(s.nut,a.sigk,a.sigw,a.sk,a.sw,a.rate,status,s.rho,q.tem.alpha,q.pressure,s.tk,s.tom,
         s.ux,s.uy,s.wdist,s.gammat,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,s.nu_lam,q.reboud_n,q.reboud_form,q.reboud_prod,
         q.tem.rho_l_sat,q.tem.rho_v_sat,_reboud_eos(s),
-        Int32(s.NI),Int32(s.NJ),Int32(s.g),Int32(s.NIW),Int32(s.NIF),_wall_function(s),_strip_ctx(q);ndrange=(s.NI,s.NJ))
+        Int32(s.NI),Int32(s.NJ),Int32(s.g),Int32(s.NIW),Int32(s.NIF),_wall_function(s),SST_PRODUCTION[],_strip_ctx(q);ndrange=(s.NI,s.NJ))
     slot===nothing && (maximum(q.status)==0 || throw(ArgumentError("nonfinite conservative SST coefficient or source$(_block_label(q))")))
     nothing
 end
@@ -772,7 +772,7 @@ function _sst_cap_block!(q,faces;slot=nothing)
     target=slot===nothing ? q.source_dt : slot     # deferred: the clock slot's bank slice
     _k_sst_species_residual!(s.backend)(a.dck,a.dcw,target,a.Fik,a.Fiw,a.Fjk,a.Fjw,s.Fi_r,s.Fj_r,
         a.sk,a.sw,a.rate,a.rk,a.rw,faces,terms,s.rho,s.nut,a.sigk,a.sigw,s.xc,s.yc,s.Six,s.Siy,s.Sjx,s.Sjy,s.vol,s.nu_lam,q.wallmode,
-        ni,nj,Int32(s.NIW),Int32(s.NIF),g,_wall_function(s),q.sst_climit,_strip_ctx(q);ndrange=(s.NI,s.NJ))
+        ni,nj,Int32(s.NIW),Int32(s.NIF),g,_wall_function(s),q.sst_climit,SST_CLOCK_FACTOR[],_strip_ctx(q);ndrange=(s.NI,s.NJ))
     nothing
 end
 """The pair's SST transport and clock (plan sections 4.2-4.3; the twin of `min(_sst_residual!(c), _sst_residual!(c.strip))`):
