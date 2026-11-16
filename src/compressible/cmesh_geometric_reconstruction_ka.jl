@@ -205,6 +205,13 @@ function _airfoil_muscl_prepare!(s::KSol,w::AirfoilMUSCLWorkspace;fixed_componen
 end
 
 @inline function _airfoil_thermal_face_flux(l,r,nx,ny,S,cxa,cya,cza,wa,drot)
+    KINETIC_FLUX_VARIANT==1 && return _fvflux_convected(l[1],l[2],l[3],l[4],r[1],r[2],r[3],r[4],nx,ny,S,cxa,cya,cza,wa,drot)
+    if KINETIC_FLUX_VARIANT==2||KINETIC_FLUX_VARIANT==4
+        l,r=_lowmach_face_states(l,r,drot)
+    elseif KINETIC_FLUX_VARIANT==5
+        l,r=_lowmach_shear_face_states(l,r,drot,nx,ny)
+    end
+    (KINETIC_FLUX_VARIANT==3||KINETIC_FLUX_VARIANT==4) && return _fvflux_efm(l[1],l[2],l[3],l[4],r[1],r[2],r[3],r[4],nx,ny,S,drot)
     _fvflux_normal6(l[1],l[2],l[3],l[4],l[1],l[2],l[3],l[4],l[1],l[2],l[3],l[4],
         r[1],r[2],r[3],r[4],r[1],r[2],r[3],r[4],r[1],r[2],r[3],r[4],
         nx,ny,S,cxa,cya,cza,wa,drot,Int32(0))

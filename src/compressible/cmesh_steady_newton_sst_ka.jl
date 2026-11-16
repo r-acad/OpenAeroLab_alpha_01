@@ -38,9 +38,10 @@
         arg1=min(max(sqk/(βs*w0*d),500.0f0*nu/(d*d*w0)),4.0f0*σw2*k0/(CDkw*d*d))
         arg1=min(arg1,4.0f0);F1=tanh(arg1^4)
         arg2=min(max(2.0f0*sqk/(βs*w0*d),500.0f0*nu/(d*d*w0)),4.0f0);F2=tanh(arg2^2)
-        nut_t=a1*k0/max(a1*w0,Ssr*F2)
-        pkcap=10.0f0*βs*k0*w0
-        Pk=min(nut_t*Ssr*Ω,pkcap)*gammat[i,j]
+        slim=SST_VARIANT==1 ? Ω : Ssr
+        nut_t=a1*k0/max(a1*w0,slim*F2)
+        pkcap=(SST_VARIANT==1 ? 20.0f0 : 10.0f0)*βs*k0*w0
+        Pk=min(nut_t*(SST_VARIANT==1 ? S2 : Ssr*Ω),pkcap)*gammat[i,j]
         σk=F1*σk1+(1.0f0-F1)*σk2;σw=F1*σw1+(1.0f0-F1)*σw2
         βc=F1*β1+(1.0f0-F1)*β2;γc=F1*γ1+(1.0f0-F1)*γ2
         iv=1/vol[i,j]
@@ -77,7 +78,7 @@
         # Newton form of the destruction beta*w^2 -> (2 beta w0) w - beta w0^2; negative cross diffusion implicit.
         dw[i,j]=2.0f0*βc*w0+(cross<0 ? -cross/w0 : zero(cross))
         sw[i,j]=prodw+βc*w0*w0+(cross>0 ? cross : zero(cross))
-        sf2[i,j]=Ssr*F2
+        sf2[i,j]=slim*F2
     end
 end
 

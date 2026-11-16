@@ -498,8 +498,11 @@ end
     mode != Int32(0) ? rho_inf*nu_inf*_mufac(T,Sr)/rho : nu_inf
 end
 
+# The strip carrier of a gas C+H pair (outer_mode 2) is admitted beside the free-air block: its residual is evaluated
+# only with its pair's context, and the flux, wall and clock kernels that context reaches all take the viscosity law.
+# The segmented channel (outer_mode 1) stays refused.
 function _check_air_sutherland_admission(s::KSol)
-    (s.cav == Int32(0) && s.outer_mode == Int32(0) &&
+    (s.cav == Int32(0) && (s.outer_mode == Int32(0) || s.outer_mode == Int32(2)) &&
      s.outlet_mode == Int32(0) && s.ff_mix == Int32(0) &&
      s.wallfun == 0.0f0 &&
      s.irsj == Int32(0) && s.irs_ac == Int32(0) && s.earsm == Int32(0) &&
@@ -2924,15 +2927,17 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
         # correction applies by hand, but derived rather than tuned, and keyed on STRAIN rather than
         # on void fraction.
         local nut_t, pkcap
+        # SST_VARIANT (cmesh_flux_core.jl): 1 = the TMR "SST" (Menter 1994) forms, as the Newton SST kernels
+        slim = SST_VARIANT == 1 ? Ω : Ssr
         if keps > 0.0f0
             e0    = w0                                    # `tom` holds epsilon in this branch
             nut_t = KE_CMU*k0*k0/max(e0, 1.0f-12)
             pkcap = 10.0f0*e0                             # epsilon already carries units of k/time
         else
-            nut_t = a1*k0/max(a1*w0, Ssr*F2)
-            pkcap = 10.0f0*βs*k0*w0
+            nut_t = a1*k0/max(a1*w0, slim*F2)
+            pkcap = (SST_VARIANT == 1 ? 20.0f0 : 10.0f0)*βs*k0*w0
         end
-        Pk = min(nut_t*Ssr*Ω, pkcap) * gammat[i,j]
+        Pk = min(nut_t*((SST_VARIANT == 1 && keps <= 0.0f0) ? Ssr*Ssr : Ssr*Ω), pkcap) * gammat[i,j]
         # ★ S3f BUBBLE-INDUCED TKE. Written by the TEM sweep (the only place alpha, Rdot and R exist
         # together); identically zero when tem.btke = 0, so the k equation is bitwise legacy then.
         # Added AFTER the shear-production limiter on purpose: the limiter bounds the SHEAR cascade
@@ -3073,7 +3078,7 @@ include(joinpath(@__DIR__, "..", "cmesh", "cmesh_sst_nonorth.jl"))
         end
         # Menter SST eddy-viscosity DEFINITION nut = a1·k/max(a1·ω, S·F2) — the limiter must gate
         # the EXPORTED nut, not just production (mirrors the plain solver line-for-line)
-        nueq = a1*kn/max(a1*wn, Ssr*F2)
+        nueq = a1*kn/max(a1*wn, (keps <= 0.0f0 ? slim : Ssr)*F2)
         nutl[ia,ja] = nueq
         if lag == Int32(1)
             # LAG equation (Olsen-Coakley): D nu_hat/Dt = a0*omega*(nu_eq - nu_hat), a0=0.35 —

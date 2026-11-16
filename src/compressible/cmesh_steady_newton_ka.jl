@@ -91,10 +91,11 @@ end
 
 """March with a geometric CFL ramp. Loads every step; the six residuals every `every` steps.
 Stops when CL and CD have stayed within `load_tol` (relative to max(|CL|,0.1), max(|CD|,0.001)) over the last
-`window` steps and at least `min_steps` were taken. CSV rows per diagnostic if `csv` is given."""
+`window` steps and at least `min_steps` were taken. CSV rows per diagnostic if `csv` is given. `on_row(row)`, if given,
+is called with every diagnostic row (a caller's progress report; it must not change the state)."""
 function newton_rans_march!(s::KSol,m::NewtonRANS;nsteps=100,cflmax=1e3,growth=1.5,budget=Inf,every=5,csv=nothing,
         label="",ref=nothing,window=20,load_tol=1e-4,min_steps=window,quiet=false,rre=nothing,vortex_relax=0.0,
-        kwargs...)
+        on_row=nothing,kwargs...)
     t0=time();io=csv===nothing ? nothing : open(csv,"w")
     io===nothing||println(io,"step,seconds,cfl,its,rho,mx,my,E,k,omega,dk,dw,mass,CL,CD")
     loads=Tuple{Float64,Float64}[];converged=false;nlocal=0
@@ -128,6 +129,7 @@ function newton_rans_march!(s::KSol,m::NewtonRANS;nsteps=100,cflmax=1e3,growth=1
                     mass=d.normalized_mass_imbalance,cl=r.cl,cd=r.cd)
                 push!(m.rows,row)
                 io===nothing||(println(io,join((row.step,row.seconds,row.cfl,row.its,six...,row.dk,row.dw,row.mass,row.cl,row.cd),','));flush(io))
+                on_row===nothing||on_row(row)
                 if !quiet
                     Printf.@printf("%s%4d t=%6.1f cfl=%6.0f its=%2d a=%.2f [build %.2f lin %.2f sst %.2f] six%s=%s mass=%.1e CL=%.6f CD=%.6f\n",
                         label,m.it,time()-t0,r.cfl,r.its,r.alpha,r.tbuild,r.tlin,r.tsst,ref===nothing ? "" : "/cold",
@@ -237,9 +239,10 @@ end
 
 # ---- cold start: sequencing and the march on each level -------------------------------------------------
 # `nodes` = (X, Y, NIW, NIF, NI, NJ) of the fine mesh; `make_solver(nodes)` returns a prepared KSol for a level.
+# `on_row(k, f, row)`, if given, receives every diagnostic row of level number k (coarsening f).
 function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),cflmax=(1e3,1e3,1e3),
         load_tol=(1e-3,3e-4,1e-4),window=(10,15,20),rre=(3,8),blocks=:roe,delta=0.3,outdir=nothing,every=10,
-        lintol=0.05,maxit=40,quiet=false,vortex_relax=0.0,growth=1.5)
+        lintol=0.05,maxit=40,quiet=false,vortex_relax=0.0,growth=1.5,on_row=nothing)
     prev=nothing;pf=0;t00=time();out=nothing;summary=Dict{String,Any}();lv=Any[]
     for (k,f) in enumerate(levels)
         t0=time();nd=newton_coarsen_nodes(nodes,f)
@@ -252,6 +255,7 @@ function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),c
         quiet||Printf.@printf("LEVEL 1/%d: %d x %d = %d cells, setup %.1fs\n",f,nd.NI,nd.NJ,nd.NI*nd.NJ,setup)
         r=newton_rans_march!(s,m;nsteps=nsteps[k],cflmax=cflmax[k],growth,every,vortex_relax,label="L$f ",ref,quiet,
             load_tol=load_tol[k],window=window[k],rre,blocks,delta,lintol,maxit,
+            on_row=on_row===nothing ? nothing : row->on_row(k,f,row),
             csv=outdir===nothing ? nothing : joinpath(outdir,"history_L$f.csv"))
         cl,cd=loads_ka(s)
         quiet||Printf.@printf("LEVEL 1/%d done: loads stable=%s, %d steps, %d extrapolations, %.1fs level, %.1fs total, CL=%.6f CD=%.6f\n",
@@ -271,3 +275,5 @@ function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),c
     summary["final_omega_wall_constraint"]=d.turb_omega_wall_constraint_relative_linf
     (;s=out.s,m=out.m,ref=out.ref,summary)
 end
+
+include(joinpath(@__DIR__, "cmesh_steady_newton_pair_ka.jl"))

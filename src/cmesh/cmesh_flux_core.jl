@@ -112,6 +112,142 @@ end
     return Frho*S, Fmx*S, Fmy*S, FE*S
 end
 
+# Development switch (environment LUDWIG_KINETIC_FLUX at load) for the face flux of the airfoil reconstruction:
+#   convected  `_fvflux_convected` instead of `_fvflux_normal6`;
+#   lowmach    `_fvflux_normal6` on the face states of `_lowmach_face_states`;
+#   efm        `_fvflux_efm` (closed-form half-range Maxwellian, no lattice) instead of `_fvflux_normal6`;
+#   efm_lowmach `_fvflux_efm` on the face states of `_lowmach_face_states`;
+#   lowmach_shear `_fvflux_normal6` on the face states of `_lowmach_shear_face_states` (tangential jump scaled by the
+#              face-normal Mach number, with the floor LUDWIG_KINETIC_SHEAR_FLOOR times the local Mach number; floor 1
+#              is `lowmach`, floor 0 leaves no shear dissipation on faces along the flow and diverged on the airfoil).
+# Unset: the half-range flux as before. A constant, so the default code is unchanged.
+const KINETIC_FLUX_VARIANT = (v = get(ENV, "LUDWIG_KINETIC_FLUX", "");
+    v == "convected" ? 1 : v == "lowmach" ? 2 : v == "efm" ? 3 : v == "efm_lowmach" ? 4 : v == "lowmach_shear" ? 5 : 0)
+const KINETIC_SHEAR_FLOOR = clamp(something(tryparse(Float64, get(ENV, "LUDWIG_KINETIC_SHEAR_FLOOR", "0.3")), 0.3), 0.0, 1.0)
+
+# Development switch (environment LUDWIG_SST_VARIANT at load) for the implicit SST of the Newton march
+# (cmesh_steady_newton_sst_ka.jl, cmesh_steady_newton_pair_ka.jl) and the explicit plain-SST sweep of
+# cmesh_solver_ka.jl, which the steady diagnostics use to evaluate the turbulence residuals:
+#   tmr1994  the NASA Turbulence Modeling Resource "SST" (Menter 1994, as CFL3D with ikoprod=1): production
+#            nu_t S^2, production limiter 20 beta* k omega, eddy-viscosity limiter a1 k / max(a1 omega, Omega F2).
+# Unset: production nu_t S Omega, limiter 10 beta* k omega, eddy-viscosity limiter with the strain S (as before).
+const SST_VARIANT = get(ENV, "LUDWIG_SST_VARIANT", "") == "tmr1994" ? 1 : 0
+
+# erf to about 1e-7 (Abramowitz and Stegun 7.1.26), branch-light so it compiles in kernels. In the split flux below
+# W+ + W- = 1 and the exponential terms cancel identically, so the error changes only the dissipation, never the
+# consistency (equal states give the exact flux).
+@inline function _erf_as(x)
+    a = abs(x); t = 1/(1 + oftype(a, 0.3275911)*a)
+    y = 1 - t*(oftype(a, 0.254829592) + t*(oftype(a, -0.284496736) + t*(oftype(a, 1.421413741) +
+        t*(oftype(a, -1.453152027) + t*oftype(a, 1.061405429)))))*exp(-a*a)
+    copysign(y, x)
+end
+
+"""
+Equilibrium flux method (Pullin 1980; the kinetic flux-vector splitting of Deshpande): the half-range moments of a
+continuous Maxwellian of each face state, in closed form, with 3 translational and `drot` rotational degrees of
+freedom (R = CS2, so p = rho CS2 T, as in the lattice flux). Global-frame velocities in, (Frho, Fmx, Fmy, FE) S out.
+The lattice flux `_fvflux_normal6` approximates the same integrals by the 39-velocity quadrature in a frame moving
+with the face; this one needs neither.
+"""
+@inline function _fvflux_efm(rL,uxL,uyL,TL, rR,uxR,uyR,TR, nx, ny, S, drot)
+    CS2=_gas_cs2(typeof(rL))
+    unL = uxL*nx + uyL*ny; utL = -uxL*ny + uyL*nx
+    unR = uxR*nx + uyR*ny; utR = -uxR*ny + uyR*nx
+    rLf = max(rL, 1.0f-4); rRf = max(rR, 1.0f-4); TLf = max(TL, 1.0f-3); TRf = max(TR, 1.0f-3)
+    eint = 1.5f0 + 0.5f0*drot                      # internal-plus-translational energy per unit (CS2 T)
+    sqpi = sqrt(oftype(rL, pi))
+    # one side: s = +1 left (molecules moving along +n), -1 right
+    @inline function half(r, un, ut, T, sgn)
+        th = CS2*T; sb = sqrt(1/(2*th)); q = un*sb
+        W = (1 + sgn*_erf_as(q))/2
+        D = sgn*exp(-q*q)/(2*sqpi*sb)
+        p = r*th; rE = r*(0.5f0*(un*un + ut*ut) + eint*th)
+        Fm = r*(un*W + D)
+        (Fm, (r*un*un + p)*W + r*un*D, ut*Fm, (rE + p)*un*W + (rE + 0.5f0*p)*D)
+    end
+    a = half(rLf, unL, utL, TLf, 1); b = half(rRf, unR, utR, TRf, -1)
+    Frho = a[1] + b[1]; Fmn = a[2] + b[2]; Fmt = a[3] + b[3]; FE = a[4] + b[4]
+    Fmx = nx*Fmn - ny*Fmt; Fmy = ny*Fmn + nx*Fmt
+    return Frho*S, Fmx*S, Fmy*S, FE*S
+end
+
+"""
+The two face states (rho, ux, uy, T) with their velocity difference scaled by the local Mach number,
+z = min(1, max(M_L, M_R)), about their mean (Thornber et al., J. Comput. Phys. 227, 2008). The half-range kinetic
+flux diffuses a velocity difference across a face at the thermal speed whatever the flow speed; with the scaled
+difference that diffusion is proportional to the flow speed, vanishes toward a wall, and is unchanged at and above
+Mach 1. Density and temperature are not changed.
+"""
+@inline function _lowmach_face_states(l, r, drot)
+    CS2=_gas_cs2(typeof(l[1]))
+    gcs2 = (1 + 1/(1.5f0 + 0.5f0*drot))*CS2                 # gamma cs2: the sound speed squared is this times T
+    m2 = max((l[2]*l[2] + l[3]*l[3])/(gcs2*l[4]), (r[2]*r[2] + r[3]*r[3])/(gcs2*r[4]))
+    z = min(one(m2), sqrt(m2 + oftype(m2, 1.0f-12)))
+    um = 0.5f0*(l[2]+r[2]); vm = 0.5f0*(l[3]+r[3]); du = 0.5f0*z*(r[2]-l[2]); dv = 0.5f0*z*(r[3]-l[3])
+    (l[1], um-du, vm-dv, l[4]), (r[1], um+du, vm+dv, r[4])
+end
+
+"""
+As `_lowmach_face_states`, but the jump of the velocity component along the face (unit normal (nx, ny)) is scaled by
+the face-normal Mach number with a floor, zt = min(z, sqrt(max(Mn_L^2, Mn_R^2) + (c z)^2 + 1e-6)), c = the floor
+(`KINETIC_SHEAR_FLOOR` unless given), while the normal component keeps z. With `_lowmach_face_states` the shear of a
+boundary layer is still diffused at about 0.68 of the flow speed |u| across the wall-parallel faces; here at about
+0.68 max(|u_n|, c |u|) (the shear-wave dissipation of a Roe flux is |u_n| with an entropy-fix floor). c = 1 is
+`_lowmach_face_states`; c = 0 left the Newton linear solves at their cap and the residuals growing on NACA 0012 at
+15 deg (15 Nov 2026). Both components are unchanged where the face-normal Mach number is at least 1; the normal one is
+unchanged wherever the flow is at or above Mach 1, while the tangential jump of a supersonic flow along the face is
+still scaled (as the Roe shear wave, whose speed is |u_n| at any Mach number). Density and temperature are not changed;
+the means of both velocity components are kept, so equal states are returned unchanged.
+"""
+@inline function _lowmach_shear_face_states(l, r, drot, nx, ny, c=KINETIC_SHEAR_FLOOR)
+    CS2=_gas_cs2(typeof(l[1]))
+    gcs2 = (1 + 1/(1.5f0 + 0.5f0*drot))*CS2
+    m2 = max((l[2]*l[2] + l[3]*l[3])/(gcs2*l[4]), (r[2]*r[2] + r[3]*r[3])/(gcs2*r[4]))
+    z = min(one(m2), sqrt(m2 + oftype(m2, 1.0f-12)))
+    unL = l[2]*nx + l[3]*ny; unR = r[2]*nx + r[3]*ny
+    mn2 = max(unL*unL/(gcs2*l[4]), unR*unR/(gcs2*r[4]))
+    cz = oftype(m2, c)*z
+    zt = min(z, sqrt(mn2 + cz*cz + oftype(m2, 1.0f-6)))
+    utL = -l[2]*ny + l[3]*nx; utR = -r[2]*ny + r[3]*nx
+    unm = 0.5f0*(unL+unR); utm = 0.5f0*(utL+utR); dn = 0.5f0*z*(unR-unL); dt = 0.5f0*zt*(utR-utL)
+    unl = unm-dn; unr = unm+dn; utl = utm-dt; utr = utm+dt
+    (l[1], unl*nx - utl*ny, unl*ny + utl*nx, l[4]), (r[1], unr*nx - utr*ny, unr*ny + utr*nx, r[4])
+end
+
+"""
+Kinetic face flux with convected shear and enthalpy, from the two face states (global-frame velocities in,
+(Frho, Fmx, Fmy, FE) S out). Mass and normal momentum are the half-range lattice quadrature of `_fvflux_normal6`
+in the same face frame. Tangential momentum and total enthalpy are carried by the net mass flux from its upwind
+side, the correction of Haenel, Schwane and Seider (1987) to flux-vector splitting: the half-range form diffuses a
+shear layer and a temperature layer lying along the face at the thermal speed, whatever the flow speed; here that
+diffusion scales with the mass flux through the face and vanishes where the flow is along the face (boundary
+layers, wakes). For equal states both forms are the exact flux.
+"""
+@inline function _fvflux_convected(rL,uxL,uyL,TL, rR,uxR,uyR,TR, nx, ny, S, cx_arr, cy_arr, cz_arr, w_arr, drot)
+    CS2=_gas_cs2(typeof(rL))
+    unL = uxL*nx + uyL*ny; utL = -uxL*ny + uyL*nx
+    unR = uxR*nx + uyR*ny; utR = -uxR*ny + uyR*nx
+    rLf = max(rL, 1.0f-4); rRf = max(rR, 1.0f-4); TLf = max(TL, 1.0f-3); TRf = max(TR, 1.0f-3)
+    ufn = 0.5f0*(unL+unR); uft = 0.5f0*(utL+utR)
+    Frho=zero(nx); Fmn=zero(nx)
+    @inbounds for k in 1:39
+        cxk=cx_arr[k]; cyk=cy_arr[k]; czk=cz_arr[k]; wk=w_arr[k]
+        vn = cxk + ufn
+        fk = vn >= 0.0f0 ? _feqT2(rLf, unL, utL, TLf, ufn, uft, cxk, cyk, czk, wk) :
+                           _feqT2(rRf, unR, utR, TRf, ufn, uft, cxk, cyk, czk, wk)
+        Frho += vn*fk; Fmn += vn*vn*fk
+    end
+    # total enthalpy per unit mass: translational (3/2 CS2 T) and rotational (drot/2 CS2 T) energy, p / rho = CS2 T
+    hT = (1.5f0 + 0.5f0*drot + 1.0f0)*CS2
+    left = Frho >= zero(Frho)
+    utu = left ? utL : utR
+    Hu  = left ? hT*TLf + 0.5f0*(unL*unL + utL*utL) : hT*TRf + 0.5f0*(unR*unR + utR*utR)
+    Fmt = Frho*utu; FE = Frho*Hu
+    Fmx = nx*Fmn - ny*Fmt; Fmy = ny*Fmn + nx*Fmt
+    return Frho*S, Fmx*S, Fmy*S, FE*S
+end
+
 # ---- FULL VISCOUS STRESS (A2c) -----------------------------------------------------------------
 # Green-Gauss cell gradient of one scalar from the 4 face-averaged values and the outward metric
 # convention of the residual (dc = Fi(i+1)-Fi(i)+Fj(j+1)-Fj(j) => E/N faces +S⃗, W/S faces -S⃗).

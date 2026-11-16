@@ -1545,7 +1545,14 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
                         quality::Union{Nothing,MeshQualityV1}=nothing,
                         surface_evaluator::Symbol=:legacy_catmull_rom,
                         surface_distribution::Symbol=:legacy,
-                        surface_curvature_weight::Float64=0.25)
+                        surface_curvature_weight::Float64=0.25,
+                        surface_upper_fraction::Float64=0.0)
+    # (15 Nov 2026) surface_upper_fraction > 0: that share of the n_foil surface cells goes to the upper (suction) side,
+    # instead of the split in proportion to arc length (about one half). The cavitation meshes spend their streamwise
+    # cells at the nose and the trailing edge and leave about 0.02 c per cell at mid-chord, where a sheet cavity closes;
+    # with more cells on the suction side alone the closure is resolved without refining the pressure side. 0: unchanged.
+    (surface_upper_fraction == 0.0 || 0.2 <= surface_upper_fraction <= 0.85) || throw(ArgumentError(
+        "surface_upper_fraction must be 0 (split by arc length) or lie in [0.2, 0.85] (got $surface_upper_fraction)"))
     # (finalisation, 15 Oct 2026, generator review F7) every build clears the quality record first, so a build without the
     # option never leaves a previous quality build's record behind; it touches no geometry.
     LAST_QUALITY_BUILD[] = nothing
@@ -1622,8 +1629,6 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
             "n_base > nb_ref (got n_base=$n_base)"))
         isfinite(Q.wake_ds_max) && Q.far_growth > growth_max && throw(ArgumentError("quality Q-A: far_growth $(Q.far_growth) " *
             "exceeds growth_max=$growth_max"))
-        haskey(ENV, "TOPO_CHREPAR") && throw(ArgumentError("quality ($MESH_QUALITY_TAG) was built and measured without " *
-            "TOPO_CHREPAR; unset it"))
     end
     surface_evaluator in (:legacy_catmull_rom,:natural_c2) || throw(ArgumentError(
         "surface_evaluator must be :legacy_catmull_rom or :natural_c2"))
@@ -1646,7 +1651,8 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
 
     # -- surface resample: NIF_s cells split across lower/upper in proportion to arc length -------------
     b = clamp(0.5*(cluster_le + cluster_te)*2, 0.0, 0.95)      # cosine blend weight from the clustering knobs
-    nlo = round(Int, NIF_s * s_le/s_tot); nlo = clamp(nlo, 8, NIF_s-8); nup = NIF_s - nlo
+    nlo = surface_upper_fraction > 0 ? round(Int, NIF_s * (1 - surface_upper_fraction)) : round(Int, NIF_s * s_le/s_tot)
+    nlo = clamp(nlo, 8, NIF_s-8); nup = NIF_s - nlo
     surf_s = Vector{Tuple{Float64,Float64}}(undef, NIF_s+1)
     if surface_distribution===:curvature
         n_base>0 && _te_base_guards(_te_ds_corner_gap(af,s_all,s_le,s_tot;curve=surface_curve),n_base,te_ds,dn1;topology=te_topology)
@@ -2135,20 +2141,10 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
         end
         Xcurve = copy(X); Ycurve = copy(Y)
         sold = zeros(NJ+1); snew = similar(sold)
-        # ★ CHANNEL REPARAMETERISATION SMOOTHING (2026-08-05, TOPO_CHREPAR; 0 = bitwise legacy).
-        # DEFECT: each column was reparameterised INDEPENDENTLY -- its own arc length, its own solved
-        # growth ratio r. Neighbouring columns therefore place their j-th node at different relative
-        # arc positions, and where the column curves are not parallel that shear can INVERT a cell.
-        # MEASURED (tools/channel_mesh_resolution_study.jl): at n_normal=128 the narrow channels
-        # (H/c=2.5 and 1.28) FAIL TO BUILD -- "arc-length reparameterization reintroduced a folded
-        # cell" -- so the confined configuration CANNOT BE GRID-REFINED, and no grid-convergence study
-        # of it is possible. Doubling NJ makes snew far more uniform (r -> 1) while sold stays
-        # strongly graded from the smoothing, so nodes travel further and the column-to-column
-        # mismatch grows.
-        # FIX: solve every column's r FIRST, smooth r across i, then build. dn1 and each column's
-        # total arc length are still honoured exactly; only the GRADING between neighbours is made
-        # consistent, which is precisely the shear that folds the cell.
-        chrepar = parse(Int, get(ENV, "TOPO_CHREPAR", "0"))
+        # Each column is reparameterised independently: its own arc length and its own solved growth
+        # ratio r. Where neighbouring column curves are not parallel the resulting shear can invert a
+        # cell (the narrow channels H/c = 2.5 and 1.28 fail to build at n_normal = 128); the convexity
+        # test below reports that case.
         rs = zeros(NI+1); send = zeros(NI+1)
         for i in 1:NI+1
             acc = 0.0
@@ -2156,14 +2152,6 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
                 acc += hypot(Xcurve[i,j+1]-Xcurve[i,j], Ycurve[i,j+1]-Ycurve[i,j])
             end
             send[i] = acc; rs[i] = _solve_growth2(b_i[i], NJ, acc)
-        end
-        if chrepar >= 1
-            for _ in 1:chrepar                       # Jacobi passes; ends held (physical boundaries)
-                rprev = copy(rs)
-                for i in 2:NI
-                    rs[i] = 0.25*rprev[i-1] + 0.5*rprev[i] + 0.25*rprev[i+1]
-                end
-            end
         end
         for i in 1:NI+1
             sold[1] = 0.0
@@ -2175,11 +2163,7 @@ function generate_cmesh(af::AirfoilPts; n_foil::Int=256, n_wake::Int=64, n_norma
             # (the column's schedule along its own arc length: the geometric one, accumulated as before, or the strip
             # leg's ramp schedule when its first spacing dn1_i[i] exceeds dn1)
             snew .= _column_schedule(dn1_i[i], b_i[i], r, NJ, sold[end])
-            # renormalise so the outer point lands exactly on the physical boundary even when r was
-            # smoothed away from this column's own solved value (legacy path: r is exact, scale == 1)
-            sc = snew[end] > 0 ? sold[end]/snew[end] : 1.0
-            chrepar >= 1 && (for j in 2:NJ; snew[j] *= sc; end)
-            snew[end] = sold[end]
+            snew[end] = sold[end]                    # the outer point lands exactly on the physical boundary
             for j in 2:NJ
                 k = clamp(searchsortedlast(sold, snew[j]), 1, NJ)
                 f = (snew[j]-sold[k])/max(sold[k+1]-sold[k], 1e-30)
@@ -2305,9 +2289,8 @@ function mesh_quality(m::Union{CMesh,ChannelMesh}; reynolds::Float64=6.5e6)
     spacing = _radial_spacing_stats(X, Y, NI, NJ)
     # ★ WAKE-CUT COINCIDENCE (2026-08-07). The header contract at the top of this file states that
     # node (i,1) and node (NI+2-i,1) are the SAME PHYSICAL POINT for i in 1..NIW+1, and the solver
-    # relies on it at ~8 sites (cmesh_solver_ka.jl:463/:606/:1719, cmesh_solver.jl:237/:869,
-    # cmesh_span3d.jl:271/:946, cmesh_cav_tem.jl:918, cmesh_cav_tem3d.jl:213) to exchange ghosts
-    # across the C-mesh branch cut.
+    # relies on it (the ghost exchanges of compressible/cmesh_solver_ka.jl, compressible/cmesh_solver.jl
+    # and cavitation/cmesh_cav_tem.jl) to exchange ghosts across the C-mesh branch cut.
     # ⛔ IT WAS CHECKED ONLY ON THE CHANNEL PATH (channel_quality). The FREE-AIR path -- which is what
     # every cavitation battery runs -- never verified it. Measured while scoping the blunt trailing
     # edge: a finite-TE foil silently drives this to 4.000e-3 (against 6.78e-21 sharp), ASYMMETRICALLY,
@@ -2449,5 +2432,6 @@ end
 # plotting lives in the DRIVER (tools/cmesh_airfoil.jl) — the module stays dependency-light.
 
 include(joinpath(@__DIR__, "cmesh_strip_refinement.jl"))
+include(joinpath(@__DIR__, "cmesh_marched.jl"))
 
 end # module
