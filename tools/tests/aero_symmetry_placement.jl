@@ -21,12 +21,13 @@ const SETTINGS=Dict{String,Any}("model_id"=>MODEL,"solver"=>"q19_octree","lattic
     "surface_triangle_max_edge_m"=>1.,"geometry_handling"=>"two_sided_open",
     "octree"=>Dict("band_fine"=>6,"band"=>4,"wake_length"=>0.,"wake_level_offset"=>1,"threads"=>2),
     "flow"=>Dict("alpha"=>0.,"beta"=>0.,"velocity"=>10.,"density"=>1.225,"kinematic_viscosity"=>.001,"speed_of_sound"=>343.),
-    "steps"=>10,"display_every"=>10,"frames"=>2,"cuts"=>Any[],"outputs"=>Dict{String,Any}())
+    "steps"=>10,"display_every"=>10,"cuts"=>Any[],"outputs"=>Dict{String,Any}())
 
-@testset "Legacy and explicit symmetry placement" begin
-    legacy,triangles=A._validate_case(SETTINGS)
-    @test A._symmetry_placement(legacy["domain"])=="wall"
-    @test minimum(p[2] for t in A._solver_model_triangles(legacy,triangles) for p in t)≈0 atol=1e-10
+@testset "Default and explicit symmetry placement" begin
+    # A request that names no placement puts the prepared half model's minimum Y edge on the plane.
+    default,triangles=A._validate_case(SETTINGS)
+    @test default["domain"]["symmetry_placement"]=="wall"
+    @test minimum(p[2] for t in A._solver_model_triangles(default,triangles) for p in t)≈0 atol=1e-10
     for mode in ("wall","center","none")
         request=deepcopy(SETTINGS);request["domain"]["symmetry_placement"]=mode
         if mode=="none"
@@ -66,8 +67,10 @@ const SETTINGS=Dict{String,Any}("model_id"=>MODEL,"solver"=>"q19_octree","lattic
             changed=deepcopy(case);changed["domain"]["symmetry_offset_y_m"]+=.1
             @test !A._same_study_setup(case,changed)
         else
-            old=deepcopy(case);delete!(old["domain"],"symmetry_placement")
-            @test A._same_study_setup(old,case)
+            # Only the wall placement is the default of a domain that names none.
+            unnamed=deepcopy(case)
+            for key in ("domain","requested_domain");delete!(unnamed[key],"symmetry_placement");end
+            @test A._same_study_setup(unnamed,case)==(mode=="wall")
         end
     end
     for invalid in ("invalid",true,1)
@@ -81,32 +84,49 @@ const SETTINGS=Dict{String,Any}("model_id"=>MODEL,"solver"=>"q19_octree","lattic
     request=deepcopy(SETTINGS);request["domain"]["symmetry_placement"]="none";request["domain"]["symmetry_offset_y_m"]=0.
     centered,triangles=A._validate_case(request)
     @test A._solver_model_triangles(centered,triangles)==triangles # no recentering or clipping at import/build
-    legacy_center=deepcopy(SETTINGS);legacy_center["domain"]["symmetry_center_y"]=true
-    @test A._symmetry_placement(first(A._validate_case(legacy_center))["domain"])=="center"
+    # The removed centring flag is not read: without a placement choice the default applies.
+    flag_only=deepcopy(SETTINGS);flag_only["domain"]["symmetry_center_y"]=true
+    flagged=first(A._validate_case(flag_only))
+    @test flagged["domain"]["symmetry_placement"]=="wall" && !haskey(flagged["domain"],"symmetry_center_y")
+    # A study with a symmetry plane must name its placement; the validated case always does.
+    unplaced=deepcopy(default);delete!(unplaced["domain"],"symmetry_placement")
+    @test_throws ArgumentError A._check_study_setup(unplaced)
+    @test A._check_study_setup(deepcopy(default)) isa AbstractDict
+    # The pinned lbmtau snapshot is no longer an Aero Lab solver; the refusal says so.
     request["solver"]="lbmtau";request["lattice"]="d3q27"
+    refusal=try A._validate_case(request);"" catch error;sprint(showerror,error) end
+    @test occursin("lbmtau",refusal) && occursin("no longer offered",refusal)
+    request["solver"]="unknown"
     @test_throws ArgumentError A._validate_case(request)
 end
 
 @testset "Q19 time step and output resource settings" begin
     defaults=A._q19_settings(SETTINGS)
     @test defaults["u_lattice"]==.08
+    @test defaults["hrr_sigma"]==.98
+    @test defaults["wall_function"]===false
     @test defaults["checkpoint_keep"]==2
-    @test defaults["ramp_steps"]===nothing
     @test defaults["max_plane_samples"]==4_000_000
-    chosen=Dict("u_lattice"=>.05,"checkpoint_keep"=>1,"ramp_steps"=>10,"max_plane_samples"=>1_000_000)
+    # Settings the solver no longer has are neither stored nor refused.
+    @test isempty(intersect(keys(defaults),("collision","wall_law","absorbing_faces","ramp_steps")))
+    retired=deepcopy(SETTINGS);retired["octree"]=merge(Dict{String,Any}(retired["octree"]),Dict("collision"=>"rr","absorbing_faces"=>"outlet","ramp_steps"=>10,"wall_law"=>"spalding"))
+    @test A._q19_settings(retired)==defaults
+    chosen=Dict("u_lattice"=>.05,"hrr_sigma"=>.9,"wall_function"=>false,"checkpoint_keep"=>1,"max_plane_samples"=>1_000_000)
     request=deepcopy(SETTINGS);request["octree"]=merge(Dict{String,Any}(request["octree"]),chosen)
     case,triangles=A._validate_case(request)
     @test all(case["octree"][key]==value for (key,value) in chosen)
     yaml=A._yaml_case(case,case["bounds"];build_only=true)
     raw=YAML.load(yaml)
-    @test raw["advanced"]["numerics"]["u_lattice"]==.05
-    @test raw["basic"]["simulation"]["ramp_steps"]==10
+    @test raw["octree_q19"]["numerics"]==Dict("hrr_sigma"=>.9,"sgs"=>"wale","u_lattice"=>.05)
+    @test raw["octree_q19"]["walls"]["wall_function"]==Dict("enabled"=>false,"sampling"=>"normal_1","filter_steps"=>50,"pressure_gradient"=>false)
+    @test !haskey(raw["basic"]["simulation"],"ramp_steps") && !haskey(raw["advanced"],"numerics")
     folder=joinpath(FIXTURE,"resources");mkpath(folder)
     A._write_stl(joinpath(folder,"model.stl"),A._solver_model_triangles(case,triangles))
     write(joinpath(folder,"config.yaml"),yaml)
     cfg=OctreeQ19.load_case(folder)
     @test cfg.numerics.u_lattice==.05
-    @test cfg.outputs.ramp_steps==10
+    @test cfg.numerics.hrr_sigma==.9
+    @test cfg.walls.wall_function===false
     @test cfg.outputs.checkpoint_keep==1
     @test OctreeQ19.plane_sample_limit(cfg)==1_000_000
     saved=A.save_study(HTTP.Request("POST","/api/aero/studies",[],JSON3.write(Dict("name"=>"Q19 resources","case"=>case))))
@@ -122,16 +142,16 @@ end
         changed=deepcopy(case);changed["octree"][key]=value
         @test A._same_study_setup(case,changed) # old fields remain usable after storage/display edits
     end
-    for (key,value) in (("u_lattice",.08),("ramp_steps",0))
+    for (key,value) in (("u_lattice",.08),("hrr_sigma",.98),("wall_function",true))
         changed=deepcopy(case);changed["octree"][key]=value
         @test !A._same_study_setup(case,changed)
     end
-    legacy=first(A._validate_case(SETTINGS));explicit=deepcopy(legacy)
-    for key in keys(chosen);pop!(legacy["octree"],key,nothing);end
-    @test A._same_study_setup(legacy,explicit)
-    @test YAML.load(A._yaml_case(legacy,legacy["bounds"];build_only=true))["basic"]["simulation"]["ramp_steps"]==1
+    # A case that names no octree numerics equals one that names the defaults.
+    unnamed=first(A._validate_case(SETTINGS));explicit=deepcopy(unnamed)
+    for key in keys(chosen);pop!(unnamed["octree"],key,nothing);end
+    @test A._same_study_setup(unnamed,explicit)
     for (key,values) in (("u_lattice",(0.,.121,Inf,NaN,true)),("checkpoint_keep",(0,11,1.5,true)),
-                         ("ramp_steps",(-1,11,1.5,true)),("max_plane_samples",(9999,16_000_001,10_000.5,true)))
+                         ("hrr_sigma",(.49,1.01,NaN,true)),("wall_function",("on",1)),("max_plane_samples",(9999,16_000_001,10_000.5,true)))
         for value in values
             invalid=deepcopy(SETTINGS);invalid["octree"]=Dict{String,Any}(invalid["octree"]);invalid["octree"][key]=value
             @test_throws ArgumentError A._validate_case(invalid)
@@ -145,9 +165,10 @@ end
     @test case["surface_subdivision"]["applied"]===false
     @test case["surface_subdivision"]["refined_triangles_before_symmetry"]==length(original)
     @test case["surface_subdivision"]["gpu_surface_allowance_gb"]==0
+    @test !haskey(case,"surface_triangle_max_edge_m")
     yaml=YAML.load(A._yaml_case(case,case["bounds"];build_only=true))
-    @test yaml["basic"]["subdivision"]===false
-    @test yaml["basic"]["minimum_facet_size"]==0
+    # The octree solver has no surface subdivision: its case file carries neither key.
+    @test !haskey(yaml["basic"],"subdivision") && !haskey(yaml["basic"],"minimum_facet_size")
     changed=deepcopy(case);changed["surface_triangle_max_edge_m"]=.05
     @test A._same_study_setup(case,changed)
     @test_throws ArgumentError A._surface_subdivision_preview(triangles,.0001)
@@ -221,7 +242,7 @@ end
     @test A._positive_y_surface_area([triangle],1.)≈2.
     @test A._positive_y_surface_area([triangle],-1.)≈0.
     @test A._positive_y_surface_area([triangle],.5)≈1.875
-    request=deepcopy(SETTINGS);request["levels"]=3;request["domain"]["symmetry_center_y"]=true
+    request=deepcopy(SETTINGS);request["levels"]=3;request["domain"]["symmetry_placement"]="center"
     case=first(A._validate_case(request))
     h0=case["surface_dx"]*2.0^(case["levels"]-1)
     limits=A._mesh_limits(case;available_ram_bytes=8e9)
@@ -236,7 +257,7 @@ end
     gpu=deepcopy(request);gpu["solver"]="main";gpu["lattice"]="d3q27"
     @test_throws ArgumentError A._validate_case(gpu)
     for boundary in ("symmetry","ground","free_air"),sizing in ("minimum","proportions")
-        domain=Dict{String,Any}("boundary"=>boundary,"sizing"=>sizing,"upstream"=>.2,"downstream"=>.3,"lateral"=>.2,"height"=>.2,"symmetry_center_y"=>true,"proportions"=>[3.,2.,1.])
+        domain=Dict{String,Any}("boundary"=>boundary,"sizing"=>sizing,"upstream"=>.2,"downstream"=>.3,"lateral"=>.2,"height"=>.2,"symmetry_placement"=>"center","proportions"=>[3.,2.,1.])
         before=deepcopy(domain);cpu=A._expand_minimum_domain!(domain,[1.,.5,.25],.05,5;octree=true)
         @test all(domain[k]>=before[k] for k in ("upstream","downstream","lateral","height"))
         @test cpu["minimum_axis_size_m"]==2*.05*16

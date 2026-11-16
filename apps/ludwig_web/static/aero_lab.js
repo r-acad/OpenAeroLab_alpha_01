@@ -69,68 +69,21 @@
       flow_angles:[Number($('flow-alpha')?.value)||0,$('boundary').value==='symmetry'?0:Number($('flow-beta')?.value)||0],translation:['x','y','z'].map(a=>inputNumber('move-'+a,'offset '+a,{min:-10000,max:10000}))};
   }
   function symmetryPlacement(domain=null) {
-    return domain ? (domain.symmetry_placement || (domain.symmetry_center_y ? 'center' : 'wall')) : ($('symmetry-placement')?.value || 'none');
+    return domain ? (domain.symmetry_placement || 'wall') : ($('symmetry-placement')?.value || 'none');
+  }
+  // The page's controls as the request builder reads them (aero_request.js).
+  const controls={value:id=>$(id)?.value??'',checked:id=>Boolean($(id)?.checked)};
+  const solverChoice=()=>window.LudwigAeroRequest.SOLVERS[$('solver').value]||null;
+  function requestContext() {
+    return {modelId:state.modelId,reference:referenceTools?.read(),cuts:state.cuts,
+      outputs:window.LudwigOutputControls?.read()||{},displayEvery:window.LudwigOutputControls?.displayEvery()||100};
   }
   function fixedSymmetryOffset(domain=null) {
     return Number(domain ? domain.symmetry_offset_y_m || 0 : $('symmetry-placement-offset-y')?.value || 0);
   }
+  // The mesh request: built by aero_request.js from the controls, so each solver gets only its own settings.
   function caseSettings() {
-    if(state.outdatedServer)throw new Error('This is an older workbench server. Relaunch Ludwig Workbench to use studies, automatic domain sizing and all seven AMR levels.');
-    if(!state.modelId)throw new Error('Load a model first.');
-    const solver=$('solver').value;
-    if(!solver)throw new Error('Select an available solver.');
-    const lattice=$('lattice').value;
-    const geometryHandling=$('geometry-handling')?.value||'closed_solid';
-    if(!['closed_solid','two_sided_open'].includes(geometryHandling))throw new Error('Select a solver geometry handling mode.');
-    if(!['d3q27','d3q39','d3q19'].includes(lattice))throw new Error('Select D3Q27, D3Q39 or D3Q19.');
-    if(lattice==='d3q39'&&solver!=='main')throw new Error('D3Q39 requires the main LUDWIG solver.');
-    const octree=solver==='q19_octree';
-    if(lattice==='d3q19'&&!octree)throw new Error('D3Q19 is the lattice of the CPU octree solver.');
-    if(octree&&lattice!=='d3q19')throw new Error('The CPU octree solver uses the D3Q19 lattice.');
-    if(octree&&$('mesh-sizing').value!=='manual')throw new Error('VRAM sizing is not available for the CPU octree solver; choose a manual surface cell size.');
-    const boundary=$('boundary').value;
-    if(!['free_air','ground','symmetry'].includes(boundary))throw new Error('Choose a boundary condition.');
-    const sizing=$('domain-sizing')?.value||'minimum';
-    if(!['minimum','fixed','proportions'].includes(sizing))throw new Error('Choose domain sizing.');
-    const proportions=['x','y','z'].map(axis=>sizing==='proportions'?inputNumber('domain-ratio-'+axis,'domain proportion '+axis,{min:.000001,max:1000000}):(Number($('domain-ratio-'+axis)?.value)>0?Number($('domain-ratio-'+axis).value):1));
-    const {flow_angles,...transform}=transformSettings();
-    if(solver==='lbmtau'&&transform.translation.some(v=>v!==0))throw new Error('The pinned lbmtau solver cannot offset the model. Select the main solver or reset offsets.');
-    if(boundary==='symmetry'&&symmetryPlacement()!=='none'&&transform.translation[1]!==0)throw new Error('Automatic symmetry alignment requires lateral offset Y = 0. Choose Leave model where it is for manual placement.');
-    const thermal=thermalFlowSettings();
-    const velocity=thermal?.velocity??inputNumber('velocity','flow speed',{min:0.01,max:1000}),soundSpeed=thermal?.speed_of_sound??inputNumber('sound-speed','sound speed',{min:1,max:100000});
-    const maxMach=thermal?1.5:octree?0.3:lattice==='d3q39'?1.6:0.6;
-    if(velocity/soundSpeed>maxMach)throw new Error(`Selected backend requires Mach ≤ ${maxMach}.`);
-    const alpha=inputNumber('flow-alpha','angle of attack',{min:-85,max:85}),beta=boundary==='symmetry'?0:inputNumber('flow-beta','sideslip',{min:-85,max:85});
-    return {reference:referenceTools?.read(),model_id:state.modelId,geometry_handling:geometryHandling,transform,domain:{
-        upstream:inputNumber('upstream','upstream clearance',{min:0.02,max:10000}),
-        downstream:inputNumber('downstream','downstream clearance',{min:0.02,max:10000}),
-        lateral:inputNumber('lateral','lateral clearance',{min:0.02,max:10000}),
-        height:inputNumber('height','vertical clearance',{min:0.02,max:10000}),boundary,
-        x_offset_m:inputNumber('domain-x-offset','domain X offset',{min:-10000,max:10000}),
-        symmetry_center_y:symmetryPlacement()==='center',symmetry_placement:symmetryPlacement(),
-        ...(symmetryPlacement()==='none'?{symmetry_offset_y_m:fixedSymmetryOffset()}:{}),sizing,proportions},
-      surface_dx:inputNumber('surface-dx','surface cell size',{min:0.00001,max:100}),
-      surface_triangle_max_edge_m:$('surface-triangle-max-edge-mm')?inputNumber('surface-triangle-max-edge-mm','maximum surface triangle edge in millimetres',{min:.1,max:100000})/1000:.05,
-      levels:inputNumber('levels','AMR levels',{min:1,max:octree?10:7,integer:true}),solver,lattice,
-      octree:octree?{band_fine:inputNumber('octree-band-fine','finest band',{min:3,max:64,integer:true}),band:inputNumber('octree-band','coarser bands',{min:3,max:64,integer:true}),
-        wake_length:inputNumber('octree-wake','wake length',{min:0,max:20}),wake_level_offset:inputNumber('octree-wake-offset','wake level offset',{min:0,max:4,integer:true}),
-        threads:inputNumber('octree-threads','CPU threads',{min:0,max:256,integer:true}),seal_cavities:Boolean($('octree-seal-cavities')?.checked),
-        u_lattice:inputNumber('octree-u-lattice','lattice speed',{min:.00001,max:.12}),
-        checkpoint_keep:inputNumber('octree-checkpoint-keep','retained checkpoints',{min:1,max:10,integer:true}),
-        ramp_steps:$('octree-ramp-steps').value.trim()?inputNumber('octree-ramp-steps','startup ramp steps',{min:0,max:Number($('steps').value),integer:true}):null,
-        max_plane_samples:inputNumber('octree-plane-samples','samples per recorded plane',{min:10000,max:16000000,integer:true})}:undefined,
-      mesh_sizing:$('mesh-sizing').value,
-      target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),
-      outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,
-      flow:{alpha,beta,velocity,density:inputNumber('density','density',{min:0.01,max:10000}),
-        kinematic_viscosity:inputNumber('viscosity','kinematic viscosity',{min:1e-10,max:1}),
-        speed_of_sound:soundSpeed,...thermal},
-      steps:inputNumber('steps','solver steps',{min:8,max:1000000,integer:true}),
-      frames:inputNumber('frames','output frames',{min:2,max:40,integer:true}),
-      cuts:state.cuts.map(c=>{
-        const p=Number(c.position);if(String(c.position).trim()===''||!Number.isFinite(p)||p<0)throw new Error('Cut plane positions must be nonnegative metres from the solver domain origin.');
-        return {axis:c.axis,position:p};
-      })};
+    return window.LudwigAeroRequest.buildRequest(controls,requestContext());
   }
   function validSettings() { try {caseSettings();return true;}catch{return false;} }
   function selectedGpuBudget(job=state.job) {
@@ -140,7 +93,7 @@
     return finite(job?.estimate?.budget_gb)?Number(job.estimate.budget_gb):null;
   }
   function gpuFit(job) {
-    if((job?.case?.solver||$('solver')?.value)==='q19_octree')return null;
+    if(job?.case?.solver?job.case.solver==='q19_octree':Boolean(solverChoice()?.octree))return null;
     if(job?.estimate?.measured===false&&!finite(job?.actual?.memory_gb))return null;
     const actual=job?.actual?.memory_gb,budget=selectedGpuBudget(job);
     if(finite(actual)&&finite(budget))return Number(actual)<=Number(budget);
@@ -149,13 +102,11 @@
     return finite(memory)&&finite(budget)?Number(memory)<=Number(budget):job?.estimate?.fits;
   }
   function updateBudgetGuard(job=state.job,cancel=true) {
-    const over=gpuFit(job)===false,input=$('surface-dx'),note=$('surface-budget-note'),budget=selectedGpuBudget(job);
+    const over=gpuFit(job)===false,input=$('surface-dx'),budget=selectedGpuBudget(job);
     input.classList.toggle('over-budget',over);if(over)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
-    if(note){note.hidden=!over;note.textContent=over?`Above GPU budget${finite(budget)?` (${Number(budget).toFixed(2)} GB)`:''}. Increase surface cell size, reduce levels, or raise the VRAM target. Active work is cancelled.`:'';}
-    if(note)note.hidden=true;
     if(over){
       const key=`gpu-budget:${state.jobId||'draft'}`;
-      if(state.budgetNoticeKey!==key){state.budgetNoticeKey=key;selectResultPane('scene');window.LudwigAeroLayout?.showMessage(note?.textContent||'Above GPU budget. Increase surface cell size or revise the VRAM target.',{key,urgent:true,title:'Above GPU budget',recovery:Boolean(state.meshProposal)});}
+      if(state.budgetNoticeKey!==key){state.budgetNoticeKey=key;selectResultPane('scene');window.LudwigAeroLayout?.showMessage(`Above GPU budget${finite(budget)?` (${Number(budget).toFixed(2)} GB)`:''}. Increase the surface cell size, reduce the levels, or raise the GPU memory target under Mesh. Active work is cancelled.`,{key,urgent:true,title:'Above GPU budget',recovery:Boolean(state.meshProposal)});}
     }else state.budgetNoticeKey=null;
     if(!over||!cancel||!state.jobId||!activeStatuses.has(job?.status))return;
     state.budgetCancelIds||=new Set();const id=state.jobId;if(state.budgetCancelIds.has(id))return;state.budgetCancelIds.add(id);
@@ -176,12 +127,12 @@
     const host=$('output-controls');if(!host)return;
     let node=$('output-storage-estimate');if(!node){node=document.createElement('p');node.id='output-storage-estimate';node.className='hint';node.setAttribute('role','status');host.appendChild(node);}
     if(state.job?.case?.solver!=='q19_octree'||!state.job?.actual||!state.jobId){node.textContent='For D3Q19, build a mesh to estimate output storage.';state.outputStorageBlocked=false;outputEstimateKey='';return;}
-    let outputs,every;try{outputs=window.LudwigOutputControls.read();every=window.LudwigOutputControls.displayEvery();}catch{node.textContent='Complete output options to estimate storage.';state.outputStorageBlocked=false;outputEstimateKey='';return;}
-    const id=state.jobId,key=JSON.stringify([id,outputs,every,state.job.actual?.octree?.reports?.wall_sample_count]);if(key===outputEstimateKey)return;
+    let outputs,every,steps;try{outputs=window.LudwigOutputControls.read();every=window.LudwigOutputControls.displayEvery();steps=inputNumber('steps','solver steps',{min:8,max:1000000,integer:true});}catch{node.textContent='Complete output options to estimate storage.';state.outputStorageBlocked=false;outputEstimateKey='';return;}
+    const id=state.jobId,key=JSON.stringify([id,outputs,every,steps,state.job.actual?.octree?.reports?.wall_sample_count]);if(key===outputEstimateKey)return;
     outputEstimateKey=key;state.outputStorageBlocked=false;const serial=++outputEstimateSerial;clearTimeout(outputEstimateTimer);
     node.textContent='Checking estimated output storage…';
     outputEstimateTimer=setTimeout(async()=>{try{
-      const data=await api(`/api/aero/jobs/${encodeURIComponent(id)}/output-estimate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({outputs,display_every:every})});
+      const data=await api(`/api/aero/jobs/${encodeURIComponent(id)}/output-estimate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({outputs,display_every:every,steps})});
       if(serial!==outputEstimateSerial||id!==state.jobId)return;
       if(!data.available){node.textContent='Output storage cannot be estimated until the mesh is ready.';return;}
       const gb=value=>`${(Number(value)/1e9).toFixed(2)} GB`;
@@ -200,7 +151,7 @@
     const surface=state.importedResults?state.importedSurface:state.surface,cuts=state.job?.artifacts?.cuts||[];
     const parts=[];
     if(surface)parts.push(`Surface loaded${finite(surface.step)?` · iteration ${fmt(surface.step)}`:''}${surface.representation==='wall_samples'?` · ${surface.count.toLocaleString()} native wall samples (${surface.missing.toLocaleString()} missing values)`:' · original facet averages'}`);
-    else if(state.job?.artifacts?.surface_latest)parts.push('Surface available · click Load results or Surface');
+    else if(state.job?.artifacts?.surface_latest)parts.push('Surface available · click Load saved results or Surface');
     if(cuts.length)parts.push(`${cuts.length} recorded plane files`);
     if(state.importedResults)parts.push(`Source: ${state.importedResults.name||'imported results'}`);
     if(state.surfaceError)parts.push(`Refresh issue: ${state.surfaceError}. Last loaded data retained.`);
@@ -208,7 +159,7 @@
     if(state.surfaceRefinementPending)parts.push(surface?.representation==='wall_samples'?'Geometry refinement edits do not add wall-field resolution; native samples follow the saved fluid lattice':`${$('surface-triangle-max-edge-mm')?.value||50} mm surface sampling is pending a new mesh; current results retain their original triangles`);
     const pane=$('result-pane')?.value||'scene';
     if(surface)parts.push(pane==='scene'&&state.mode==='surface'?'Surface colours visible':`Surface retained · current view: ${pane==='scene'?state.mode:pane==='cuts'?'recorded planes':'files and images'}`);
-    node.textContent=parts.length?parts.join(' · '):'Open a study with results, or use Read results to load native / VTK files. Creating a mesh alone does not produce flow fields.';
+    node.textContent=parts.length?parts.join(' · '):'Open a study with results, or read saved result files under Results. Creating a mesh alone does not produce flow fields.';
     node.title=node.textContent;
   }
   function updateActions() {
@@ -216,8 +167,7 @@
     state.surfaceRefinementPending=Boolean(state.jobId&&state.activeConfig?.solver!=='q19_octree'&&requestedEdge>0&&Math.abs(requestedEdge-builtEdge)>1e-10*Math.max(1,requestedEdge,builtEdge));
     if($('mesh-visibility')){$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible!==false));$('mesh-visibility').textContent=state.meshVisible===false?'Show mesh':'Hide mesh';}
     $('model-file').disabled=state.importing||state.uploading;
-    if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').disabled=$('boundary').value!=='symmetry'||!state.source||state.importing||state.uploading||activeStatuses.has(state.job?.status);
-    $('build-mesh').disabled=state.importing||state.uploading||!validSettings()||activeStatuses.has(state.job?.status);
+    $('build-mesh').disabled=state.importing||state.uploading||!validSettings()||activeStatuses.has(state.job?.status)||Boolean($('solver').selectedOptions[0]?.disabled);
     $('run-solver').disabled=!canRun()||state.uploading;
     $('cancel-job').disabled=!state.jobId||!activeStatuses.has(state.job?.status);
     const meshing=['meshing','sizing','mesh_sizing'].includes(state.job?.status);
@@ -237,7 +187,7 @@
       updateActions();queueRender();return;
     }
     if(activeStatuses.has(state.job?.status)){
-      state.draftDirty=true;progress('The current job continues. Your changed settings require another lattice build.','Draft changed');
+      state.draftDirty=true;progress('The current job continues. Your changed settings need a new mesh.','Draft changed');
       updateActions();queueRender();return;
     }
     const hasFields=Boolean(state.surface||state.importedResults||state.job?.artifacts?.surface_latest||state.job?.artifacts?.cuts?.length);
@@ -252,8 +202,8 @@
     if(state.jobId){state.jobId=null;state.job=null;state.amr=null;state.amrUrl=null;state.surface=null;state.lastSurfaceKey=null;state.cutRenderKey=null;state.activeConfig=null;state.draftDirty=false;
       if(state.inspector){state.inspector.data=null;state.inspector.key=null;state.inspector.loading=false;state.inspector.error='';}
       clearPersistedJob();clearTimeout(state.pollTimer);
-      $('metric-cells').textContent='—';$('metric-memory').textContent='—';$('metric-fit').textContent='Build the lattice';
-      $('mesh-details').hidden=true;progress('Settings changed. Build the lattice again before running.','Needs rebuild');
+      $('metric-cells').textContent='—';$('metric-memory').textContent='—';$('metric-fit').textContent='Create a mesh';
+      $('mesh-details').hidden=true;progress('Settings changed. Create the mesh again before running.','Needs a new mesh');
       $('job-progress').value=0;$('artifact-links').replaceChildren();$('cut-image').hidden=true;}
     updateBudgetGuard(state.job,false);updateActions();queueRender();
   }
@@ -330,7 +280,7 @@
     const move=ground?[p.translation[0],p.translation[2],-p.translation[1]]:p.translation;
     for(let i=0;i<3;i++)offset[i]+=move[i];
     for(let i=0;i<shape.length;i++)shape[i]+=offset[i%3];
-    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_center_y:centeredSymmetry,symmetry_placement:placement,symmetry_offset_y_m:fixedSymmetryOffset(),x_offset_m:domainX,sizing:$('domain-sizing')?.value||'minimum'}}};
+    return {triangles:shape,body:boundsOf(shape),domain:{min:[0,0,0],max:dims},bodyOrigin:offset,boundary,ground,config:{transform:p,flow:{alpha:p.flow_angles[0],beta:p.flow_angles[1]},domain:{boundary,symmetry_placement:placement,symmetry_offset_y_m:fixedSymmetryOffset(),x_offset_m:domainX,sizing:$('domain-sizing')?.value||'minimum'}}};
   }
   function previewTriangles() {return previewFrame()?.triangles||null;}
   function binaryStl(triangles) {
@@ -405,34 +355,46 @@
   function updateModelAppearance(info) {
     const option=Array.from($('model-appearance')?.options||[]).find(o=>o.value==='glb');
     if(option)option.disabled=!/\.glb$/i.test(state.originalFile?.name||'');
-    if(info)state.modelToolStatus=info.loading?'Loading original GLB materials and textures…':info.ready?'Original GLB materials and textures are available. Selecting GLB appearance switches to geometry; Surface displays computed fields.':info.error||'Original GLB appearance requires the original GLB file. Load it from File → Open geometry if it was not retained.';
+    if(info)state.modelToolStatus=info.loading?'Loading original GLB materials and textures…':info.ready?'Original GLB materials and textures are available. Selecting GLB appearance switches to geometry; Surface displays computed fields.':info.error||'Original GLB appearance requires the original GLB file. Load the GLB file again under Model if it was not retained.';
   }
+  // Put a saved case (a study or a job) into the controls. A setting the case does not carry keeps its current
+  // value; a solver Aero Lab no longer offers leaves the current solver selected and says so.
   function hydrateCase(caseInfo) {
-    const set=(id,value)=>{if(value!==undefined&&value!==null)$(id).value=String(value);};
+    const set=(id,value)=>{if(value!==undefined&&value!==null&&$(id))$(id).value=String(value);};
+    state.flowBeforeThermal=null;   // the case's own speed and sound speed are the inputs from here on
     const transform=caseInfo.transform||{},resolved=caseInfo.domain||{},domain=(resolved.sizing||'minimum')!=='fixed'?(caseInfo.requested_domain||caseInfo.domain_adjustment?.requested_domain||resolved):resolved,flow=caseInfo.flow||{};
+    const choice=window.LudwigAeroRequest.choiceOf(caseInfo.solver,caseInfo.lattice);
+    if(choice&&!Array.from($('solver').options).find(option=>option.value===choice)?.disabled)$('solver').value=choice;
+    else window.LudwigAeroLayout?.showMessage(`This case was saved with the solver "${caseInfo.solver}", which Aero Lab does not offer on this machine. The solver selected now is used instead; its saved results stay available, and a new mesh is needed to run.`,{urgent:true,title:'Solver not available'});
     for(let i=0;i<3;i++){
       const axis=['x','y','z'][i];set('scale-'+axis,transform.scale?.[i]);
       set('rotate-'+axis,transform.rotation_deg?.[i]);set('move-'+axis,transform.translation?.[i]);
     }
     for(const key of ['upstream','downstream','lateral','height'])set(key,domain[key]);
     set('domain-x-offset',domain.x_offset_m??resolved.x_offset_m??0);
-    set('domain-sizing',domain.sizing||'minimum');for(let axis=0;axis<3;axis++)set('domain-ratio-'+['x','y','z'][axis],domain.proportions?.[axis]??1);set('boundary',domain.boundary);set('symmetry-placement',symmetryPlacement(domain));set('symmetry-placement-offset-y',fixedSymmetryOffset(domain));if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').checked=symmetryPlacement(domain)==='center';set('surface-dx',caseInfo.surface_dx);set('levels',caseInfo.levels);
+    set('domain-sizing',domain.sizing||'minimum');for(let axis=0;axis<3;axis++)set('domain-ratio-'+['x','y','z'][axis],domain.proportions?.[axis]??1);
+    set('boundary',domain.boundary);
+    if(domain.boundary==='symmetry'){set('symmetry-placement',symmetryPlacement(domain));set('symmetry-placement-offset-y',fixedSymmetryOffset(domain));}
+    set('surface-dx',caseInfo.surface_dx);set('levels',caseInfo.levels);
     set('geometry-handling',caseInfo.geometry_handling||'closed_solid');
-    set('surface-triangle-max-edge-mm',Number(caseInfo.surface_triangle_max_edge_m)>0?Number(caseInfo.surface_triangle_max_edge_m)*1000:50);
-    const sized=caseInfo.target_vram_percent!=null||caseInfo.target_vram_gb!=null;
-    set('mesh-sizing',caseInfo.mesh_sizing??(sized?'vram':'manual'));
-    const free=Number(state.capabilities?.gpu?.free_gb),legacy=free>0?Math.min(100,Math.max(1,100*Number(caseInfo.target_vram_gb)/free)):80;
-    set('target-vram',caseInfo.target_vram_percent??(sized?Math.round(legacy):80));$('target-vram').disabled=false;
-    const octree=caseInfo.octree||{};set('octree-band-fine',octree.band_fine??8);set('octree-band',octree.band??6);set('octree-wake',octree.wake_length??1);set('octree-wake-offset',octree.wake_level_offset??1);set('octree-threads',octree.threads??0);if($('octree-seal-cavities'))$('octree-seal-cavities').checked=octree.seal_cavities===true;
-    set('octree-u-lattice',octree.u_lattice??.08);set('octree-checkpoint-keep',octree.checkpoint_keep??2);set('octree-plane-samples',octree.max_plane_samples??4000000);set('octree-ramp-steps',octree.ramp_steps??'');
-    set('lattice',caseInfo.lattice||'d3q27');set('solver',caseInfo.solver);syncSolverLattice();
+    // GPU solvers: surface subdivision and the memory target.
+    if(Number(caseInfo.surface_triangle_max_edge_m)>0)set('surface-triangle-max-edge-mm',Number(caseInfo.surface_triangle_max_edge_m)*1000);
+    set('mesh-sizing',caseInfo.mesh_sizing==='vram'?'vram':'manual');set('target-vram',caseInfo.target_vram_percent);
+    // CPU octree solver.
+    const octree=caseInfo.octree||{};
+    set('octree-band-fine',octree.band_fine);set('octree-band',octree.band);set('octree-wake',octree.wake_length);set('octree-wake-offset',octree.wake_level_offset);
+    set('octree-threads',octree.threads);set('octree-u-lattice',octree.u_lattice);set('octree-hrr-sigma',octree.hrr_sigma);
+    set('octree-checkpoint-keep',octree.checkpoint_keep);set('octree-plane-samples',octree.max_plane_samples);
+    if(typeof octree.seal_cavities==='boolean')$('octree-seal-cavities').checked=octree.seal_cavities;
+    if(typeof octree.wall_function==='boolean')$('octree-wall-function').checked=octree.wall_function;
     set('flow-alpha',flow.alpha||0);set('flow-beta',flow.beta||0);referenceTools?.restore(caseInfo.reference||{});syncFlowAngles();
     set('velocity',flow.velocity);set('density',flow.density);
     set('viscosity',flow.kinematic_viscosity);set('sound-speed',flow.speed_of_sound);
-    set('flow-input-mode',flow.input_mode||'speed');set('flow-mach',flow.mach??flow.velocity/flow.speed_of_sound);
-    set('flow-temperature',flow.temperature_k??288.15);set('flow-cfl',flow.cfl??.25);set('flow-wall-model',flow.wall_model||'slip');syncThermalFlow();
-    set('steps',caseInfo.steps);set('frames',caseInfo.frames);
+    // Thermal solver.
+    set('flow-mach',flow.mach);set('flow-temperature',flow.temperature_k);set('flow-cfl',flow.cfl);set('flow-wall-model',flow.wall_model);
+    set('steps',caseInfo.steps);
     state.cuts=Array.isArray(caseInfo.cuts)?caseInfo.cuts.map(c=>({axis:c.axis,position:c.position})):[];
+    syncSolver();
     window.LudwigOutputControls?.restore(caseInfo);updateVramTarget();showGeometryAudit(caseInfo.geometry_audit);
     boundaryNote();renderCutRows();window.LudwigAeroLayout?.syncModelControls?.();
   }
@@ -458,7 +420,7 @@
       state.sourceModelId=state.modelId;state.sourceAssetModelId=state.modelId;state.sourceAssetFile=file;
       if(file.size<=50_000_084)try{await api(`/api/aero/models/${state.modelId}/source?name=${encodeURIComponent(file.name)}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:await file.arrayBuffer()});}catch(error){console.warn('Original asset could not be retained:',error);}
       showGeometryAudit(response.geometry_audit);
-      message(`${file.name} · ${fmt(response.triangles||nTri)} triangles · ready for lattice build.`);
+      message(`${file.name} · ${fmt(response.triangles||nTri)} triangles · ready for a mesh.`);
     }catch(error){state.modelId=null;message(`Could not load model: ${error.message}`,true);}
     finally{
       for(const mesh of imported?.meshes?.slice().reverse()||[])mesh.dispose(false,true);
@@ -1400,7 +1362,7 @@
     }catch(error){
       if(state.resumePending&&(error.status===404||(error.status===400&&/Unknown Aero Lab job/i.test(error.message)))){
         state.resumePending=false;state.jobId=null;state.job=null;clearPersistedJob();
-        progress('The saved case is no longer available. Build a new lattice.','Case unavailable');updateActions();return;}
+        progress('The saved case is no longer available. Create a new mesh.','Case unavailable');updateActions();return;}
       const failures=(state.refreshFailures||0)+1;state.refreshFailures=failures;
       $('job-state').textContent=`Refreshing case - retry ${failures}`;
       if(failures>=3)window.LudwigAeroLayout?.showMessage(`The case could not be refreshed after ${failures} attempts. ${error.message}`,{key:`case-refresh:${id}`,urgent:true,title:'Case refresh needs attention',diagnosticUrl:error.details?.diagnostic_url});
@@ -1415,13 +1377,13 @@
     selectResultPane('scene');window.LudwigAeroLayout?.closeMessage();
     window.LudwigAeroLayout?.setMeshBuildProgress({active:true,status:'creating',percent:0,stage:'Preparing mesh',message:'Submitting geometry and mesh settings',log:['Submitting geometry and mesh settings'],jobId:'submitting'});
     clearTimeout(state.pollTimer);clearPersistedJob();state.jobId=null;state.job={status:'meshing'};state.amr=null;state.amrUrl=null;state.surface=null;state.lastSurfaceKey=null;state.cutRenderKey=null;state.draftDirty=false;state.activeConfig=request;
-    state.mode='mesh';syncViewButtons();queueRender();updateActions();progress('Submitting the model and lattice settings…','Meshing');
+    state.mode='mesh';syncViewButtons();queueRender();updateActions();progress('Submitting the model and mesh settings…','Meshing');
     $('job-progress').removeAttribute('value');if($('job-progress-label'))$('job-progress-label').textContent='Creating mesh…';
     try{
       const result=await api('/api/aero/mesh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});
       if(!result.job_id)throw new Error('Service did not return a job ID.');
       state.jobId=String(result.job_id);persistJob(state.jobId);renderJob(result);pollJob(state.jobId);
-    }catch(error){state.job={status:'failed'};$('job-progress').value=0;window.LudwigAeroLayout?.setMeshBuildProgress({active:false,status:'error',message:error.message,log:[error.message],jobId:state.jobId||'submitting'});progress(`Lattice build failed: ${error.message}`,'Build failed');if(error.details?.mesh_proposal)showMeshProposal(error.details.mesh_proposal,error.message);updateActions();}
+    }catch(error){state.job={status:'failed'};$('job-progress').value=0;window.LudwigAeroLayout?.setMeshBuildProgress({active:false,status:'error',message:error.message,log:[error.message],jobId:state.jobId||'submitting'});progress(`The mesh could not be created: ${error.message}`,'Mesh failed');if(error.details?.mesh_proposal)showMeshProposal(error.details.mesh_proposal,error.message);updateActions();}
   }
   function showMeshProposal(proposal,reason){
     state.meshProposal=proposal;
@@ -1441,9 +1403,9 @@
     state.meshProposal=null;window.LudwigAeroLayout?.closeMessage();invalidateMesh();buildMesh();
   }
   async function runSolver() {
-    if(!canRun())return;const folder=window.LudwigOutputControls?.read()?.folder?.trim();if(!folder){window.LudwigAeroLayout?.selectParameters('outputs','output-folder');window.LudwigAeroLayout?.showMessage('Choose an output folder before running. Each analysis will get a dated study subfolder containing its study and results.',{urgent:true,title:'Output folder required'});$('output-folder')?.focus();return;}const id=state.jobId;state.restoredJobId=null;$('run-solver').disabled=true;
-    clearImportedResults(false);state.autoSurfaceDisplay=state.liveResults!==false;progress('Starting the selected LBM solver…','Starting');
-    try{const options={reference:referenceTools?.read(),study_name:$('study-name')?.value||'Aero study',study_snapshot:{name:$('study-name')?.value||'Aero study',view:window.LudwigAeroStudiesContext?.getStudyView?.()||{},source_path:state.studySource?.path||null},cuts:state.cuts.map(c=>({axis:c.axis,position:Number(c.position)})),outputs:window.LudwigOutputControls?.read()||{},display_every:window.LudwigOutputControls?.displayEvery()||100,target_vram_percent:inputNumber('target-vram','percentage of available VRAM',{min:1,max:100}),geometry_handling:$('geometry-handling')?.value||'closed_solid'};
+    if(!canRun())return;const folder=window.LudwigOutputControls?.read()?.folder?.trim();if(!folder){window.LudwigAeroLayout?.selectParameters('run','output-folder');window.LudwigAeroLayout?.showMessage('Choose an output folder under Run and outputs before running. Each run gets a dated subfolder with its study and results.',{urgent:true,title:'Output folder required'});$('output-folder')?.focus();return;}const id=state.jobId;state.restoredJobId=null;$('run-solver').disabled=true;
+    clearImportedResults(false);state.autoSurfaceDisplay=state.liveResults!==false;progress('Starting the selected solver…','Starting');
+    try{const options=window.LudwigAeroRequest.runOptions(controls,{...requestContext(),studyName:$('study-name')?.value||'Aero study',studySnapshot:{name:$('study-name')?.value||'Aero study',view:window.LudwigAeroStudiesContext?.getStudyView?.()||{},source_path:state.studySource?.path||null}});
       const job=await api(`/api/aero/jobs/${encodeURIComponent(id)}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(options)});renderJob(job);pollJob(id);}
     catch(error){progress(`Solver could not start: ${error.message}`,'Run refused');updateActions();}
   }
@@ -1454,7 +1416,6 @@
     catch(error){progress(`Cancellation failed: ${error.message}`,'Cancel failed');updateActions();}
   }
   function syncViewButtons() {
-    for(const b of document.querySelectorAll('.view-mode'))b.classList.toggle('active',b.dataset.view===state.mode);
     if($('view-mode'))$('view-mode').value=state.mode;
     const option=Array.from($('view-mode')?.options||[]).find(item=>item.value==='surface');
     if(option){const available=Boolean(state.surface||state.importedSurface||state.job?.artifacts?.surface_latest);option.hidden=!available;option.disabled=!available;}
@@ -1502,9 +1463,8 @@
     });
   }
   function boundaryNote() {
-    const b=$('boundary').value,center=$('symmetry-auto-center-y'),placement=symmetryPlacement(),automatic=b==='symmetry'&&placement!=='none';
-    $('move-y').disabled=automatic;$('move-y').title=automatic?'Y placement follows the selected automatic symmetry alignment. Choose Leave model where it is to move it manually.':'Manual lateral offset from the retained model placement';
-    if(center){center.disabled=b!=='symmetry';const row=center.closest?.('label');if(row)row.hidden=b!=='symmetry';}
+    const b=$('boundary').value,placement=symmetryPlacement(),automatic=b==='symmetry'&&placement!=='none';
+    $('move-y').disabled=automatic;$('move-y').title=automatic?'The Y position follows the placement chosen under Domain. Choose Leave the model where it is to move it by hand.':'Lateral offset of the model';
     $('boundary-note').textContent=b==='free_air'?($('solver').value==='pond_thermal'?'Free air: X flow, Y lateral, Z up. All outer faces use characteristic freestream/outflow boundaries. Increase clearances to assess far-field sensitivity.':'Free air: X flow, Y lateral, Z up. The distant top and bottom faces use slip boundaries; increase vertical clearance if they affect the flow.'):
       b==='ground'?'Ground: Aero Lab maps source Z-up to solver Y-up. The lowest model point touches ground at zero vertical offset; positive Z offset lifts it. Cut positions use solver coordinates.':
       placement==='none'?'Symmetry: the current model position is retained, with no automatic Y alignment. Only Y ≥ 0 is solved. Use the Y offset to place the model manually.':placement==='center'?'Symmetry: the model Y centre is placed on Y = 0. The solver uses the positive half and mirrors the symmetry boundary.':'Symmetry: the minimum Y edge of the prepared half model is placed at Y = 0.';
@@ -1520,68 +1480,35 @@
   function applySymmetryPlacement() {
     if($('boundary').value!=='symmetry')return;
     if(symmetryPlacement()==='none')retainCurrentSymmetryPosition();else $('move-y').value='0';
-    if($('symmetry-auto-center-y'))$('symmetry-auto-center-y').checked=symmetryPlacement()==='center';
     window.LudwigAeroLayout?.syncModelControls?.();boundaryNote();invalidateMesh();
   }
-  function syncSolverLattice(origin='solver') {
-    const sel=$('solver'),latticeSelect=$('lattice');
-    const available=value=>Array.from(sel.options).some(option=>option.value===value&&option.dataset.available==='true');
-    if(origin==='lattice'){
-      if(latticeSelect.value==='d3q19'&&available('q19_octree'))sel.value='q19_octree';
-      else if(sel.value==='q19_octree'||sel.value==='pond_thermal'||latticeSelect.value==='d3q39'){
-        const next=Array.from(sel.options).find(option=>option.dataset.available==='true'&&!['q19_octree','pond_thermal'].includes(option.value)&&String(option.dataset.lattices||'d3q27').split(',').includes(latticeSelect.value));
-        sel.value=next?.value||'';
-      }
-    }
-    const thermal=sel.value==='pond_thermal',octree=sel.value==='q19_octree';
-    if(thermal)$('lattice').value='d3q27';
-    if(octree)$('lattice').value='d3q19';
-    else if($('lattice').value==='d3q19')$('lattice').value='d3q27';   // D3Q19 belongs to the CPU octree solver only
-    const lattice=$('lattice').value,forced=thermal||octree;
-    $('lattice').disabled=false;
-    $('lattice').querySelector('option[value="d3q19"]').disabled=!available('q19_octree');
-    $('lattice-label').textContent=thermal?'Mesh layout':'LBM lattice / collision';
-    $('lattice').querySelector('option[value="d3q27"]').textContent=thermal?'Cartesian AMR · thermal finite volume':'D3Q27 + cumulant';
-    const levels=$('levels');
-    for(const option of levels.options)option.disabled=!octree&&Number(option.value)>7;
-    if(!octree&&Number(levels.value)>7)levels.value='7';
-    levels.title=octree?'Choose 1 to 10 octree levels; inspect the built mesh and RAM estimate before running.':'Choose 1 to 7 AMR levels; inspect the built lattice and GPU memory estimate before running.';
-    for(const option of sel.options){
-      if(!option.value)continue;
-      const own=['pond_thermal','q19_octree'].includes(option.value);
-      option.disabled=option.dataset.available!=='true'||(!forced&&!own&&!String(option.dataset.lattices||'d3q27').split(',').includes(lattice));
-    }
-    if(sel.selectedOptions[0]?.disabled){const first=Array.from(sel.options).find(o=>o.value&&!o.disabled);sel.value=first?.value||'';}
-    const octreeControls=$('octree-controls');if(octreeControls)octreeControls.hidden=!octree;
-    const triangleEdge=$('surface-triangle-max-edge-mm');if(triangleEdge){triangleEdge.disabled=octree;const help=triangleEdge.parentElement?.querySelector('small');if(help)help.textContent=octree?'D3Q19 retains the original geometry. Native wall samples resolve pressure at the local fluid-cell size; change Surface cell size under Mesh to change resolution.':'Default 50 mm. Applied when creating a new mesh. Smaller triangles sample surface fields more closely; they do not add fluid cells.';}
-    const sizing=$('mesh-sizing');if(octree){sizing.value='manual';}sizing.disabled=octree;$('target-vram').disabled=octree;
-    if($('metric-memory-label'))$('metric-memory-label').textContent=octree?'RAM':'VRAM';
-    window.LudwigOutputControls?.setCapabilities({aero:{slice_png:!octree,notices:octree?['CPU octree exports native field planes and VTK. Solver field PNG images are unavailable; use the recorded-plane viewer or Makie post-processing.']:[]}},['aero']);
-    $('lattice-title').textContent=thermal?'Thermal kinetic FV · experimental':octree?'D3Q19 + regularised · CPU octree (development)':lattice==='d3q39'?'D3Q39 + entropic':'D3Q27 + cumulant';
-    $('lattice-note').textContent=thermal?'Conservative mass, momentum and total-energy fluxes on the same Cartesian AMR cells. Mach 0.05–1.5; inviscid slip or experimental laminar no-slip walls. No turbulence model or established aircraft validation.':
-      octree?'Athermal low-Mach flow (Mach at most 0.3) on a cell-level octree that follows the surface to within two cells, CPU only: no GPU is needed and any platform serves. Up to 10 levels. Mesh creation, CPU runs and saved result viewing are available. Development; not validated.':
-      lattice==='d3q39'?
-      'Compressible flow, Mach at most 1.6. Uses the main solver with up to 7 AMR levels, thermal energy, and a conservative GPU memory allowance. Development path; check mesh, AMR interfaces, and convergence.':
-      'Incompressible regime, Mach at most 0.6. Both solver sources support this web workflow.';
+  // Show only what the selected solver uses, with its limits.
+  function syncSolver() {
+    const choice=solverChoice(),octree=Boolean(choice?.octree),gpu=Boolean(choice?.gpu),option=$('solver').selectedOptions[0];
+    if(option?.dataset.note)$('solver-note').textContent=option.dataset.note;
+    const levels=$('levels'),maxLevels=choice?.maxLevels||7;
+    for(const item of levels.options)item.disabled=Number(item.value)>maxLevels;
+    if(Number(levels.value)>maxLevels)levels.value=String(maxLevels);
+    levels.title=octree?'1 to 10 octree levels. Inspect the built mesh and the RAM estimate before running.':'1 to 7 AMR levels. Inspect the built mesh and the GPU memory estimate before running.';
+    $('octree-controls').hidden=!octree;$('advanced-mesh').hidden=!octree;     // bands, wake, wall function, threads; lattice speed and limits
+    $('gpu-mesh-controls').hidden=!gpu;$('advanced-model').hidden=!gpu;        // GPU memory target; surface subdivision
+    $('metric-memory-label').textContent=octree?'RAM':'VRAM';
+    window.LudwigOutputControls?.setCapabilities({aero:{slice_png:!octree,notices:octree?['The CPU octree solver saves field planes and VTK, not PNG images of the fields. Use the recorded-plane viewer.']:[]}},['aero']);
     syncThermalFlow();boundaryNote();
   }
-  function thermalFlowSettings() {
-    if($('solver').value!=='pond_thermal')return null;
-    const input_mode=$('flow-input-mode').value,temperature_k=inputNumber('flow-temperature','freestream temperature',{min:100,max:2000}),gamma=1.4,gas_constant=287.05;
-    const speed_of_sound=Math.sqrt(gamma*gas_constant*temperature_k);
-    const velocity=input_mode==='mach'?inputNumber('flow-mach','freestream Mach',{min:.05,max:1.5})*speed_of_sound:inputNumber('velocity','flow speed',{min:.01,max:10000});
-    const mach=velocity/speed_of_sound;if(mach<.05||mach>1.5)throw new Error('Thermal kinetic FV requires freestream Mach from 0.05 to 1.5.');
-    return {input_mode,temperature_k,gamma,gas_constant,speed_of_sound,velocity,mach,cfl:inputNumber('flow-cfl','CFL number',{min:.01,max:.4}),wall_model:$('flow-wall-model').value};
-  }
+  // The thermal free stream is set by Mach number and temperature; speed and sound speed are shown as derived values.
   function syncThermalFlow() {
-    const thermal=$('solver').value==='pond_thermal',machInput=$('flow-input-mode').value==='mach';
-    $('thermal-flow-controls').hidden=!thermal;
-    $('velocity').disabled=thermal&&machInput;$('velocity').max=thermal?'10000':'1000';$('flow-mach').disabled=!machInput;
-    $('sound-speed').disabled=thermal;$('viscosity').disabled=thermal&&$('flow-wall-model').value==='slip';
+    const thermal=Boolean(solverChoice()?.thermal);
+    $('thermal-flow-controls').hidden=!thermal;$('advanced-flow').hidden=!thermal;
+    $('velocity').disabled=thermal;$('sound-speed').disabled=thermal;
+    // The derived values must not stay behind as inputs of another solver: the speed and sound speed entered before return.
+    if(thermal&&!state.flowBeforeThermal)state.flowBeforeThermal={velocity:$('velocity').value,sound:$('sound-speed').value};
+    if(!thermal&&state.flowBeforeThermal){$('velocity').value=state.flowBeforeThermal.velocity;$('sound-speed').value=state.flowBeforeThermal.sound;state.flowBeforeThermal=null;}
+    $('viscosity').disabled=thermal&&$('flow-wall-model').value==='slip';
     if(!thermal)return;
-    try{const flow=thermalFlowSettings();$('sound-speed').value=flow.speed_of_sound;
-      if(machInput)$('velocity').value=flow.velocity;else $('flow-mach').value=flow.mach;
-      $('thermal-flow-summary').textContent=`Mach ${flow.mach.toFixed(4)} · U∞ ${flow.velocity.toFixed(3)} m/s · a∞ ${flow.speed_of_sound.toFixed(3)} m/s. ${flow.wall_model==='slip'?'Inviscid: molecular viscosity is not applied.':'Molecular viscosity only; no turbulence closure.'}`;
+    try{const flow=window.LudwigAeroRequest.thermalFlow(controls);
+      $('sound-speed').value=flow.speed_of_sound.toFixed(3);$('velocity').value=flow.velocity.toFixed(3);
+      $('thermal-flow-summary').textContent=`Speed ${flow.velocity.toFixed(2)} m/s and sound speed ${flow.speed_of_sound.toFixed(2)} m/s follow from Mach and temperature. ${flow.wall_model==='slip'?'Inviscid: viscosity is not applied.':'Molecular viscosity only; no turbulence model.'}`;
     }catch(error){$('thermal-flow-summary').textContent=error.message;}
   }
   function updateVramTarget(gpu=state.capabilities?.gpu) {
@@ -1590,26 +1517,22 @@
     node.textContent=free>0&&percent>0?`${percent}% of ${free.toFixed(2)} GB available = ${(free*percent/100).toFixed(2)} GB.${budget>0&&free*percent/100>budget?` Safe run allowance currently caps this at ${budget.toFixed(2)} GB.`:''} Rechecked before running.`:
       'Percentage of free VRAM measured at mesh sizing and checked again before running.';
   }
-  function showGeometryAudit(audit) {
-    const node=$('geometry-audit');if(!node)return;
-    state.geometryAudit=audit;node.textContent='';node.hidden=true;updateLabels();
-  }
+  function showGeometryAudit(audit) {state.geometryAudit=audit;updateLabels();}
+  // The backend says which of the page's solvers this machine can run, and how much GPU memory is free.
   async function loadCapabilities() {
     try{
       const data=await api('/api/aero/capabilities');state.capabilities=data;
-      state.outdatedServer=data.features?.studies!==true||Number(data.features?.max_amr_levels)<7;
-      const sel=$('solver');sel.replaceChildren();
-      for(const solver of data.solvers||[]){const o=document.createElement('option');o.value=solver.id;
-        o.dataset.available=String(Boolean(solver.available));o.dataset.lattices=(solver.web_lattices||['d3q27']).join(',');
-        o.textContent=solver.label+(solver.available?'':' · unavailable');o.disabled=!solver.available;
-        if(solver.reason)o.title=solver.reason;sel.appendChild(o);}
-      syncSolverLattice();
-      const first=Array.from(sel.options).find(o=>!o.disabled);if(first)sel.value=first.value;
-      else{const o=document.createElement('option');o.value='';o.textContent='No available solver';sel.appendChild(o);sel.value='';}
+      const sel=$('solver');
+      for(const solver of data.solvers||[]){
+        const option=Array.from(sel.options).find(item=>item.value===solver.id);if(!option)continue;
+        option.textContent=solver.label+(solver.available?'':' · unavailable');option.disabled=!solver.available;
+        option.dataset.note=solver.available?solver.note:`${solver.unavailable_reason} ${solver.note}`;
+      }
+      if(sel.selectedOptions[0]?.disabled){const first=Array.from(sel.options).find(item=>!item.disabled);if(first)sel.value=first.value;}
+      syncSolver();
       const budget=data.gpu?.budget_gb??data.gpu?.free_gb;
       $('metric-budget').textContent=finite(budget)?`${Number(budget).toFixed(1)} GB`:'Unknown';
-      $('connection').textContent=state.outdatedServer?'Older server · relaunch workbench':'Solver service online · AMR 1–7';$('connection').className=state.outdatedServer?'connection error':'connection online';
-      if(state.outdatedServer)progress('This tab is connected to an older server. Run the Ludwig Workbench launcher again to open the current app; this server cannot use the new setup controls.','Update available');
+      $('connection').textContent='Solver service online';$('connection').className='connection online';
       updateVramTarget();updateActions();
     }catch(error){$('connection').textContent='Solver service unavailable';$('connection').className='connection error';
       progress(`Aero Lab service is unavailable: ${error.message}`,'Offline');}
@@ -1617,17 +1540,16 @@
   function wireEvents() {
     $('model-file').addEventListener('change',event=>importModel(event.target.files?.[0]));
     for(const id of ['scale-x','scale-y','scale-z','rotate-x','rotate-y','rotate-z','move-x','move-y','move-z',
-      'upstream','downstream','lateral','height','domain-ratio-x','domain-ratio-y','domain-ratio-z','surface-dx','levels','velocity','density','viscosity','sound-speed','steps','frames'])
+      'upstream','downstream','lateral','height','domain-ratio-x','domain-ratio-y','domain-ratio-z','surface-dx','levels','velocity','density','viscosity','sound-speed'])
       $(id).addEventListener('input',invalidateMesh);
     $('surface-triangle-max-edge-mm')?.addEventListener('input',invalidateMesh);
     $('domain-x-offset')?.addEventListener('input',()=>{if(state.frame?.body&&state.domainCameraAnchor===undefined)state.domainCameraAnchor=state.frame.body.center[0];invalidateMesh();});
     $('symmetry-placement')?.addEventListener('change',applySymmetryPlacement);
-    for(const id of ['octree-band-fine','octree-band','octree-wake','octree-wake-offset','octree-threads','octree-u-lattice','octree-checkpoint-keep','octree-ramp-steps','octree-plane-samples'])$(id)?.addEventListener('input',invalidateMesh);
-    $('octree-seal-cavities')?.addEventListener('change',invalidateMesh);
-    $('lattice').addEventListener('change',()=>{syncSolverLattice('lattice');invalidateMesh();});
-    $('solver').addEventListener('change',()=>{syncSolverLattice();invalidateMesh();});
-    for(const id of ['flow-input-mode','flow-mach','flow-temperature','flow-cfl','flow-wall-model'])$(id).addEventListener('input',()=>{syncThermalFlow();invalidateMesh();});
-    $('velocity').addEventListener('input',syncThermalFlow);
+    for(const id of ['octree-band-fine','octree-band','octree-wake','octree-wake-offset','octree-threads','octree-u-lattice','octree-hrr-sigma','octree-checkpoint-keep','octree-plane-samples'])$(id).addEventListener('input',invalidateMesh);
+    for(const id of ['octree-seal-cavities','octree-wall-function'])$(id).addEventListener('change',invalidateMesh);
+    $('steps').addEventListener('input',()=>{scheduleOutputEstimate();updateActions();});
+    $('solver').addEventListener('change',()=>{syncSolver();invalidateMesh();});
+    for(const id of ['flow-mach','flow-temperature','flow-cfl','flow-wall-model'])$(id).addEventListener('input',()=>{syncThermalFlow();invalidateMesh();});
     $('domain-sizing')?.addEventListener('change',()=>{boundaryNote();invalidateMesh();});
     $('mesh-sizing').addEventListener('change',()=>{updateVramTarget();invalidateMesh();});
     $('target-vram').addEventListener('input',()=>{updateVramTarget(state.job?.estimate?.gpu);
@@ -1636,11 +1558,10 @@
     $('output-controls')?.addEventListener('input',()=>{scheduleOutputEstimate();updateActions();});
     $('output-controls')?.addEventListener('change',()=>{scheduleOutputEstimate();updateActions();});
     $('boundary').addEventListener('change',()=>{if($('boundary').value==='symmetry'){if(symmetryPlacement()==='none')retainCurrentSymmetryPosition();else $('move-y').value='0';}boundaryNote();renderCutRows();invalidateMesh();});
-    $('symmetry-auto-center-y')?.addEventListener('change',()=>{if($('symmetry-placement'))$('symmetry-placement').value=$('symmetry-auto-center-y').checked?'center':'wall';applySymmetryPlacement();});
     $('model-projections')?.addEventListener('change',queueRender);
     syncFlowAngles();$('boundary').addEventListener('change',syncFlowAngles);for(const id of ['flow-alpha','flow-beta'])$(id)?.addEventListener('change',invalidateMesh);
     $('mesh-visibility')?.addEventListener('click',()=>{state.meshVisible=state.meshVisible===false;inspector?.setMeshVisible?.(state.meshVisible);$('mesh-visibility').setAttribute('aria-pressed',String(state.meshVisible));$('mesh-visibility').textContent=state.meshVisible?'Hide mesh':'Show mesh';queueRender();});
-    $('live-results')?.addEventListener('change',()=>{state.liveResults=$('live-results').checked;state.surfaceFollowLive=true;state.cutFollowLive=true;window.LudwigAeroLayout?.syncLiveResults?.();if(state.liveResults)loadLatestResults();});
+    $('live-results')?.addEventListener('change',()=>{state.liveResults=$('live-results').checked;state.surfaceFollowLive=true;state.cutFollowLive=true;if(state.liveResults)loadLatestResults();});
     $('results-refresh')?.addEventListener('click',()=>loadLatestResults(true));
     $('results-load-current')?.addEventListener('click',loadCurrentResults);
     $('mesh-proposal-apply')?.addEventListener('click',()=>{try{applyMeshProposal();}catch(error){progress(error.message,'Check setup');}});
@@ -1651,7 +1572,6 @@
     $('model-opacity')?.addEventListener('input',()=>{$('model-opacity-value').value=$('model-opacity').value;queueRender();});$('model-widget')?.addEventListener('change',queueRender);
     $('add-cut').addEventListener('click',()=>{if(state.cuts.length>=6)return;state.cuts.push({axis:'y',position:0.5});recordingChanged();});
     $('build-mesh').addEventListener('click',buildMesh);$('run-solver').addEventListener('click',runSolver);$('cancel-job').addEventListener('click',cancelJob);
-    for(const button of document.querySelectorAll('.view-mode'))button.addEventListener('click',()=>selectViewMode(button.dataset.view));
     $('view-mode')?.addEventListener('change',()=>selectViewMode($('view-mode').value));
     $('display-aids')?.addEventListener('change',queueRender);
     $('velocity-vectors')?.addEventListener('change',()=>{if(state.vectorError)state.vectorKey=null;queueRender();});
@@ -1683,11 +1603,11 @@
     getPlacement:()=>({mesh_offset:state.amr?.mesh_offset||[0,0,0],case:state.activeConfig,job_id:state.jobId})};
   window.LudwigAeroStudiesContext={state,caseSettings,attachStudyResults,hydrateCase,loadStoredModel,clearPersistedJob,queueRender,updateActions,showGeometryAudit,progress,clearImportedResults,
     getStudyView(){const view={model_opacity:Number($('model-opacity')?.value??100),reference_display:referenceTools?.capture(),live_results:state.liveResults,mesh_visible:state.meshVisible,...(inspector?.getView()||{}),mode:state.mode,selections:{},imported_results:window.LudwigAeroResults?.getReference?.()||null};for(const id of ['display-aids','velocity-vectors','camera-view','surface-field','surface-representation','surface-range-mode','results-palette','model-appearance','model-widget','model-projections'])if($(id))view.selections[id]=$(id).value;if(state.camera)view.camera={alpha:state.camera.alpha,beta:state.camera.beta,radius:state.camera.radius,target:state.camera.target.asArray()};return view;},
-    restoreStudyView(view){if($('surface-representation'))$('surface-representation').value='auto';const opacity=Number(view?.model_opacity??100);$('model-opacity').value=String(Number.isFinite(opacity)?Math.max(0,Math.min(100,opacity)):100);$('model-opacity-value').value=$('model-opacity').value;referenceTools?.restoreView(view?.reference_display);clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroLayout?.syncLiveResults?.();window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
+    restoreStudyView(view){if($('surface-representation'))$('surface-representation').value='auto';const opacity=Number(view?.model_opacity??100);$('model-opacity').value=String(Number.isFinite(opacity)?Math.max(0,Math.min(100,opacity)):100);$('model-opacity-value').value=$('model-opacity').value;referenceTools?.restoreView(view?.reference_display);clearImportedResults(false);state.liveResults=view?.live_results!==false;if($('live-results'))$('live-results').checked=state.liveResults;window.LudwigAeroResults?.restoreReference?.(view?.imported_results);inspector?.restoreView(view);state.mode=['geometry','mesh','surface'].includes(view?.mode)?view.mode:'geometry';syncViewButtons();for(const [id,value] of Object.entries(view?.selections||{})){const select=$(id);if(select&&(id==='model-widget'?['none','move','rotate'].includes(value):Array.from(select.options||[]).some(o=>o.value===value)))select.value=value;}const c=view?.camera;state.pendingStudyCamera=null;if(c&&Array.isArray(c.target)&&c.target.length===3&&[c.alpha,c.beta,c.radius,...c.target].every(Number.isFinite)&&c.radius>0)state.pendingStudyCamera=c;window.LudwigAeroLayout?.syncModelControls?.();updateActions();updateResultsAvailability();queueRender();}};
   if(window.LudwigAeroResultBrowser)resultBrowser=window.LudwigAeroResultBrowser.create({$,isLive:()=>state.liveResults!==false,onOpenSurface:viewSurfaceRecord,onOpenCut:viewCutRecord,onOpenVolume:viewVolumeRecord,onStatus:(text,error)=>{if(error)window.LudwigAeroLayout?.showMessage(text,{urgent:true,title:'Result display'});else progress(text,'Results');}});
   window.addEventListener('ludwig-amr-visibility-change',()=>{if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);});
   window.addEventListener('ludwig-palette-change',()=>{state.cutRenderKey=null;if(state.lastNumericCut&&!$('cut-canvas').hidden)paintNumericCut(state.lastNumericCut);queueRender();});
-  initScene();wireEvents();boundaryNote();syncSolverLattice();renderCutRows();
+  initScene();wireEvents();boundaryNote();syncSolver();renderCutRows();
   try{if($('theme-mode'))$('theme-mode').value=window.localStorage.getItem('airfoil-theme')||'dark';}catch{}
   applyThemePreference();selectResultPane('scene');loadCapabilities().then(resumeStoredJob);updateActions();queueRender();
 })();

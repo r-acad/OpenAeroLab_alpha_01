@@ -26,7 +26,6 @@ function _q19_refinement_source(id::String, state::AbstractDict, target_actual::
     get(source,"status",nothing)=="completed" || throw(ArgumentError("The source stage must complete before a refinement restart"))
     scase=get(source,"case",Dict());_q19_case(scase) || throw(ArgumentError("The source stage must use D3Q19"))
     sactual=get(source,"actual",nothing);sactual isa AbstractDict || throw(ArgumentError("Source mesh summary is missing"))
-    _require_current_q19_mesh(scase,sactual)
     td=state["case"]; sn=Int(sactual["num_levels"]);tn=Int(target_actual["num_levels"])
     tn>sn || throw(ArgumentError("A refinement target needs more levels than its source"))
     Int(td["steps"])>Int(scase["steps"]) || throw(ArgumentError("Target step limit must exceed the completed source step"))

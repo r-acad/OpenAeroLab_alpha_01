@@ -13,6 +13,7 @@ const ASSETS = Dict(
     "/workbench-static/aero_view_capture.js" => ("aero_view_capture.js", "application/javascript; charset=utf-8"),
     "/workbench-static/aero_wall_surface.js" => ("aero_wall_surface.js", "application/javascript; charset=utf-8"),
     "/workbench-static/aero_reference.js" => ("aero_reference.js", "application/javascript; charset=utf-8"),
+    "/workbench-static/aero_request.js" => ("aero_request.js", "application/javascript; charset=utf-8"),
     "/workbench-static/home.css" => ("home.css", "text/css; charset=utf-8"),
     "/workbench-static/solver_catalog.css" => ("solver_catalog.css", "text/css; charset=utf-8"),
     "/workbench-static/aero_lab.css" => ("aero_lab.css", "text/css; charset=utf-8"),

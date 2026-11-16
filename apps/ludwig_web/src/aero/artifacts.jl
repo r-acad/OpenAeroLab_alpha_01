@@ -72,7 +72,10 @@ function gpu_memory_estimate_gb(summary::AbstractDict, lattice::AbstractString="
     levels = summary["levels"]
     isempty(levels) && throw(ArgumentError("Build summary has no mesh levels"))
     # the CPU octree solver reports its stored slots directly: RAM, no device overhead
-    lattice == "q19_octree" && return haskey(summary,"estimated_run_bytes_total") ? Float64(summary["estimated_run_bytes_total"])/1e9 : 2.5Float64(summary["bytes_allocated_total"])/1e9+0.75
+    if lattice == "q19_octree"
+        haskey(summary,"estimated_run_bytes_total") || throw(ArgumentError("The octree mesh summary has no run memory estimate; create the mesh again"))
+        return Float64(summary["estimated_run_bytes_total"])/1e9
+    end
     calibrated = if length(levels) == 1
         668.0 * Float64(levels[1]["cells"]) / 1e9 + 0.7
     else

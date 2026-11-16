@@ -34,7 +34,7 @@ end
 function _surface_subdivision_preview(triangles,max_edge)
     count=SurfaceSubdivision.subdivision_count(triangles,max_edge;limit=MAX_WEB_SURFACE_TRIANGLES)
     count <= MAX_WEB_SURFACE_TRIANGLES || throw(ArgumentError(
-        "The requested maximum surface triangle edge would create over 5 million triangles. Increase Model → Maximum surface triangle edge (currently $(round(1000max_edge,sigdigits=5)) mm). The fluid-cell size is a separate setting."))
+        "The requested maximum surface triangle edge would create over 5 million triangles. Increase Maximum surface triangle edge under Model, Advanced (currently $(round(1000max_edge,sigdigits=5)) mm). The fluid-cell size is a separate setting."))
     original_max=maximum(SurfaceSubdivision.triangle_max_edge,triangles)
     Dict{String,Any}("maximum_edge_m"=>max_edge,"source_triangles"=>length(triangles),
         "refined_triangles_before_symmetry"=>count,"source_maximum_edge_m"=>original_max,
@@ -43,7 +43,7 @@ function _surface_subdivision_preview(triangles,max_edge)
 end
 
 function _symmetry_placement(domain)
-    value=get(domain,"symmetry_placement",get(domain,"symmetry_center_y",false) ? "center" : "wall")
+    value=get(domain,"symmetry_placement","wall")
     value isa AbstractString && value in ("none","wall","center") ||
         throw(ArgumentError("domain.symmetry_placement must be none, wall, or center"))
     String(value)
@@ -193,10 +193,6 @@ function _expand_minimum_domain!(domain::AbstractDict, extent, dx::Real, levels:
     adjustment
 end
 
-# Compatibility with callers that used the original free-air-only helper name.
-_expand_free_air_domain!(domain::AbstractDict,extent,dx::Real,levels::Integer)=
-    _expand_minimum_domain!(domain,extent,dx,levels)
-
 "Solver admission policy; wall intersections in both native backends already use both triangle sides."
 function _geometry_handling(value)
     value isa AbstractString && value in ("closed_solid", "two_sided_open") ||
@@ -220,10 +216,14 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         transformed=Triangle[ntuple(i->_flow_rotation(tri[i],alpha,beta),3) for tri in transformed]
         bounds=_bounds(transformed)
     end
-    triangle_edge=_number(get(raw,"surface_triangle_max_edge_m",0.05),"surface_triangle_max_edge_m";lo=1e-4,hi=100)
-    subdivision=_q19_case(raw) ? Dict{String,Any}("maximum_edge_m"=>triangle_edge,"source_triangles"=>length(transformed),
+    solver = string(get(raw, "solver", "main"))
+    solver=="lbmtau" && throw(ArgumentError("The pinned lbmtau solver is no longer offered in Aero Lab. Select the GPU lattice Boltzmann solver (D3Q27) and create the mesh again."))
+    solver in ("main", "pond_thermal", "q19_octree") || throw(ArgumentError("Unknown Aero Lab solver"))
+    # The CPU octree solver intersects the source facets and samples the wall per fluid cell; it has no surface subdivision.
+    triangle_edge=solver=="q19_octree" ? nothing : _number(get(raw,"surface_triangle_max_edge_m",0.05),"surface_triangle_max_edge_m";lo=1e-4,hi=100)
+    subdivision=triangle_edge===nothing ? Dict{String,Any}("source_triangles"=>length(transformed),
         "refined_triangles_before_symmetry"=>length(transformed),"gpu_surface_allowance_gb"=>0.,"applied"=>false,
-        "sampling"=>"native_wall_intersections","note"=>"D3Q19 keeps the source facets for wall intersections. Native wall-cell/facet samples resolve pressure at the local fluid-cell spacing; STL subdivision is unnecessary and is not applied.") : _surface_subdivision_preview(transformed,triangle_edge)
+        "sampling"=>"native_wall_intersections","note"=>"D3Q19 keeps the source facets for wall intersections. Native wall-cell/facet samples resolve pressure at the local fluid-cell spacing.") : _surface_subdivision_preview(transformed,triangle_edge)
     surface_area = 0.0
     for (a,b,c) in transformed
         u = ntuple(i -> b[i]-a[i], 3); v = ntuple(i -> c[i]-a[i], 3)
@@ -248,12 +248,9 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     haskey(d,"sizing") && (domain["sizing"]=sizing)
     ratios=_domain_proportions(get(d,"proportions",[1.,1.,1.]))
     (haskey(d,"proportions") || sizing=="proportions") && (domain["proportions"]=ratios)
-    center_y = get(d,"symmetry_center_y",false)
-    center_y isa Bool || throw(ArgumentError("domain.symmetry_center_y must be true or false"))
     placement=_symmetry_placement(d);center_y=placement=="center"
-    (haskey(d,"symmetry_center_y") || haskey(d,"symmetry_placement")) && (domain["symmetry_center_y"] = center_y)
-    haskey(d,"symmetry_placement") && (domain["symmetry_placement"]=placement)
-    if placement=="none"
+    boundary=="symmetry" && (domain["symmetry_placement"]=placement)
+    if boundary=="symmetry" && placement=="none"
         domain["symmetry_offset_y_m"]=_number(get(d,"symmetry_offset_y_m",0.),"domain.symmetry_offset_y_m";lo=-10_000,hi=10_000)
         if boundary=="symmetry"
             # The frozen offset is relative to the transformed construction origin.
@@ -269,19 +266,13 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     resolved = _resolved_body_extent(domain,extent)
     lengths = _domain_lengths(domain,extent)
     all(isfinite, lengths) || throw(ArgumentError("Transformed model or domain is too large"))
-    solver = string(get(raw, "solver", "main"))
-    solver in ("main", "lbmtau", "pond_thermal", "q19_octree") || throw(ArgumentError("Unknown Aero Lab solver backend"))
-    lattice = string(get(raw, "lattice", "d3q27"))
+    lattice = string(get(raw, "lattice", solver=="q19_octree" ? "d3q19" : "d3q27"))
     lattice in ("d3q27", "d3q39", "d3q19") || throw(ArgumentError("Aero Lab lattice must be d3q27, d3q39 or d3q19"))
-    lattice == "d3q39" && solver != "main" && throw(ArgumentError("D3Q39 in Aero Lab requires the main LUDWIG solver"))
+    lattice == "d3q39" && solver != "main" && throw(ArgumentError("D3Q39 in Aero Lab requires the GPU lattice Boltzmann solver"))
     lattice == "d3q19" && solver != "q19_octree" && throw(ArgumentError("D3Q19 is the lattice of the CPU octree solver"))
     solver == "q19_octree" && lattice != "d3q19" && throw(ArgumentError("The CPU octree solver uses the D3Q19 lattice"))
-    (solver == "q19_octree" ? _q19_available() : isfile(joinpath(solver == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER, "src", "main.jl"))) ||
+    (solver == "q19_octree" ? _q19_available() : isfile(joinpath(MAIN_SOLVER, "src", "main.jl"))) ||
         throw(ArgumentError("Selected solver is unavailable"))
-    if solver == "lbmtau" && any(x -> !iszero(x), translation)
-        throw(ArgumentError("The pinned lbmtau solver cannot place a model at an offset; select the main solver"))
-    end
-    solver=="lbmtau" && _fixed_symmetry(domain) && throw(ArgumentError("The pinned lbmtau backend cannot retain manual symmetry placement. Select the main, thermal or D3Q19 backend, or choose automatic alignment."))
     if boundary == "symmetry" && placement!="none" && !iszero(translation[2])
         throw(ArgumentError("Symmetry requires the model anchored at the Y=0 plane; set lateral translation to zero"))
     end
@@ -297,16 +288,14 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     levels = _integer(get(raw, "levels", 3), "levels"; lo=1, hi=solver == "q19_octree" ? Q19_MAX_LEVELS : 7)
     domain_adjustment = _expand_minimum_domain!(domain,extent,dx,levels;translation_x=translation[1],octree=solver=="q19_octree")
     lengths = domain_adjustment["resolved_size_m"]
-    target_raw = get(raw, "target_vram_gb", nothing)
-    target_vram_gb = target_raw === nothing ? nothing : _number(target_raw, "target_vram_gb"; lo=0.5, hi=24)
-    percent_raw = get(raw, "target_vram_percent", nothing)
+    # GPU memory target, a percentage of the VRAM free at mesh time; the CPU octree solver runs in RAM and has none.
+    percent_raw = solver == "q19_octree" ? nothing : get(raw, "target_vram_percent", nothing)
     target_vram_percent = percent_raw === nothing ? nothing : _number(percent_raw, "target_vram_percent"; lo=1, hi=100)
-    target_requested = target_vram_gb !== nothing || target_vram_percent !== nothing
-    mesh_sizing = String(get(raw,"mesh_sizing",target_requested ? "vram" : "manual"))
+    mesh_sizing = String(get(raw,"mesh_sizing","manual"))
     mesh_sizing in ("manual","vram") || throw(ArgumentError("mesh_sizing must be manual or vram"))
     fitting = mesh_sizing == "vram"
-    fitting && !target_requested && throw(ArgumentError("VRAM sizing requires a target percentage or GB value"))
     fitting && solver == "q19_octree" && throw(ArgumentError("VRAM sizing is not available for the CPU octree solver; choose a manual surface cell size"))
+    fitting && target_vram_percent === nothing && throw(ArgumentError("VRAM sizing requires a target percentage"))
     coarse_dx = dx * 2.0^(levels - 1)
     if enforce_mesh_limits && !fitting && solver!="q19_octree" && levels > 1 &&
             any(_roundoff_snap_grid_integer(length/(32coarse_dx))<1 for length in lengths)
@@ -319,18 +308,19 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
     !enforce_mesh_limits || fitting || solver=="q19_octree" || levels == 1 || fine_envelope <= 30_000_000 || throw(ArgumentError(
         "The near-body fine-cell envelope is too large; increase surface cell size or reduce model size"))
     steps = _integer(get(raw, "steps", 800), "steps"; lo=8, hi=1_000_000)
-    frames = _integer(get(raw, "frames", 12), "frames"; lo=2, hi=40)
-    default_every = max(8, 8*cld(cld(steps,frames),8))
-    display_every = _integer(get(raw,"display_every",default_every), "display_every"; lo=1, hi=1_000_000)
+    display_every = _integer(get(raw,"display_every",_default_display_every(steps)), "display_every"; lo=1, hi=1_000_000)
     outputs = _validate_outputs(get(raw,"outputs",Dict{String,Any}()))
     f = get(raw, "flow", Dict{String,Any}())
     f isa AbstractDict || throw(ArgumentError("flow must be an object"))
     flow = Dict{String,Any}("alpha"=>alpha,"beta"=>beta,
-        "velocity" => _number(get(f, "velocity", 20.0), "flow.velocity"; lo=0.01, hi=solver=="pond_thermal" ? 10000 : 1000),
         "density" => _number(get(f, "density", 1.225), "flow.density"; lo=0.01, hi=1e4),
-        "kinematic_viscosity" => _number(get(f, "kinematic_viscosity", 1.5e-5), "flow.kinematic_viscosity"; lo=1e-10, hi=1),
-        "speed_of_sound" => _number(get(f, "speed_of_sound", 343.0), "flow.speed_of_sound"; lo=1, hi=1e5))
-    solver=="pond_thermal" && _pond_flow!(flow,f)
+        "kinematic_viscosity" => _number(get(f, "kinematic_viscosity", 1.5e-5), "flow.kinematic_viscosity"; lo=1e-10, hi=1))
+    if solver=="pond_thermal"
+        _pond_flow!(flow,f)       # Mach number and temperature give the speed and the sound speed
+    else
+        flow["velocity"]=_number(get(f, "velocity", 20.0), "flow.velocity"; lo=0.01, hi=1000)
+        flow["speed_of_sound"]=_number(get(f, "speed_of_sound", 343.0), "flow.speed_of_sound"; lo=1, hi=1e5)
+    end
     mach = flow["velocity"] / flow["speed_of_sound"]
     max_mach=solver=="pond_thermal" ? 1.5 : solver=="q19_octree" ? Q19_MAX_MACH : lattice=="d3q39" ? 1.6 : 0.6
     mach <= max_mach || throw(ArgumentError("Selected Aero Lab backend requires Mach <= $max_mach"))
@@ -359,26 +349,28 @@ function _validate_case(raw::AbstractDict; enforce_mesh_limits::Bool=true)
         solved_surface_area=_positive_y_surface_area(transformed,symmetry_shift)
         solved_surface_area>0 || throw(ArgumentError("No model surface intersects the positive-Y domain at this placement"))
     end
-    Dict{String,Any}("reference"=>reference,"model_id" => model_id,
+    case=Dict{String,Any}("reference"=>reference,"model_id" => model_id,
         "transform" => Dict("scale" => collect(scale), "rotation_deg" => collect(rotation), "translation" => collect(translation)),
         "domain" => domain, "requested_domain" => domain_adjustment["requested_domain"],
         "domain_adjustment" => domain_adjustment,
         "surface_dx" => dx, "solver" => solver, "lattice" => lattice,
-        "surface_triangle_max_edge_m"=>triangle_edge,"surface_subdivision"=>subdivision,
+        "surface_subdivision"=>subdivision,
         "mesh_sizing" => mesh_sizing,
-        "levels" => levels, "steps" => steps, "frames" => frames, "flow" => flow,
-        "target_vram_gb" => target_vram_gb, "target_vram_percent" => target_vram_percent,
+        "levels" => levels, "steps" => steps, "flow" => flow,
+        "target_vram_percent" => target_vram_percent,
         "display_every" => display_every, "effective_display_every" => min(display_every,steps),
         "outputs" => outputs,
         "cuts" => cuts, "triangles" => length(transformed),
         "surface_area_m2" => surface_area,"solved_surface_area_m2"=>solved_surface_area, "geometry_audit" => geometry_audit,
         "geometry_handling" => geometry_handling,
-        "symmetry_adjustment" => Dict("center_y"=>boundary == "symmetry" && center_y,"placement"=>placement,
-            "message"=>_fixed_symmetry(domain) ? "The saved model Y position is retained without automatic alignment. Only the positive-Y domain is solved." : boundary == "symmetry" && center_y ?
-                "The full model is centered on Y=0. The native mesher clips its positive-Y half for the symmetry domain; the original geometry remains unchanged. Symmetry assumes the geometry and flow are mirrored across this plane." : ""),
-        "octree" => solver == "q19_octree" ? _q19_settings(raw) : nothing,
-        "bounds" => bounds), transformed
+        "bounds" => bounds)
+    # Settings of one solver only are stored for that solver only.
+    solver == "q19_octree" ? (case["octree"]=_q19_settings(raw)) : (case["surface_triangle_max_edge_m"]=triangle_edge)
+    case, transformed
 end
+
+"Result interval when a request names none: about twelve outputs, on a multiple of eight coarse steps."
+_default_display_every(steps::Integer)=max(8, 8*cld(cld(steps,12),8))
 
 function _estimate(case; gpu=_gpu_memory())
     b = case["bounds"]
@@ -439,13 +431,22 @@ function _solver_model_triangles(case, triangles)
     triangles
 end
 
+"""
+The case file (`config.yaml`) of a mesh build or a run. Each solver receives only the keys it reads:
+
+- every solver: the geometry file, reference values, fluid and flow speed, run length and result intervals,
+  domain clearances and placement, the symmetry mode, the far-field flag, forces, diagnostics, recorded planes;
+- GPU lattice Boltzmann (D3Q27, D3Q39) and thermal kinetic FV, read by `src/io/config_loader.jl` and
+  `src/io/lbm_io_opts.jl`: surface subdivision, lattice and collision, mesher and wall schemes, the inlet ramp,
+  volume fields, slice images, the GPU queue depth;
+- CPU octree D3Q19, read by `src/octree_q19/src/config.jl`: the `octree_q19:` block (`_q19_yaml_lines`).
+"""
 function _yaml_case(case, transformed_bounds; build_only::Bool)
     d = case["domain"]; f = case["flow"]; b = transformed_bounds
     lattice = get(case, "lattice", "d3q27")
     d3q39 = lattice == "d3q39"
-    q19 = _q19_case(case)
+    q19 = _q19_case(case); pond = _pond_case(case)
     dx = case["surface_dx"]; levels = case["levels"]
-    triangle_edge=q19 ? 0. : Float64(get(case,"surface_triangle_max_edge_m",0.0))
     boundary = d["boundary"]
     ext = Float64[b["max"][i]-b["min"][i] for i in 1:3]
     e = boundary == "ground" ? [ext[1],ext[3],ext[2]] : ext
@@ -461,8 +462,7 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
         abs(reference_value-mesh_chord)<=max(.01mesh_chord,4dx) || throw(ArgumentError("The staged mesh reference is inconsistent with the model size"))
         mesh_reference=reference_value
     end
-    chord_factor = max(mesh_reference, e[1]) / (mesh_reference * chord)
-    every = min(case["steps"],get(case,"display_every",max(8,8*cld(cld(case["steps"],case["frames"]),8))))
+    every = min(case["steps"],get(case,"display_every",_default_display_every(case["steps"])))
     outputs = get(case,"outputs",OUTPUT_DEFAULTS)
     volume_every = outputs["volume_vtk"] ? every : case["steps"]+1
     symmetry = boundary == "ground" ? "\"ground\"" : boundary == "symmetry" ? "true" : "false"
@@ -471,28 +471,15 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
     so = boundary == "ground" ? [offset[1], offset[3], -offset[2]] : offset
     lx,ly,lz = _estimate(case)["domain_size_m"]
     coarse_dx = dx * 2.0^(levels - 1)
-    snapped_x = (q19 ? _q19_coarse_axis(lx,coarse_dx) : 8*_stable_grid_block_count(lx,coarse_dx,8))*coarse_dx
-    snapped_y = (q19 ? _q19_coarse_axis(ly,coarse_dx) : 8*_stable_grid_block_count(ly,coarse_dx,8))*coarse_dx
-    snapped_z = (q19 ? _q19_coarse_axis(lz,coarse_dx) : 8*_stable_grid_block_count(lz,coarse_dx,8))*coarse_dx
-    # The app resolves physical dimensions and AMR levels. Native legacy domain
-    # keys are dimensionless; its ground branch already applies height in Y and
-    # lateral clearance in Z, so these physical clearances must not be swapped.
-    solver_lateral = d["lateral"]
-    solver_height = d["height"]
-    dom = Dict("upstream" => d["upstream"], "downstream" => d["downstream"],
-               "lateral" => solver_lateral, "height" => solver_height)
+    snapped(length) = (q19 ? _q19_coarse_axis(length,coarse_dx) : 8*_stable_grid_block_count(length,coarse_dx,8))*coarse_dx
+    snapped_y = snapped(ly); snapped_z = snapped(lz)
+    # Clearances are written in units of the meshing reference length. The ground branch of both meshers applies
+    # height in Y and lateral clearance in Z, so the physical clearances are not swapped here.
     placement = String[]
     relative_x=so[1]-get(d,"x_offset_m",0.)
-    if case["solver"] in ("main","pond_thermal","q19_octree")
-        !iszero(relative_x) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + relative_x))")
-        !_fixed_symmetry(d) && !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
-        !iszero(so[3]) && push!(placement, "    object_center_z_m: $(@sprintf("%.12g", snapped_z/2 + so[3]))")
-    elseif case["solver"]=="lbmtau" && !iszero(relative_x)
-        # The pinned solver predates metre-based placement, but its fraction
-        # option uses the same final block-snapped streamwise domain length.
-        center_fraction=(d["upstream"]+e[1]/2+relative_x)/snapped_x
-        push!(placement,"    object_center_x_fraction: $(@sprintf("%.17g",center_fraction))")
-    end
+    !iszero(relative_x) && push!(placement, "    object_center_x_m: $(@sprintf("%.12g", d["upstream"] + e[1]/2 + relative_x))")
+    !_fixed_symmetry(d) && !iszero(so[2]) && push!(placement, "    object_center_y_m: $(@sprintf("%.12g", (boundary == "free_air" ? snapped_y/2 : e[2]/2) + so[2]))")
+    !iszero(so[3]) && push!(placement, "    object_center_z_m: $(@sprintf("%.12g", snapped_z/2 + so[3]))")
     plane_lines = String[]
     if isempty(case["cuts"])
         append!(plane_lines, ["      - \"xz_mid\"", "      - \"xy_mid\"", "      - \"yz_mid\""])
@@ -503,74 +490,84 @@ function _yaml_case(case, transformed_bounds; build_only::Bool)
             push!(plane_lines, "      - {plane: \"$plane\", $axis: $position}")
         end
     end
-    lines = String[
-        "# Aero Lab case; generated from the uploaded STL. User clearances are encoded in solver reference units; min_dx is metres.",
-        "# Geometry handling: $(get(case,"geometry_handling","closed_solid")). Native STL wall intersections are two-sided; faces are not duplicated.",
-        "basic:", "  stl_file: [\"model.stl\"]", "  stl_scale: 1.0", "  alpha: 0.0", "  beta: 0.0",
-        "  ground_up_axis: \"$(boundary == "ground" ? "y" : "z")\"",
-        "  surface_resolution: $(max(1,round(Int,mesh_reference/dx)))", "  num_levels: $levels",
-        "  reference_chord: $(@sprintf("%.12g", chord))", "  reference_length_for_meshing: $(@sprintf("%.12g", mesh_reference))",
-        "  reference_area_of_full_model: $(@sprintf("%.12g", reference_area))",
-        "  reference_dimension: \"x\"", "  minimum_facet_size: $triangle_edge", "  subdivision: $(triangle_edge>0)",
-        "  fluid:", "    density: $(f["density"])", "    kinematic_viscosity: $(f["kinematic_viscosity"])",
-        "    speed_of_sound: $(f["speed_of_sound"])", "  flow:", "    velocity: $(f["velocity"])",
-        "  simulation:", "    steps: $(case["steps"])", "    ramp_steps: $(q19 ? something(get(get(case,"octree",Dict()),"ramp_steps",nothing),min(100,div(case["steps"],10))) : min(100,div(case["steps"],10)))",
-        "    output_freq: $volume_every", "    slice_output_freq: $every",
-        "    output_startup_slices: true", "    output_startup_volume: false",
-        "    build_only: $build_only", "    output_dir: \"RESULTS\"",
-        "    output_fields:", "      density: true", "      velocity: true", "      velocity_magnitude: true",
-        "      pressure: true", "      mach: $(d3q39 || _pond_case(case))", "      temperature: $(d3q39 || _pond_case(case))",
-        "      obstacle: true", "      level: true",
-        # A zero min_dx bypasses the native VRAM/domain auto-sizer, which can
-        # shrink clearances or drop levels. The explicit reference length and
-        # surface resolution above retain exactly the requested physical dx.
-        "mesh:", "  min_dx: 0", "  num_levels: $levels",
-        # The app gates memory using measured active-block counts.
-        "  vram_budget_gb: 1000000000", "  safety_factor: 1.15",
-        "advanced:", "  solver_preset: \"vanilla\"", "  numerics:", "    lattice: \"$lattice\"",
-        "    collision_operator: \"$(d3q39 ? "entropic" : q19 ? "rr" : "cumulant")\"",
-        "    compressible_mode: $d3q39", "    u_lattice: $(q19 ? get(get(case,"octree",Dict()),"u_lattice",.08) : .08)", "    tau_min: $(d3q39 ? 0.505 : 0.501)",
-        (_pond_case(case) ? ["    pond_thermal:","      enabled: true",
-            "      cfl: $(f["cfl"])","      gamma: $(f["gamma"])",
-            "      temperature_k: $(f["temperature_k"])","      gas_constant: $(f["gas_constant"])",
-            "      wall_model: \"$(f["wall_model"])\"",
-            "      export_surface_vtk: $(outputs["surface_vtk"])",
-            "      export_surface_lbmp: $(outputs["surface_lbmp"])"] : String[])...,
-        (d3q39 ? ["    eos_thermodynamic: true", "    shifted_lattice:",
-                  "      auto: false", "      shift_x: $(f["velocity"] / f["speed_of_sound"] >= 1.2 ? 1 : 0)",
-                  "      shift_y: 0", "      shift_z: 0"] : String[])...,
-        "    hrr_sigma_per_level: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]",
-        "  thermal:", "    enabled: $d3q39",
-        (d3q39 ? ["    feedback_to_flow: true", "    gamma: 1.4", "    cv: 2.5",
-                  "    wall_bc: \"adiabatic\"", "  initial_condition:", "    type: \"uniform\"",
-                  "    uniform:", "      use_freestream_velocity: true", "      rho: 1.0"] : String[])...,
-        "  domain:",
+    export_fields = "    export_fields: [\"density\", \"pressure\", \"u\", \"v\", \"w\", \"velocity_magnitude\", \"vorticity\"$(pond ? ", \"mach\", \"temperature\"" : "")]"
+    domain_lines = String[
         (_fixed_symmetry(d) ? ["    preserve_symmetry_y: true"] : String[])...,
-        "    upstream: $(@sprintf("%.12g", dom["upstream"]/mesh_reference))",
-        "    downstream: $(@sprintf("%.12g", dom["downstream"]/mesh_reference))",
-        "    lateral: $(@sprintf("%.12g", dom["lateral"]/mesh_reference))",
-        "    height: $(@sprintf("%.12g", dom["height"]/mesh_reference))",
-        "    upstream_chords: $(@sprintf("%.12g", dom["upstream"]*chord_factor))",
-        "    downstream_chords: $(@sprintf("%.12g", dom["downstream"]*chord_factor))",
-        "    lateral_chords: $(@sprintf("%.12g", dom["lateral"]*chord_factor))",
-        "    height_chords: $(@sprintf("%.12g", dom["height"]*chord_factor))",
-        "    sponge_thickness: 0.20", "    sponge_transverse_strength: 0.0",
-        placement...,
-        "  refinement:", "    block_size: 8", "    symmetric_analysis: $symmetry",
-        # Exact triangle/block surface seeds plus the native one-block safety
-        # floor hug the body. Parent/donor/2:1 closure remains unchanged.
-        "    strategy: \"geometry_first\"", "    body_shell_blocks: 1",
-        "  boundary:", "    method: \"bouzidi\"", "    bc_scheme: \"grad\"",
-        "    q_geometry: \"stl_ray\"", "    outlet_mode: \"extrapolate\"",
-        "    inlet_density: \"local\"", "    transverse_freestream: $(boundary == "free_air")",
-        "  gpu:", "    async_depth: $(gcd(8,every))",
-        "  diagnostics:", "    freq: $(q19 ? gcd(10,every) : every)",
-        "  forces:", "    enabled: true", "    moment_center: [$(join(moment_setting, ", "))]", "    output_freq: $(q19 ? gcd(10,every) : every)",
-        "  slice:", "    mode: \"production\"", "    export_data: true", "    png: $(outputs["slice_png"])",
-        "    fields: [\"velocity\", \"pressure\", \"vorticity\"]",
-        "    export_fields: [\"density\", \"pressure\", \"u\", \"v\", \"w\", \"velocity_magnitude\", \"vorticity\"$(_pond_case(case) ? ", \"mach\", \"temperature\"" : "")]",
-        "    planes:", plane_lines..., "    export_window: \"domain\"", "    export_level: \"finest\"",
-        (q19 ? _q19_yaml_lines(case) : String[])...,
-    ]
+        "    upstream: $(@sprintf("%.12g", d["upstream"]/mesh_reference))",
+        "    downstream: $(@sprintf("%.12g", d["downstream"]/mesh_reference))",
+        "    lateral: $(@sprintf("%.12g", d["lateral"]/mesh_reference))",
+        "    height: $(@sprintf("%.12g", d["height"]/mesh_reference))",
+        "    sponge_thickness: 0.20"]
+    header = String[
+        "# Aero Lab case; generated from the uploaded geometry. Clearances are in units of reference_length_for_meshing.",
+        "# Geometry handling: $(get(case,"geometry_handling","closed_solid")). Wall intersections are two-sided; faces are not duplicated."]
+    reference_lines = String[
+        "  reference_chord: $(@sprintf("%.12g", chord))", "  reference_length_for_meshing: $(@sprintf("%.12g", mesh_reference))",
+        "  reference_area_of_full_model: $(@sprintf("%.12g", reference_area))"]
+    fluid_lines = String[
+        "  fluid:", "    density: $(f["density"])", "    kinematic_viscosity: $(f["kinematic_viscosity"])",
+        "    speed_of_sound: $(f["speed_of_sound"])", "  flow:", "    velocity: $(f["velocity"])"]
+    lines = if q19
+        # The CPU octree solver starts from the uniform free stream (no inlet ramp), takes its resolution, numerics,
+        # walls and outputs from the octree_q19 block, and reports forces and diagnostics at least every 10 steps.
+        String[header...,
+            "basic:", "  stl_file: [\"model.stl\"]", "  stl_scale: 1.0", "  alpha: 0.0", "  beta: 0.0",
+            reference_lines..., fluid_lines...,
+            "  simulation:", "    steps: $(case["steps"])",
+            "    output_freq: $volume_every", "    slice_output_freq: $every",
+            "    output_startup_slices: true", "    build_only: $build_only",
+            "advanced:", "  domain:", domain_lines..., placement...,
+            "  refinement:", "    symmetric_analysis: $symmetry",
+            "  boundary:", "    transverse_freestream: $(boundary == "free_air")",
+            "  diagnostics:", "    freq: $(gcd(10,every))",
+            "  forces:", "    moment_center: [$(join(moment_setting, ", "))]", "    output_freq: $(gcd(10,every))",
+            "  slice:", export_fields, "    planes:", plane_lines...,
+            _q19_yaml_lines(case)...]
+    else
+        triangle_edge=Float64(get(case,"surface_triangle_max_edge_m",0.0))
+        String[header...,
+            "basic:", "  stl_file: [\"model.stl\"]", "  stl_scale: 1.0", "  alpha: 0.0", "  beta: 0.0",
+            "  ground_up_axis: \"$(boundary == "ground" ? "y" : "z")\"",
+            # The explicit meshing reference and surface resolution fix the requested finest cell size exactly.
+            "  surface_resolution: $(max(1,round(Int,mesh_reference/dx)))", "  num_levels: $levels",
+            reference_lines...,
+            "  reference_dimension: \"x\"", "  minimum_facet_size: $triangle_edge", "  subdivision: $(triangle_edge>0)",
+            fluid_lines...,
+            "  simulation:", "    steps: $(case["steps"])", "    ramp_steps: $(min(100,div(case["steps"],10)))",
+            "    output_freq: $volume_every", "    slice_output_freq: $every",
+            "    output_startup_slices: true", "    output_startup_volume: false",
+            "    build_only: $build_only", "    output_dir: \"RESULTS\"",
+            "    output_fields:", "      density: true", "      velocity: true", "      velocity_magnitude: true",
+            "      pressure: true", "      mach: $(d3q39 || pond)", "      temperature: $(d3q39 || pond)",
+            "      obstacle: true", "      level: true",
+            "advanced:", "  solver_preset: \"vanilla\"", "  numerics:", "    lattice: \"$lattice\"",
+            "    collision_operator: \"$(d3q39 ? "entropic" : "cumulant")\"",
+            "    compressible_mode: $d3q39", "    u_lattice: 0.08", "    tau_min: $(d3q39 ? 0.505 : 0.501)",
+            (pond ? ["    pond_thermal:","      enabled: true",
+                "      cfl: $(f["cfl"])","      gamma: $(f["gamma"])",
+                "      temperature_k: $(f["temperature_k"])","      gas_constant: $(f["gas_constant"])",
+                "      wall_model: \"$(f["wall_model"])\"",
+                "      export_surface_vtk: $(outputs["surface_vtk"])"] : String[])...,
+            (d3q39 ? ["    eos_thermodynamic: true", "    shifted_lattice:",
+                      "      auto: false", "      shift_x: $(f["velocity"] / f["speed_of_sound"] >= 1.2 ? 1 : 0)",
+                      "      shift_y: 0", "      shift_z: 0"] : String[])...,
+            "  thermal:", "    enabled: $d3q39",
+            (d3q39 ? ["    feedback_to_flow: true", "    gamma: 1.4", "    cv: 2.5",
+                      "    wall_bc: \"adiabatic\"", "  initial_condition:", "    type: \"uniform\"",
+                      "    uniform:", "      use_freestream_velocity: true", "      rho: 1.0"] : String[])...,
+            "  domain:", domain_lines..., "    sponge_transverse_strength: 0.0", placement...,
+            "  refinement:", "    block_size: 8", "    symmetric_analysis: $symmetry",
+            # Exact triangle/block surface seeds plus the one-block safety floor hug the body.
+            "    strategy: \"geometry_first\"", "    body_shell_blocks: 1",
+            "  boundary:", "    method: \"bouzidi\"", "    bc_scheme: \"grad\"",
+            "    q_geometry: \"stl_ray\"", "    outlet_mode: \"extrapolate\"",
+            "    inlet_density: \"local\"", "    transverse_freestream: $(boundary == "free_air")",
+            "  gpu:", "    async_depth: $(gcd(8,every))",
+            "  diagnostics:", "    freq: $every",
+            "  forces:", "    enabled: true", "    moment_center: [$(join(moment_setting, ", "))]", "    output_freq: $every",
+            "  slice:", "    mode: \"production\"", "    export_data: true", "    png: $(outputs["slice_png"])",
+            "    fields: [\"velocity\", \"pressure\", \"vorticity\"]", export_fields,
+            "    planes:", plane_lines..., "    export_window: \"domain\"", "    export_level: \"finest\""]
+    end
     join(lines, "\n") * "\n"
 end

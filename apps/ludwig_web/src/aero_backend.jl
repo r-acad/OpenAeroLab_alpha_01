@@ -10,7 +10,6 @@ const CASES_ROOT = joinpath(RUNTIME_ROOT, "CASES")
 const MODEL_ROOT = joinpath(RUNTIME_ROOT, "models")
 const JOBS_ROOT = joinpath(RUNTIME_ROOT, "jobs")
 const MAIN_SOLVER = PUBLIC_ROOT
-const PINNED_SOLVER = joinpath(PUBLIC_ROOT, "solvers", "lbm_lbmtau")
 const Q19_SOLVER = joinpath(PUBLIC_ROOT, "src", "octree_q19")
 const JOB_LOCK = ReentrantLock()
 const JOB_PROCESSES = Dict{String,Any}()
@@ -93,7 +92,6 @@ function handle(req::HTTP.Request, path::AbstractString)::HTTP.Response
     try
         route == "/api/aero/server-info" && method == "GET" && return server_info()
         route == "/api/aero/capabilities" && method == "GET" && return capabilities()
-        route == "/api/aero/output-folders" && method == "GET" && return output_folders(req)
         route == "/api/aero/select-folder" && method == "POST" && return _response(200,
             NativeDialogs.choose_folder(req,joinpath(PRIVATE_ROOT,"TEMP_DELETEABLE","native_dialogs")))
         route == "/api/aero/models" && method == "POST" && return upload_model(req)

@@ -10,16 +10,16 @@
   const dedicated=new URLSearchParams(root.location.search).get('reporting')==='1';
   let busy=false,lastRequest='',allow=dedicated;
   const context=()=>root.LudwigAeroResultsContext;
-  const menu=document.querySelector('#menu-results .menu-popover');
-  const group=document.createElement('div');group.className='menu-section';
-  const title=document.createElement('h2');title.textContent='Images from Aero Lab';group.appendChild(title);
-  const save=document.createElement('button');save.type='button';save.id='save-aero-view-png';save.textContent='Save 3D view PNG';
+  const host=document.getElementById('results-capture-host');
+  const group=document.createElement('div');
+  const title=document.createElement('h3');title.className='parameter-subtitle';title.textContent='Images of the 3D view';group.appendChild(title);
+  const save=document.createElement('button');save.type='button';save.className='secondary-button';save.id='save-aero-view-png';save.textContent='Save 3D view PNG';
   save.title='Export the current rendered surface view with its field scale, frame and sample count.';group.appendChild(save);
   const label=document.createElement('label');label.className='check-field';const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=allow;
   checkbox.title='Keep this tab open. Requested report images use the exact native pressure frame, your camera and the displayed field palette.';
   label.append(checkbox,document.createTextNode('Provide this view for Telegram reports'));group.appendChild(label);
   const status=document.createElement('p');status.className='hint';status.id='aero-view-capture-status';status.setAttribute('role','status');group.appendChild(status);
-  if(menu)menu.appendChild(group);
+  if(host)host.appendChild(group);
   checkbox.addEventListener('change',()=>{allow=checkbox.checked;status.textContent=allow?'This tab can provide Aero Lab report images. Keep it open.':'Automatic view capture is off.';});
   async function renderPNG(identity,width=1600,height=1000){
     const ctx=context(),state=ctx?.state;if(!state?.engine||!state?.camera)throw new Error('The 3D view is not ready.');

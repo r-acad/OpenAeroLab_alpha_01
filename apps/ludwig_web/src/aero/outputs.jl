@@ -1,4 +1,3 @@
-const EXPORT_ROOT = joinpath(PRIVATE_ROOT, "results", "exports")
 const OUTPUT_DEFAULTS = Dict{String,Any}(
     "folder" => "", "surface_vtk" => true, "surface_lbmp" => true,
     "volume_vtk" => false, "numeric_slices" => true, "slice_png" => true,
@@ -8,13 +7,13 @@ const OUTPUT_DEFAULTS = Dict{String,Any}(
     "image_width" => 1600, "image_height" => 1000)
 const EXPORT_SYNC_TIMES = Dict{String,Float64}()
 const POSTPROCESS_PROCESSES = Dict{Tuple{String,String},Any}()
-_readable_directory(path) = try isdir(path) catch; false end
 
 function _output_folder(raw; create::Bool=false)
     raw isa AbstractString || throw(ArgumentError("outputs.folder must be a folder path"))
     text = strip(String(raw))
     length(text) <= 2000 && !occursin('\0', text) || throw(ArgumentError("Invalid output folder"))
-    folder = isempty(text) ? EXPORT_ROOT : text
+    isempty(text) && throw(ArgumentError("Choose an output folder"))
+    folder = text
     isabspath(folder) || throw(ArgumentError("Output folder must be an absolute path"))
     folder = normpath(abspath(expanduser(folder)))
     try
@@ -40,7 +39,6 @@ function _validate_outputs(raw)
     folder isa AbstractString || throw(ArgumentError("outputs.folder must be a folder path"))
     selected=!isempty(strip(folder))
     result["folder"] = selected ? _output_folder(folder) : ""
-    result["folder_selected"] = selected
     for (key, choices) in (("report_format", ("html",)), ("chart_format", ("png", "svg", "pdf")),
                            ("render_format", ("png",)), ("surface_quantity", ("cp", "pressure", "shear")),
                            ("camera", ("perspective", "top", "front", "side")))
@@ -53,32 +51,12 @@ function _validate_outputs(raw)
     result
 end
 
-function output_folders(req::HTTP.Request)
-    params = HTTP.queryparams(HTTP.URI(req.target))
-    folder = _output_folder(string(get(params, "path", "")))
-    if folder == EXPORT_ROOT && !isdir(folder); mkpath(folder); end
-    _readable_directory(folder) || throw(ArgumentError("Folder does not exist or is unavailable"))
-    directories = Dict{String,String}[]
-    entries = try readdir(folder) catch; throw(ArgumentError("Folder cannot be read")) end
-    for name in entries
-        child = joinpath(folder, name)
-        _readable_directory(child) && !islink(child) && push!(directories, Dict("name" => name, "path" => child))
-    end
-    roots = Sys.iswindows() ? [Dict("name" => "$(letter):\\", "path" => "$(letter):\\")
-        for letter in 'A':'Z' if _readable_directory("$(letter):\\")] : [Dict("name" => "/", "path" => "/")]
-    _response(200, Dict("ok" => true, "path" => folder,
-        "parent" => dirname(folder) == folder ? nothing : dirname(folder),
-        "roots" => roots, "directories" => directories))
-end
-
 function _require_run_output_folder(case)
     opts=get(case,"outputs",nothing)
     opts isa AbstractDict || throw(ArgumentError("Choose an output folder before running the analysis"))
     folder=get(opts,"folder","")
     folder isa AbstractString && !isempty(strip(folder)) ||
         throw(ArgumentError("Choose an output folder before running the analysis"))
-    selected=get(opts,"folder_selected",normpath(String(folder))!=normpath(EXPORT_ROOT))
-    selected===true || throw(ArgumentError("Choose an output folder before running the analysis; the old temporary default is not a selected destination"))
     _output_folder(folder;create=true)
 end
 

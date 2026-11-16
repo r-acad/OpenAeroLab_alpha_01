@@ -72,8 +72,7 @@ function _patch_job(id::String, changes::AbstractDict)
     end
 end
 
-_vram_fitting(case) = get(case,"mesh_sizing",
-    get(case,"target_vram_gb",nothing)!==nothing || get(case,"target_vram_percent",nothing)!==nothing ? "vram" : "manual") == "vram"
+_vram_fitting(case) = get(case,"mesh_sizing","manual") == "vram"
 
 "Use the admission budget, not free VRAM after this run has allocated its arrays."
 function _budget_exceeded(state,actual=nothing)
@@ -137,46 +136,45 @@ end
 "Lightweight launcher identity; deliberately does not query GPU state."
 function server_info()
     _response(200,Dict("ok"=>true,"api_revision"=>WORKBENCH_API_REVISION,
-        "repository_id"=>_workbench_repository_id(PUBLIC_ROOT),"max_amr_levels"=>7))
+        "repository_id"=>_workbench_repository_id(PUBLIC_ROOT)))
 end
 
+"""
+The solver choices of the page, in the order shown. Each is one runnable solver; `solver` and `lattice` are the
+two request keys it stands for. Limits here are the ones `_validate_case` enforces.
+"""
+const SOLVER_CHOICES = (
+    (id="main_d3q27", solver="main", lattice="d3q27", device="GPU", max_mach=0.6, max_levels=7,
+     label="GPU lattice Boltzmann · D3Q27 cumulant",
+     note="Low-speed flow, Mach at most 0.6. Cartesian AMR mesh with 1 to 7 levels. Needs an NVIDIA GPU."),
+    (id="main_d3q39", solver="main", lattice="d3q39", device="GPU", max_mach=1.6, max_levels=7,
+     label="GPU lattice Boltzmann · D3Q39 entropic, compressible",
+     note="Compressible flow with thermal energy, Mach at most 1.6. Cartesian AMR mesh with 1 to 7 levels. Needs an NVIDIA GPU and about three times the memory of D3Q27. Development path: check the mesh, the AMR interfaces and convergence."),
+    (id="pond_thermal", solver="pond_thermal", lattice="d3q27", device="GPU", max_mach=1.5, max_levels=7,
+     label="GPU thermal kinetic finite volume (experimental)",
+     note="Mass, momentum and total energy on the same Cartesian AMR mesh, Mach 0.05 to 1.5. Inviscid slip walls or laminar no-slip walls; no turbulence model. Experimental: aircraft drag and stall are not validated."),
+    (id="q19_octree", solver="q19_octree", lattice="d3q19", device="CPU", max_mach=Q19_MAX_MACH, max_levels=Q19_MAX_LEVELS,
+     label="CPU octree lattice Boltzmann · D3Q19 (development)",
+     note="Low-speed flow, Mach at most 0.3, on a cell-level octree that follows the surface. Runs on the CPU in system RAM: no GPU is needed. 1 to 10 levels. Development; not validated."))
+
+"The solvers this machine can run and the GPU memory now free: everything the page needs before a model is loaded."
 function capabilities()
-    solvers = [Dict("id" => name, "label" => label,
-                    "available" => name == "q19_octree" ? _q19_available() : (!Sys.isapple() && isfile(joinpath(root, "src", "main.jl"))),
-                    "reason" => name == "q19_octree" ? "CPU-only D3Q19 lattice Boltzmann on a cell-level octree mesh; no GPU is used. Athermal flow, Mach at most 0.3. Mesh creation, CPU runs and saved result viewing are available. Development; not validated." :
-                                Sys.isapple() ? "The CUDA solver is not available on macOS. Model placement and saved result viewing remain available." : name=="pond_thermal" ? "Experimental thermal finite-volume solver on the same Cartesian AMR mesh. Inviscid slip or laminar no-slip walls; no turbulence model or validated aircraft predictions." : "",
-                    "placement" => name != "lbmtau",
-                    "web_lattices" => name == "main" ? ["d3q27", "d3q39"] : name == "q19_octree" ? ["d3q19"] : ["d3q27"])
-               for (name, label, root) in (("main", "Main LBM solver", MAIN_SOLVER),
-                                            ("lbmtau", "Pinned lbmtau snapshot", PINNED_SOLVER),
-                                            ("pond_thermal", "Thermal kinetic FV (experimental)", MAIN_SOLVER),
-                                            ("q19_octree", "D3Q19 CPU octree (development)", Q19_SOLVER))]
-    _response(200, Dict("ok" => true, "solvers" => solvers,
-                        "api_revision" => WORKBENCH_API_REVISION,
-                        "repository_id" => _workbench_repository_id(PUBLIC_ROOT),
-                        "features" => Dict("studies"=>true,"free_air_domain_expansion"=>true,
-                                           "volume_cuts"=>true,"max_amr_levels"=>7,"pond_thermal"=>true,
-                                           "q19_octree"=>_q19_available(),"max_octree_levels"=>Q19_MAX_LEVELS),
-                        "web_lattices" => [Dict("lattice" => "d3q27", "collision_operator" => "cumulant", "max_levels" => 7),
-                                           Dict("lattice" => "d3q39", "collision_operator" => "entropic",
-                                                "solver" => "main", "max_mach" => 1.6, "max_levels" => 7),
-                                           Dict("lattice"=>"d3q19","collision_operator"=>"rr","solver"=>"q19_octree","max_mach"=>Q19_MAX_MACH,"max_levels"=>Q19_MAX_LEVELS,"device"=>"CPU")],
-                        "gpu" => _gpu_memory(),
-                        "outputs" => Dict("default_folder" => "",
-                            "formats" => ["surface_vtk","surface_lbmp","volume_vtk","numeric_slices","slice_png","csv_history"],
-                            "report_formats" => ["html"], "chart_formats" => ["png","svg","pdf"], "render_formats" => ["png"],
-                            "note" => "Choose a destination before Run. A timestamped study folder retains the setup and native data; selected formats are grouped for export."),
-                        "formats" => ["stl", "obj", "glb"],
-                        "max_model_bytes" => MAX_STL_BYTES,
-                        "note" => "OBJ and GLB are converted to binary STL in the browser. Cut planes are selected before a run."))
+    gpu_solver = !Sys.isapple() && isfile(joinpath(MAIN_SOLVER, "src", "main.jl"))
+    solvers = [Dict{String,Any}("id"=>c.id, "solver"=>c.solver, "lattice"=>c.lattice, "device"=>c.device,
+                    "label"=>c.label, "note"=>c.note, "max_mach"=>c.max_mach, "max_levels"=>c.max_levels,
+                    "available"=>c.solver == "q19_octree" ? _q19_available() : gpu_solver,
+                    "unavailable_reason"=>c.solver == "q19_octree" ? "The CPU octree solver package (src/octree_q19) is missing." :
+                        Sys.isapple() ? "CUDA solvers do not run on macOS. Model placement and saved results remain available." :
+                        "The GPU solver sources (src/main.jl) are missing.")
+               for c in SOLVER_CHOICES]
+    _response(200, Dict("ok" => true, "solvers" => solvers, "gpu" => _gpu_memory()))
 end
 
 function _solver_command(state::AbstractDict, kind::String; case_dir_override=nothing)
     q19 = _q19_case(state["case"])
-    solver_root = state["case"]["solver"] == "lbmtau" ? PINNED_SOLVER : MAIN_SOLVER
     julia = joinpath(Sys.BINDIR, Base.julia_exename())
     # the CPU octree solver is its own CUDA-free package: project and entry under src/octree_q19
-    project = q19 ? Q19_SOLVER : joinpath(solver_root, "src")
+    project = q19 ? Q19_SOLVER : joinpath(MAIN_SOLVER, "src")
     main = q19 ? joinpath(Q19_SOLVER, "main.jl") : joinpath(project, "main.jl")
     case_dir = case_dir_override === nothing ? _case_dir(state["job_id"], kind) : case_dir_override
     threads = q19 ? _q19_threads(state["case"]) : max(1, min(Threads.nthreads(), 8))
@@ -569,7 +567,7 @@ function _assess_mesh!(actual, case)
     geometry_blocked = ambiguous && !open_allowed
     geometry_warning = !ambiguous ? "" : open_allowed ?
         "Two-sided / intentional open surface is enabled. The geometry audit is advisory: outside orientation and solid interior are unverified. Wall intersections use both triangle sides without duplicating faces; openings and nonmanifold or intersecting faces can change the filled solid and computed forces." :
-        "The geometry has open, nonmanifold or inconsistently oriented faces. Choose Solver geometry: Two-sided / intentional open surface to run knowingly with this geometry, or repair the model. A symmetry opening is accepted automatically only when its placed edges lie on the domain Y=0 plane."
+        "The geometry has open, nonmanifold or inconsistently oriented faces. Under Model, set Surface handling to Two-sided / intentionally open surface to run knowingly with this geometry, or repair the model. A symmetry opening is accepted automatically only when its placed edges lie on the domain Y=0 plane."
     isempty(geometry_warning) || (message = isempty(message) ? geometry_warning : message*" "*geometry_warning)
     actual["finest_wall_cells"] = wall
     actual["surface_area_m2"] = area
@@ -586,6 +584,10 @@ function _assess_mesh!(actual, case)
     actual
 end
 
+"""
+Settings of the Run step, applied to a built mesh without rebuilding it: the run length, the result interval,
+the outputs, the recorded planes, the reference dimensions, the geometry policy and (GPU solvers) the memory target.
+"""
 function _apply_run_output_updates!(state,raw)
     isempty(raw) && return state
     if haskey(raw,"reference")
@@ -594,12 +596,15 @@ function _apply_run_output_updates!(state,raw)
     if haskey(raw,"outputs")
         state["case"]["outputs"] = _validate_outputs(raw["outputs"])
     end
-    if haskey(raw,"display_every")
-        every = _integer(raw["display_every"],"display_every";lo=1,hi=1_000_000)
-        state["case"]["display_every"] = every
-        state["case"]["effective_display_every"] = min(every,state["case"]["steps"])
+    if haskey(raw,"steps")
+        state["case"]["steps"] = _integer(raw["steps"],"steps";lo=8,hi=1_000_000)
     end
-    if haskey(raw,"target_vram_percent")
+    if haskey(raw,"display_every")
+        state["case"]["display_every"] = _integer(raw["display_every"],"display_every";lo=1,hi=1_000_000)
+    end
+    haskey(state["case"],"display_every") &&
+        (state["case"]["effective_display_every"] = min(state["case"]["display_every"],state["case"]["steps"]))
+    if haskey(raw,"target_vram_percent") && !_q19_case(state["case"])
         state["case"]["target_vram_percent"]=_number(raw["target_vram_percent"],"target_vram_percent";lo=1,hi=100)
     end
     if haskey(raw,"geometry_handling")
@@ -636,7 +641,6 @@ function start_run(id::String,req::Union{Nothing,HTTP.Request}=nothing)
         state["study_name"]=_study_name(get(updates,"study_name",get(state,"study_name","Aero study")))
         actual = build_summary(id; lattice=_memory_lattice(state["case"]),allow_incomplete=false)
         actual === nothing && throw(ArgumentError("Build-only summary is missing"))
-        _require_current_q19_mesh(state["case"],actual)
         refinement=_q19_refinement_source(id,state,actual,updates)
         refinement===nothing || (state["refinement_source"]=refinement)
         if _q19_case(state["case"])

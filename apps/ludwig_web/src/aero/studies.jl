@@ -159,14 +159,14 @@ function _check_study_setup(setup)
     end
     for (section,keys) in (("transform",("scale","rotation_deg","translation")),
                            ("domain",("boundary","upstream","downstream","lateral","height")),
-                           ("flow",("velocity","density","kinematic_viscosity","speed_of_sound")))
+                           ("flow",_study_flow_keys(setup)))
         value=setup[section]
         value isa AbstractDict && all(key->haskey(value,key),keys) ||
             throw(ArgumentError("Study setup has an incomplete $section section"))
     end
     setup["cuts"] isa AbstractVector || throw(ArgumentError("Study cuts must be an array"))
-    get(setup["domain"],"symmetry_center_y",false) isa Bool ||
-        throw(ArgumentError("Study domain.symmetry_center_y must be true or false"))
+    setup["domain"]["boundary"]=="symmetry" && !haskey(setup["domain"],"symmetry_placement") &&
+        throw(ArgumentError("This study has a symmetry plane but no model placement choice; it was saved by an earlier version. Set up the case again."))
     _symmetry_placement(setup["domain"])
     _number(get(setup["domain"],"symmetry_offset_y_m",0.),"Study domain.symmetry_offset_y_m";lo=-10_000,hi=10_000)
     _domain_sizing(get(setup["domain"],"sizing","minimum"))
@@ -240,16 +240,28 @@ function _decode_study_geometry(value; canonical=false)
     bytes, _geometry_document(bytes,name,media)
 end
 
-"The optional centering flag was absent from legacy studies; omission means false."
+"The flow inputs a study must carry: the thermal solver is set by Mach number and temperature, the others by speed."
+_study_flow_keys(setup)=_pond_case(setup) ? ("mach","temperature_k","density","kinematic_viscosity") :
+    ("velocity","density","kinematic_viscosity","speed_of_sound")
+
+"The flow inputs that identify a result, read alike from a request and from a validated case."
+function _study_flow_identity(case)
+    flow=get(case,"flow",Dict())
+    flow isa AbstractDict || return flow
+    keys=_pond_case(case) ? ("mach","temperature_k","cfl","wall_model","density","kinematic_viscosity") :
+        ("velocity","speed_of_sound","density","kinematic_viscosity")
+    defaults=Dict("alpha"=>0.,"beta"=>0.,"cfl"=>.25,"wall_model"=>"slip","temperature_k"=>288.15)
+    Dict(key=>get(flow,key,get(defaults,key,nothing)) for key in ("alpha","beta",keys...))
+end
+
+"Two domains describe the same case when their boundary, clearances, sizing and model placement agree."
 function _same_study_domain(a,b)
     a isa AbstractDict && b isa AbstractDict || return a==b
     normalized(value)=begin
         result=merge(Dict{String,Any}(String(k)=>v for (k,v) in pairs(value)),
-            Dict{String,Any}("symmetry_center_y"=>get(value,"symmetry_center_y",false),
-                "sizing"=>get(value,"sizing","minimum"),"x_offset_m"=>get(value,"x_offset_m",0.)))
+            Dict{String,Any}("sizing"=>get(value,"sizing","minimum"),"x_offset_m"=>get(value,"x_offset_m",0.)))
         result["symmetry_placement"]=get(value,"boundary","")=="symmetry" ? _symmetry_placement(value) : "wall"
-        result["symmetry_center_y"]=result["symmetry_placement"]=="center"
-        result["symmetry_placement"]=="none" ? (result["symmetry_offset_y_m"]=get(value,"symmetry_offset_y_m",0.)) : pop!(result,"symmetry_offset_y_m",nothing)
+        result["symmetry_placement"]=="none" && get(value,"boundary","")=="symmetry" ? (result["symmetry_offset_y_m"]=get(value,"symmetry_offset_y_m",0.)) : pop!(result,"symmetry_offset_y_m",nothing)
         pop!(result,"symmetry_body_y_max",nothing) # derived from geometry, transform and frozen offset
         result["proportions"]=result["sizing"]=="proportions" ? _effective_domain_proportions(value) : [1.,1.,1.]
         result
@@ -274,7 +286,7 @@ function _same_study_setup(a::AbstractDict,b::AbstractDict)
     all(key -> key=="cuts" ? true : key=="domain" ?
         (_same_study_domain(get(a,key,nothing),get(b,key,nothing)) ||
          _same_study_domain(get(a,"requested_domain",nothing),get(b,key,nothing))) :
-        key=="flow" ? merge(Dict("alpha"=>0.,"beta"=>0.),get(a,key,Dict()))==merge(Dict("alpha"=>0.,"beta"=>0.),get(b,key,Dict())) :
+        key=="flow" ? _study_flow_identity(a)==_study_flow_identity(b) :
         get(a,key,nothing)==get(b,key,nothing), STUDY_SETUP_KEYS)
 end
 

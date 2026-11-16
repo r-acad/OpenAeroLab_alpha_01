@@ -1,10 +1,10 @@
-/* Menu navigation and dismissible information for the Aero Lab workbench. */
+/* Step navigation and dismissible information for the Aero Lab workbench. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const menus = [...document.querySelectorAll('.top-menu')];
   const panels = [...document.querySelectorAll('[data-parameter-panel]')];
   const choices = [...document.querySelectorAll('[data-parameter-target]')];
+  const steps = [...document.querySelectorAll('.workflow-bar [data-parameter-target]')];
   const cards = ['viewer-info-panel', 'mesh-notice', 'viewer-message'];
   const openers = {'viewer-info-panel': 'viewer-info', 'mesh-notice': 'mesh-notice-open', 'viewer-message': 'viewer-message-open'};
   let lastMeshText = null;
@@ -19,10 +19,6 @@
   let resultsAvailable = false;
   let solverJob = null, solverLog = [], solverMetrics = {}, solverTerminalKey = null;
   const dismissedSolvers = new Set();
-
-  function syncLiveResults() {
-    if ($('live-results') && $('run-live-results')) $('run-live-results').checked = $('live-results').checked;
-  }
 
   function syncDomainControls() {
     const sizing = $('domain-sizing')?.value || 'minimum';
@@ -50,50 +46,35 @@
       if (radio) { radio.checked = widget?.value === mode; radio.disabled = !!widget?.disabled; }
     }
     const symmetry = $('boundary')?.value === 'symmetry';
-    const center = $('symmetry-auto-center-y');
     if ($('symmetry-placement-controls')) $('symmetry-placement-controls').hidden = !symmetry;
-    const placement = $('symmetry-placement')?.value || (center?.checked ? 'center' : 'wall');
+    const placement = $('symmetry-placement')?.value || 'none';
     for (const mode of ['none', 'wall', 'center']) {
       const radio = $(`symmetry-placement-${mode}`);
-      if (radio) { radio.checked = placement === mode; radio.disabled = !symmetry || !!center?.disabled; }
+      if (radio) { radio.checked = placement === mode; radio.disabled = !symmetry; }
     }
     syncDomainControls();
-    syncLiveResults();
   }
 
   function setResultsAvailable(available) {
     resultsAvailable = !!available;
-    const menu = $('menu-results'), summary = $('results-menu-summary');
-    if (!menu || !summary) return;
-    menu.classList.toggle('results-available', resultsAvailable);
-    menu.classList.toggle('results-disabled', !resultsAvailable);
-    // Opening saved results must remain discoverable before a case is loaded.
-    summary.setAttribute('aria-disabled', 'false');
-    summary.setAttribute('tabindex', '0');
-    summary.setAttribute('title', resultsAvailable ? 'Inspect available results' : 'Open a saved study or import native / VTK results');
+    // The Results step stays usable before a case exists: saved result files are read there.
+    $('step-results')?.classList.toggle('results-available', resultsAvailable);
+    $('step-results')?.setAttribute('title', resultsAvailable ? 'Inspect the available results' : 'Open a saved study or read saved result files');
   }
 
-  function positionMenus() {
-    const bar = menus[0]?.closest('.menu-bar');
-    const rect = bar?.getBoundingClientRect?.();
-    if (rect) document.documentElement?.style?.setProperty('--aero-menu-bottom', `${rect.bottom + 6}px`);
-  }
-
-  function closeMenus(except) {
-    for (const menu of menus) if (menu !== except) menu.open = false;
-  }
-
+  // Show one step's panel. A control named by focusId is revealed (its Advanced group opens) and focused.
   function selectParameters(name, focusId) {
     const selected = panels.find(panel => panel.dataset.parameterPanel === name);
     if (!selected) return false;
     for (const panel of panels) panel.hidden = panel !== selected;
-    const heading = selected.querySelector('.parameter-heading');
-    if ($('parameter-title')) $('parameter-title').textContent = heading?.textContent || name;
+    const step = steps.find(button => button.dataset.parameterTarget === name);
+    const number = step?.querySelector('.step-number')?.textContent;
+    if ($('parameter-title')) $('parameter-title').textContent = selected.querySelector('.parameter-heading')?.textContent || name;
+    if ($('parameter-step')) { $('parameter-step').textContent = number ? `Step ${number}` : ''; $('parameter-step').hidden = !number; }
     for (const choice of choices) choice.setAttribute('aria-pressed', String(choice.dataset.parameterTarget === name));
-    for (const menu of menus) menu.classList.toggle('has-active-parameters', !!menu.querySelector(`[data-parameter-target="${name}"]`));
-    closeMenus();
     if (focusId) {
       const control = $(focusId);
+      for (let group = control?.closest('details'); group; group = group.parentElement?.closest('details')) group.open = true;
       control?.focus({preventScroll: true});
       control?.scrollIntoView({block: 'nearest'});
     }
@@ -210,7 +191,6 @@
   function setDisplayMode(mode) {
     if ($('view-mode')) { $('view-mode').value = mode; $('view-mode').dispatchEvent(new Event('change', {bubbles: true})); }
     if ($('result-pane')) { $('result-pane').value = 'scene'; $('result-pane').dispatchEvent(new Event('change', {bubbles: true})); }
-    closeMenus();
   }
 
   function setMeshBuildProgress(update = {}) {
@@ -336,12 +316,12 @@
       'symmetry-placement-none':'Keep the current Y position without automatic alignment. Manual Y offsets stay available. Save/open preserves this choice and position.',
       'geometry-handling':'Closed solid validates topology. Intentional open mode accepts ambiguous or open surfaces using two-sided wall intersections.',
       'boundary':'Choose free-air, ground-wall or symmetry boundary conditions independently of domain sizing.',
-      'surface-dx':'Requested finest cell size near the model surface, in metres.',
-      'levels':'Requested AMR levels. The mesher retains this count or offers a different setup.',
-      'mesh-sizing':'Choose an explicit surface spacing or let CPU mesh probes find a spacing within the VRAM target.',
-      'target-vram':'Percentage of currently available VRAM allowed for this simulation, checked before allocation.',
-      'build-mesh':'Build and inspect the AMR lattice using the selected backend before starting flow iterations.',
-      'run-solver':'Run the selected solver. Choose a mandatory output folder under Outputs first.',
+      'surface-dx':'Finest cell size, at the model surface, in metres.',
+      'levels':'Number of mesh levels. The mesher keeps this count or proposes another setup.',
+      'mesh-sizing':'Use the surface cell size as given, or let mesh probes find the finest size that fits the GPU memory target.',
+      'target-vram':'Share of the VRAM free now that this run may use, checked again before the run.',
+      'build-mesh':'Create the mesh of the selected solver from steps 1 to 4, to inspect before running.',
+      'run-solver':'Run the selected solver on the created mesh. An output folder is required.',
       'cancel-job':'Request cancellation of the active meshing or solver job; completed output files remain available.',
       'section-enabled':'Enable an inspection plane through the geometry, mesh and available field data.',
       'section-axis':'Choose the normal direction of the movable inspection plane.',
@@ -359,8 +339,7 @@
       'velocity-vectors':'Choose prescribed inlet arrows, vectors from the selected recorded cut, both, or none.',
       'output-folder':'Mandatory destination for solver output files. Each run creates its own subfolder.',
       'results-import':'Read saved native or VTK files into the viewer without starting a solver.',
-      'study-save':'Save the complete setup, original geometry and result pointers using the current destination.',
-      'study-save-menu':'Save the current study to its associated file; choose a destination on the first save.',
+      'study-save':'Save the setup, the geometry and the result links to the study file; the first save asks where.',
       'study-save-as':'Choose another study filename and destination using the system save dialog.'
     };
     for (const [id, title] of Object.entries(tips)) if ($(id)) $(id).setAttribute('title', title);
@@ -371,22 +350,13 @@
     }
   }
 
-  for (const menu of menus) {
-    menu.querySelector('summary')?.addEventListener('click', event => {
-      positionMenus(); if (!menu.open) closeMenus(menu);
-    });
-    menu.addEventListener('toggle', () => {
-      if (menu.open) closeMenus(menu);
-    });
-  }
   for (const choice of choices) choice.addEventListener('click', () => selectParameters(choice.dataset.parameterTarget, choice.dataset.focusControl));
   for (const choice of document.querySelectorAll('[data-result-target]')) choice.addEventListener('click', () => {
     const picker = $('result-pane');
     if (picker) { picker.value = choice.dataset.resultTarget; picker.dispatchEvent(new Event('change', {bubbles: true})); }
-    closeMenus();
   });
   for (const choice of document.querySelectorAll('[data-open-info]')) choice.addEventListener('click', () => {
-    closeMenus(); setCard('viewer-info-panel', true, true);
+    setCard('viewer-info-panel', true, true);
   });
   for (const choice of document.querySelectorAll('[data-display-mode]')) choice.addEventListener('click', () => setDisplayMode(choice.dataset.displayMode));
   for (const mode of ['none', 'move', 'rotate']) $(`model-widget-${mode}`)?.addEventListener('change', event => {
@@ -396,13 +366,10 @@
   for (const mode of ['none', 'wall', 'center']) $(`symmetry-placement-${mode}`)?.addEventListener('change', event => {
     if (!event.target.checked || !$('symmetry-placement')) return;
     $('symmetry-placement').value = mode;
-    if ($('symmetry-auto-center-y')) $('symmetry-auto-center-y').checked = mode === 'center';
     $('symmetry-placement').dispatchEvent(new Event('change', {bubbles: true})); syncModelControls();
   });
-  for (const id of ['boundary', 'model-widget', 'symmetry-placement', 'symmetry-auto-center-y']) $(id)?.addEventListener('change', syncModelControls);
+  for (const id of ['boundary', 'model-widget', 'symmetry-placement']) $(id)?.addEventListener('change', syncModelControls);
   $('domain-sizing')?.addEventListener('change', syncDomainControls);
-  $('live-results')?.addEventListener('change', syncLiveResults);
-  $('run-live-results')?.addEventListener('change', () => { if ($('live-results')) { $('live-results').checked = $('run-live-results').checked; $('live-results').dispatchEvent(new Event('change', {bubbles:true})); } });
   $('solver-progress-close')?.addEventListener('click', closeSolverProgress);
   $('solver-progress-open')?.addEventListener('click', () => { if ($('solver-progress-overlay')) $('solver-progress-overlay').hidden = false; $('solver-progress-open').hidden = true; $('solver-progress-open').setAttribute('aria-expanded','true'); });
   $('mesh-build-close')?.addEventListener('click', closeMeshBuild);
@@ -414,14 +381,10 @@
   $('mesh-build-details')?.addEventListener('click', () => { setCard('mesh-notice', true); closeMeshBuild(); });
   $('model-file')?.addEventListener('change', () => selectParameters('model'));
   $('study-file')?.addEventListener('change', () => selectParameters('model'));
-  $('study-open')?.addEventListener('click', () => closeMenus());
-  $('study-save-menu')?.addEventListener('click', () => closeMenus());
-  for (const id of ['fit-model', 'fit-domain', 'viewer-fullscreen', 'build-mesh', 'run-solver', 'cancel-job', 'results-refresh']) $(id)?.addEventListener('click', () => closeMenus());
   for (const [id, opener] of Object.entries(openers)) $(opener)?.addEventListener('click', () => toggleCard(id));
   for (const [id, closer] of Object.entries({'viewer-info-panel': 'viewer-info-close', 'mesh-notice': 'mesh-notice-close', 'viewer-message': 'viewer-message-close'})) {
     $(closer)?.addEventListener('click', () => { if (id === 'viewer-message') closeMessage(); else setCard(id, false); $(openers[id])?.focus({preventScroll: true}); });
   }
-  document.addEventListener('click', event => { if (!event.target.closest?.('.top-menu')) closeMenus(); });
   document.addEventListener('keydown', event => {
     const modalVisible = $('viewer-message') && !$('viewer-message').hidden;
     if (modalVisible && event.key === 'Tab') {
@@ -432,12 +395,9 @@
     }
     if (event.key !== 'Escape') return;
     if (modalVisible) { closeMessage(); $('viewer-message-open')?.focus(); event.preventDefault(); return; }
-    const openMenu = menus.find(menu => menu.open);
-    if (openMenu) { closeMenus(); openMenu.querySelector('summary')?.focus(); event.preventDefault(); return; }
     const visible = cards.find(id => $(id) && !$(id).hidden);
     if (visible) { setCard(visible, false); $(openers[visible])?.focus(); event.preventDefault(); }
   });
-  window.addEventListener?.('resize', positionMenus);
   if (typeof MutationObserver !== 'undefined') {
     const observer = new MutationObserver(refreshNotices);
     for (const id of ['mesh-details', 'job-message']) if ($(id)) observer.observe($(id), {childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['hidden']});
@@ -447,5 +407,5 @@
   applyTooltips();
   setResultsAvailable(false);
   refreshNotices();
-  window.LudwigAeroLayout = {selectParameters, refreshNotices, closeMenus, showMessage, closeMessage, clearMessage, setMeshBuildProgress, setSolverProgress, setResultsAvailable, syncModelControls, syncDomainControls, syncLiveResults, applyTooltips, showInfo: () => setCard('viewer-info-panel', true)};
+  window.LudwigAeroLayout = {selectParameters, refreshNotices, showMessage, closeMessage, clearMessage, setMeshBuildProgress, setSolverProgress, setResultsAvailable, syncModelControls, syncDomainControls, applyTooltips, showInfo: () => setCard('viewer-info-panel', true)};
 })();

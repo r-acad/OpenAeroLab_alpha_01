@@ -1,7 +1,7 @@
 using Test, Printf
-const OUTPUT_DEFAULTS=Dict("surface_vtk"=>true,"surface_lbmp"=>true,"volume_vtk"=>false)
-include(joinpath(@__DIR__,"..","..","apps","ludwig_web","src","aero","storage.jl"))
-include(joinpath(@__DIR__,"..","..","apps","ludwig_web","src","aero","q19.jl"))
+# julia --project=third_party/JXfoil tools/tests/aero_output_storage.jl
+include(joinpath(@__DIR__,"..","..","apps","ludwig_web","src","aero_backend.jl"))
+using .AeroBackend: _q19_storage_forecast, _q19_yaml_lines, OUTPUT_DEFAULTS
 
 @testset "D3Q19 output storage" begin
     case=Dict("steps"=>40_000,"display_every"=>100,"effective_display_every"=>100,
@@ -47,10 +47,3 @@ end
     @test occursin("surface_vtk: false",yaml)
 end
 
-@testset "old cavity sealing meshes cannot start new runs" begin
-    case=Dict("solver"=>"q19_octree","domain"=>Dict("boundary"=>"free_air"),"octree"=>Dict("seal_cavities"=>true))
-    @test_throws ArgumentError _require_current_q19_mesh(case,Dict("octree"=>Dict()))
-    @test _require_current_q19_mesh(case,Dict("octree"=>Dict("cavity_seal_policy_version"=>2)))===nothing
-    case["octree"]["seal_cavities"]=false
-    @test _require_current_q19_mesh(case,Dict("octree"=>Dict()))===nothing
-end

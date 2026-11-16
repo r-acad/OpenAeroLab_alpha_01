@@ -17,7 +17,7 @@ const SETTINGS=Dict{String,Any}("model_id"=>MODEL,"solver"=>"q19_octree","lattic
     "surface_dx"=>.125,"levels"=>1,"mesh_sizing"=>"manual","target_vram_percent"=>80,
     "octree"=>Dict("band_fine"=>6,"band"=>4,"wake_length"=>0.,"wake_level_offset"=>1,"threads"=>2),
     "flow"=>Dict("alpha"=>0.,"beta"=>0.,"velocity"=>10.,"density"=>1.225,"kinematic_viscosity"=>.001,"speed_of_sound"=>343.),
-    "steps"=>1000,"display_every"=>50,"frames"=>20,"cuts"=>Any[],"outputs"=>Dict{String,Any}())
+    "steps"=>1000,"display_every"=>50,"cuts"=>Any[],"outputs"=>Dict{String,Any}())
 
 @testset "Q19 optional reference length for staged remeshing" begin
     @test !haskey(A._q19_settings(Dict()),"stage_reference_length_m")

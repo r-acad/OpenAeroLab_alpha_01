@@ -8,7 +8,7 @@
   const activeStatuses=new Set(['meshing','sizing','mesh_sizing','waiting_for_gpu','running','queued','starting']);
   let busy=false,sourceTarget=null,recentDialog=null,recentList=null,recentHelp=null;
   function status(text,error=false){$('study-status').textContent=text;$('study-status').classList.toggle('warning',error);}
-  function setBusy(value){busy=value;for(const id of ['study-save','study-save-menu','study-save-as','study-open'])if($(id))$(id).disabled=value;}
+  function setBusy(value){busy=value;for(const id of ['study-save','study-save-as','study-open'])if($(id))$(id).disabled=value;}
   function associate(target){
     sourceTarget=target;ctx.state.studySource=target;window.LudwigAeroPathUI?.refresh();
     for(const id of ['study-folder','study-filename'])if($(id)){$(id).readOnly=Boolean(target);$(id).title=target?'Associated study destination. Use Save study as to choose another file.':'Choose a destination on Save study as.';}
@@ -16,7 +16,6 @@
   }
   function activeCase(){return ctx.state.importing||ctx.state.uploading||ctx.state.resumePending||activeStatuses.has(ctx.state.job?.status);}
   function openAllowed(){
-    if(ctx.state.outdatedServer){status('Relaunch Ludwig Workbench before opening a study.',true);return false;}
     if(!activeCase())return true;
     status('Wait for the active mesh, run or model upload to finish, or cancel it before opening another study.',true);return false;
   }
@@ -52,7 +51,7 @@
     }
   }
   async function save(saveAs=false){
-    if(busy)return;if(ctx.state.outdatedServer){status('Relaunch Ludwig Workbench to use study saving with this version.',true);return;}setBusy(true);status('Preparing the study and embedded geometry…');
+    if(busy)return;setBusy(true);status('Preparing the study and embedded geometry…');
     try{
       const setup=ctx.caseSettings(),view=ctx.getStudyView?.()||{};
       const body={name:$('study-name').value.trim()||'Aero study',case:setup,view,job_id:ctx.state.jobId||null,results:ctx.state.studyResults||null};
@@ -181,7 +180,7 @@
     if(!dialog.open)dialog.showModal();await loadRecentList();
   }
   $('study-save').addEventListener('click',()=>save(false));
-  $('study-save-menu')?.addEventListener('click',()=>save(false));$('study-save-as')?.addEventListener('click',()=>save(true));
+  $('study-save-as')?.addEventListener('click',()=>save(true));
   $('study-open').addEventListener('click',chooseOpen);
   $('study-file').addEventListener('change',event=>open(event.target.files?.[0]));
   async function browseFolder(){
