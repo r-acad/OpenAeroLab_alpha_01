@@ -116,7 +116,7 @@ function write_build_summary(path, cfg::CaseConfig, mesh::OctMesh, sc::LatticeSc
         "case" => cfg.name, "build_only" => true, "solver" => SOLVER_NAME, "mesh" => "octree",
         "written_utc" => Dates.format(Dates.now(Dates.UTC), "yyyy-mm-ddTHH:MM:SS") * "Z",
         "domain_build_seconds" => build_s,
-        "lattice" => "d3q19", "collision_operator" => String(cfg.numerics.collision),
+        "lattice" => "d3q19", "collision_operator" => "hrr", "hrr_sigma" => cfg.numerics.hrr_sigma,
         "num_levels" => L,
         "coarse_grid_cells" => [root[1], root[2], root[3]],
         "domain_size_m" => collect(mesh.domain), "mesh_offset_m" => collect(mesh.offset),
@@ -130,8 +130,6 @@ function write_build_summary(path, cfg::CaseConfig, mesh::OctMesh, sc::LatticeSc
         "plane_files" => [replace(relpath(f, dirname(path)), "\\" => "/") for f in plane_files],
         "geometry_triangles" => length(mesh.triangles),
         "octree" => Dict{String,Any}("mesh_file" => "mesh.oct", "mesh_sha256" => mesh_sha, "fluid_cells_total" => mesh.counts["fluid_total"],
-            "symmetry_boundary_refinement"=>get(mesh.counts,"symmetry_boundary_refinement",0),
-            "cavity_seal_policy_version"=>get(mesh.counts,"cavity_seal_policy_version",0),
             "stored_slots" => mesh.counts["stored_slots"], "work_W" => mesh.counts["work_W"], "band_fine" => cfg.mesh.band_fine, "band" => cfg.mesh.band,
             "surface_level" => cfg.mesh.surface_level, "seal_cavities" => cfg.mesh.seal_cavities, "wake_length" => cfg.mesh.wake_length, "wake_level" => mesh.counts["wake_level"],
             "periodic" => collect(mesh.periodic), "faces" => [String(f) for f in cfg.mesh.faces], "precision" => string(cfg.precision),
@@ -254,7 +252,7 @@ function export_planes(mesh::OctMesh, cfg::CaseConfig, sc::LatticeScaling, step:
             sampler(mesh, an, coord, a1, a2, n1, n2, h, arrays)
         end
         header = Dict{String,Any}(
-            "case" => cfg.name, "solver" => SOLVER_NAME, "lattice" => "d3q19", "collision_operator" => String(cfg.numerics.collision),
+            "case" => cfg.name, "solver" => SOLVER_NAME, "lattice" => "d3q19", "collision_operator" => "hrr", "hrr_sigma" => cfg.numerics.hrr_sigma,
             "plane" => names[a1] * names[a2], "plane_tag" => pl.tag, "axis1" => names[a1], "axis2" => names[a2], "normal_axis" => names[an],
             "normal_coord_m" => physical_coord, "normal_target_m" => pl.position_m, "normal_sample_m"=>coord,"normal_index_finest" => round(Int, physical_coord / finest_h),
             "sampling_stride"=>stride,"spacing_requested_m"=>finest_h,"max_plane_samples"=>limit,
@@ -270,7 +268,7 @@ function export_planes(mesh::OctMesh, cfg::CaseConfig, sc::LatticeScaling, step:
             "step" => step, "state_step" => step, "time_s" => step * sc.dt_finest * 2.0^(L - 1), "time_scale_s" => sc.dt_finest, "time_per_step_s" => sc.dt_finest * 2.0^(L - 1),
             "state_kind" => !with_fields ? "mesh" : step==0 ? "initialization" : "evolved", "convergence_assessed"=>false,
             "time_note" => "time_s = state_step * time_per_step_s (one solver step is one coarsest-level step)",
-            "u_inlet_lattice" => with_fields && cfg.outputs.ramp_steps>0 ? sc.u_lattice*0.5*(1-cospi(clamp(step-1,0,cfg.outputs.ramp_steps)/cfg.outputs.ramp_steps)) : sc.u_lattice,
+            "u_inlet_lattice" => sc.u_lattice,
             "u_target_lattice" => sc.u_lattice, "velocity_scale_m_s" => sc.velocity_scale,
             "velocity_note" => "u, v, w, velocity_magnitude = lattice velocity * velocity_scale_m_s",
             "u_ref_m_s" => cfg.flow.velocity, "rho_ref_kg_m3" => cfg.flow.density, "reference_chord_m" => cfg.reference_chord,

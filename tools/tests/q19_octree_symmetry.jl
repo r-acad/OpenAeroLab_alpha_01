@@ -33,7 +33,6 @@ end
     tri=sphere_tris(24,48;r=.4,c=(1.5,0.,1.5))
     spec=G.MeshSpec(domain=(4.,2.,3.2),levels=3,dx_finest=.05,band_fine=4,band=3,faces=FACES)
     mesh=G.generate(tri,spec)
-    @test mesh.counts["symmetry_boundary_refinement"]==1
     check_boundary_topology(mesh)
     @test G.locate_leaf(mesh,(1.925,.025,1.525))[1]==3
     l,s=G.locate_leaf(mesh,(1.5,.025,1.5))

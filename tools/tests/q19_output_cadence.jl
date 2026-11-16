@@ -24,7 +24,7 @@ const SETTINGS=Dict{String,Any}("model_id"=>MODEL,"solver"=>"q19_octree","lattic
     "surface_dx"=>.125,"levels"=>1,"mesh_sizing"=>"manual","target_vram_percent"=>80,
     "octree"=>Dict("band_fine"=>6,"band"=>4,"wake_length"=>0.,"wake_level_offset"=>1,"threads"=>2),
     "flow"=>Dict("alpha"=>0.,"beta"=>0.,"velocity"=>10.,"density"=>1.225,"kinematic_viscosity"=>.001,"speed_of_sound"=>343.),
-    "steps"=>1000,"display_every"=>50,"frames"=>20,"cuts"=>Any[],"outputs"=>Dict{String,Any}())
+    "steps"=>1000,"display_every"=>50,"cuts"=>Any[],"outputs"=>Dict{String,Any}())
 const CASE=first(A._validate_case(SETTINGS))
 write(joinpath(FIXTURE,"config.yaml"),A._yaml_case(CASE,CASE["bounds"];build_only=false))
 const OLD=Dict("case"=>CASE,"run_case_dir"=>FIXTURE)
@@ -81,7 +81,7 @@ function exercise(startup)
     oldrun=OLD["run_case_dir"]
     cp(joinpath(oldrun,"model.stl"),joinpath(folder,"model.stl"))
     raw=YAML.load_file(joinpath(oldrun,"config.yaml"))
-    merge!(raw["basic"]["simulation"],Dict("steps"=>13,"ramp_steps"=>4,"output_freq"=>14,"slice_output_freq"=>6,"output_startup_slices"=>startup,"build_only"=>false))
+    merge!(raw["basic"]["simulation"],Dict("steps"=>13,"output_freq"=>14,"slice_output_freq"=>6,"output_startup_slices"=>startup,"build_only"=>false))
     raw["advanced"]["forces"]["output_freq"]=2;raw["advanced"]["diagnostics"]["freq"]=2
     raw["octree_q19"]["checkpoint"]["every_minutes"]=0
     YAML.write_file(joinpath(folder,"config.yaml"),raw)
@@ -100,9 +100,10 @@ function exercise(startup)
             @test header["state_kind"]==(step==0 ? (startup ? "initialization" : "mesh") : "evolved")
             @test header["with_fields"]==(step>0||startup)
             if step==0&&startup
-                @test header["u_inlet_lattice"]==0
+                # The solver starts from the uniform free stream: the step-zero fields carry the inlet speed.
+                @test header["u_inlet_lattice"]==.08
                 @test header["u_target_lattice"]==.08
-                @test maximum(abs,vcat(filter(isfinite,vec(arrays["u"])),[0.0]))==0
+                @test maximum(abs,vcat(filter(isfinite,vec(arrays["u"])),[0.0]))≈SETTINGS["flow"]["velocity"] rtol=1e-6
             end
         end
     end

@@ -211,8 +211,8 @@ end
 write_wall_surface!(st::State,out::AbstractString,step::Int=st.step) =
     write_wall_surface!(st.mesh,st.cfg,(l,ci,s)->st.levels[l].rho[s],out,step;
         source=Dict("kind"=>"live_solver_state","step"=>step,
-            "collision"=>String(st.cfg.numerics.collision),
-            "hrr_sigma"=>st.cfg.numerics.collision==:hrr ? st.cfg.numerics.hrr_sigma : 1.0))
+            "collision"=>"hrr",
+            "hrr_sigma"=>st.cfg.numerics.hrr_sigma))
 
 "Read only wall-cell densities from a checkpoint; never allocate populations, advance, repair or remesh."
 function checkpoint_wall_densities(path::AbstractString, mesh::OctMesh, cfg::CaseConfig)

@@ -2,6 +2,36 @@
 # two density buffers, in the mesh's oct layout. DESIGN.md sections 3 and 5. Populations are shifted (f - w_i).
 using Base.Threads
 
+"""
+A list of slots grouped by their oct, for the transfers that work on the eight lanes of an oct at a time:
+`octs[g]` is the oct of group g, `idx[k, g]` the position in the original list of its slot k (0 where slot k is
+not listed), and `flag[g]` a lane mask given by the caller (bit k - 1).
+"""
+struct SlotGroups
+    octs::Vector{Int32}
+    idx::Matrix{Int32}
+    flag::Vector{UInt8}
+end
+
+"Group the slot ids `slots` by oct, in the order of first appearance; `flagged(position)` sets the lane's bit of `flag`."
+function group_by_oct(slots::AbstractVector{<:Integer}; flagged=nothing)
+    where_ = Dict{Int32,Int32}(); octs = Int32[]
+    lanes = Vector{Vector{Int32}}()
+    for (pos, s) in enumerate(slots)
+        o = Int32(slot_oct(s))
+        g = get!(where_, o) do
+            push!(octs, o); push!(lanes, zeros(Int32, 8)); Int32(length(octs))
+        end
+        lanes[g][slot_k(s)] = Int32(pos)
+    end
+    idx = zeros(Int32, 8, length(octs)); flag = zeros(UInt8, length(octs))
+    for g in eachindex(octs), k in 1:8
+        idx[k, g] = lanes[g][k]
+        flagged !== nothing && idx[k, g] != 0 && flagged(Int(idx[k, g])) && (flag[g] |= UInt8(1) << (k - 1))
+    end
+    SlotGroups(octs, idx, flag)
+end
+
 mutable struct LevelState{T<:AbstractFloat}
     f::Array{T,3}            # (8, Q, nocts) buffer A
     g::Array{T,3}            # buffer B
@@ -26,6 +56,79 @@ mutable struct LevelState{T<:AbstractFloat}
     # the cut links of each cut cell spread over the directions, for the step's O(1) lookup (the CSR is the file form)
     cut_qdir::Matrix{Float32}        # (Q, ncut): q of the cut link in direction i, 0.5 where none
     cut_okdir::Matrix{Bool}          # (Q, ncut): the Bouzidi partner is a plain fluid slot
+    # the step's oct classes, per entry of real_octs: the lanes (children) stepped eight at a time and one by one
+    fmask::Vector{UInt8}             # bit k - 1: slot k is a fluid cell with no special direction
+    smask::Vector{UInt8}             # bit k - 1: slot k is a fluid cell with a special direction (a face condition or a cut link)
+    # absorbing layers: the blend factor of every slot toward the freestream equilibrium ((8, 0) when none is on)
+    sponge::Matrix{T}
+    osponge::BitVector               # per entry of real_octs: a slot of the oct has a non-zero factor
+    # the transfer lists grouped by oct (coupling.jl): donors (octs of level - 1; the flag marks covered donors),
+    # restriction sources (octs of level + 1), this level's ghosts and its restricted slots (the flag marks cubic ones)
+    donor_groups::SlotGroups
+    rsrc_groups::SlotGroups
+    ghost_groups::SlotGroups
+    restrict_groups::SlotGroups
+    # special cells whose collision joins the oct's vector: their arriving populations are gathered one by one into
+    # the thread's scratch lanes, then collided with the plain lanes
+    vmask::Vector{UInt8}             # bit k - 1: a special fluid slot whose six face neighbours exist and are not domain-boundary slots
+    scratch::Vector{Vector{T}}       # per thread chunk: 8 (Q + 1) values, the arriving populations of the special lanes (k + 8 (j - 1)), then their wall-model viscosity
+    # the wall model (walls.jl): per cut cell, the unit normal into the fluid (zero = no model), the wall distance of
+    # the centre in cells, the slot whose velocity is sampled (0 = the cell) and its wall distance
+    wm_on::Bool
+    wm_n::Matrix{T}
+    wm_y::Vector{T}
+    wm_ref::Vector{Int32}
+    wm_yref::Vector{T}
+    wm_d::Matrix{T}                  # (3, ncut): the link sum to which the slip velocity is kept normal
+    wm_us::Matrix{T}                 # (5, ncut): the time averages of the wall's slip velocity, the cell's viscosity and the adverse pressure gradient
+end
+
+"The lane masks of the real octs of a level: plain fluid slots, fluid slots with a special direction, and those of the special ones that can join the oct's vector collision."
+function lane_masks(Lv::OctLevel, real_octs::Vector{Int32})
+    fm = zeros(UInt8, length(real_octs)); sm = zeros(UInt8, length(real_octs)); vm = zeros(UInt8, length(real_octs))
+    for (oi, o) in enumerate(real_octs), k in 1:8
+        Lv.kind[k, o] == K_FLUID || continue
+        bit = UInt8(1) << (k - 1)
+        if Lv.special[k, o] == 0
+            fm[oi] |= bit
+        else
+            sm[oi] |= bit
+            # the vector gradient reads the six face neighbours as they are stored; the one-by-one form substitutes
+            # the cell's own velocity for a missing or domain-boundary neighbour, so such cells stay one by one
+            whole = all(((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))) do d
+                ni, nk = neighbour_slot(k, d[1], d[2], d[3]); no = Lv.onbr[ni, o]
+                no != 0 && Lv.kind[nk, no] != K_BOUNDARY
+            end
+            whole && (vm[oi] |= bit)
+        end
+    end
+    fm, sm, vm
+end
+
+"""
+The absorbing layers of a case (DESIGN.md 7.2, A7): cells within `sponge_thickness` reference lengths of a far-field
+face (inlet, outlet, freestream or slip) blend toward the freestream equilibrium after the collision, with the
+configured strength on a quadratic ramp of the depth into the layer. A slip face reflects sound perfectly, so a
+layer in front of it is what lets the start-up transient leave; the layer forces the freestream there, so the body
+must stay well clear of it. Where layers overlap the larger factor applies. Returns the (8, nocts) factors of a
+level, or an (8, 0) matrix when no layer is on (zero strength or thickness, or no far-field face).
+"""
+function sponge_field(cfg::CaseConfig, Lv::OctLevel, ::Type{T}) where T
+    selected = ntuple(f -> cfg.mesh.faces[f] in (:inlet, :outlet, :freestream, :slip), 6)
+    (cfg.sponge_strength > 0 && cfg.sponge_thickness > 0 && any(selected)) || return zeros(T, 8, 0)
+    sp_len = cfg.sponge_thickness * cfg.reference_length; s_max = T(cfg.sponge_strength)
+    field = zeros(T, 8, Lv.nocts)
+    for o in 1:Lv.nocts, k in 1:8
+        Lv.kind[k, o] == K_FLUID || continue
+        off = slot_offset(k); depth = 0.0
+        for a in 1:3
+            x = (Float64(Lv.origin[a, o]) + off[a] + 0.5) * Lv.dx
+            selected[2a] && (depth = max(depth, x - (cfg.mesh.domain[a] - sp_len)))     # the far face of the axis
+            selected[2a - 1] && (depth = max(depth, sp_len - x))                       # the near face
+        end
+        depth > 0 && (field[k, o] = s_max * T((depth / sp_len)^2))
+    end
+    field
 end
 
 "The cut-link CSR of a level spread over the directions: (Q, ncut) tables of q and of the partner flag."
@@ -56,8 +159,7 @@ mutable struct State{T<:AbstractFloat}
     scaling::LatticeScaling
     levels::Vector{LevelState{T}}
     step::Int                # coarse steps completed
-    u_inlet::T               # current inlet speed, lattice units (the same on every level)
-    u_target::T
+    u_inlet::T               # inlet (freestream) speed, lattice units (the same on every level)
     inlet_dir::NTuple{3,T}   # unit vector of the inlet velocity (alpha/beta are applied to the geometry, so +x)
     forces::Vector{Float64}  # last total force (lattice units of the finest level, converted at output): Fx, Fy, Fz
     tri_force::Matrix{Float64}      # (3, ntriangles) per-triangle force, last collection
@@ -134,67 +236,23 @@ function State(mesh::OctMesh, cfg::CaseConfig, ::Type{T}) where {T<:AbstractFloa
         donor_cells, ghost_dix = index_table(Lv.ghost_donor)
         rsrc_cells, restrict_six = index_table(Lv.restrict_src)
         qdir, okdir = cut_direction_tables(Lv)
+        fmask, smask, vmask = lane_masks(Lv, real_octs)
+        scratch = [zeros(T, 8 * (Q + 1)) for _ in chunks]
+        wm_on = cfg.walls.wall_function && !isempty(Lv.cut_slot)
+        wm_n, wm_y, wm_ref, wm_yref, wm_d = wm_on ? wall_model_tables(mesh, Lv, cfg.walls.sampling, T) : (zeros(T, 3, 0), T[], Int32[], T[], zeros(T, 3, 0))
+        sponge = sponge_field(cfg, Lv, T)
+        osponge = BitVector(!isempty(sponge) && any(k -> sponge[k, o] != 0, 1:8) for o in real_octs)
+        donor_groups = group_by_oct(donor_cells; flagged = l > 1 ? (pos -> (s = donor_cells[pos]; mesh.levels[l - 1].kind[slot_k(s), slot_oct(s)] == K_COVERED)) : nothing)
+        rsrc_groups = group_by_oct(rsrc_cells)
+        ghost_groups = group_by_oct(Lv.ghost_slot; flagged = pos -> true)
+        restrict_groups = group_by_oct(Lv.restrict_slot; flagged = pos -> Lv.restrict_cubic[pos])
         push!(levels, LevelState{T}(f, g, u, v, rho, rhob, nu, omega_of(nu), real_octs, chunks, zeros(T, length(Lv.cut_slot)),
                                     donor_cells, ghost_dix, Matrix{T}(undef, 10, length(donor_cells)), rsrc_cells, restrict_six, Matrix{T}(undef, 10, length(rsrc_cells)),
-                                    qdir, okdir))
+                                    qdir, okdir, fmask, smask, sponge, osponge, donor_groups, rsrc_groups, ghost_groups, restrict_groups,
+                                    vmask, scratch, wm_on, wm_n, wm_y, wm_ref, wm_yref, wm_d, zeros(T, 5, wm_on ? length(Lv.cut_slot) : 0)))
     end
     ntri = max(length(mesh.triangles), 1)
-    State{T}(mesh, cfg, sc, levels, 0, zero(T), T(sc.u_lattice), (one(T), zero(T), zero(T)), zeros(3), zeros(3, ntri), [zeros(3, ntri) for _ in 1:nt], 0.0)
-end
-
-"""
-Repair legacy checkpoint populations that already crossed zero before the
-positivity safeguard was active. Work on both time buffers, preserving the
-moments of each repaired tuple. Refuse an unrecoverable rho/velocity state.
-"""
-function repair_state_positivity!(st::State{T}) where T
-    total = 0
-    for (l, Lv) in enumerate(st.mesh.levels)
-        S = st.levels[l]
-        before = POSITIVITY_LIMITED_CELLS[]
-        bad = zeros(Int, Threads.nthreads())
-        Threads.@threads :static for o in 1:Lv.nocts
-            tid = Threads.threadid()
-            @inbounds for k in 1:8
-                kind = Lv.kind[k, o]
-                (kind == K_FLUID || kind == K_GHOST || kind == K_COVERED) || continue
-                for buffer in (S.f, S.g)
-                    needs_repair = false
-                    for i in 1:Q
-                        w = T(WT[i])
-                        if buffer[k, i, o] + w < T(1e-6) * w
-                            needs_repair = true
-                            break
-                        end
-                    end
-                    needs_repair || continue
-                    fs = ntuple(i -> buffer[k, i, o], Val(Q))
-                    rho, ux, uy, uz = macros_shifted(fs)
-                    if !(isfinite(rho) && rho > T(0.2) &&
-                         isfinite(ux) && isfinite(uy) && isfinite(uz) &&
-                         ux*ux + uy*uy + uz*uz < T(0.25))
-                        bad[tid] += 1
-                        continue
-                    end
-                    usq = ux*ux + uy*uy + uz*uz
-                    eq = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
-                    repaired = positive_shifted(fs, eq)
-                    if any(i -> !(isfinite(repaired[i]) && repaired[i] + T(WT[i]) > zero(T)), 1:Q)
-                        bad[tid] += 1
-                        continue
-                    end
-                    for i in 1:Q
-                        buffer[k, i, o] = repaired[i]
-                    end
-                end
-            end
-        end
-        sum(bad) == 0 || error("level $l has $(sum(bad)) unrecoverable checkpoint population tuples")
-        fixed = POSITIVITY_LIMITED_CELLS[] - before
-        total += fixed
-        fixed > 0 && println("[CheckpointRepair] level $l: $fixed population tuples projected to positive equilibrium blend")
-    end
-    total
+    State{T}(mesh, cfg, sc, levels, 0, T(sc.u_lattice), (one(T), zero(T), zero(T)), zeros(3), zeros(3, ntri), [zeros(3, ntri) for _ in 1:nt], 0.0)
 end
 
 """
@@ -228,7 +286,7 @@ function initialise!(st::State{T}, init; nonequilibrium::Bool=true) where T
                 pn = (c * T(2) * d[1][1], c * T(2) * d[2][2], c * T(2) * d[3][3], c * (d[1][2] + d[2][1]), c * (d[1][3] + d[3][1]), c * (d[2][3] + d[3][2]))
                 fs = rebuild(rho, ux, uy, uz, pn, omega)
             else
-                fs = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
+                fs = equilibrium_q19(rho - one(T), rho, ux, uy, uz)
             end
             @inbounds for i in 1:Q
                 S.f[k, i, o] = fs[i]; S.g[k, i, o] = fs[i]
@@ -249,7 +307,7 @@ gradient seven times per active slot; a constant freestream needs neither coordi
 function initialise_uniform!(st::State{T}, rho0::Real, ux0::Real, uy0::Real, uz0::Real) where T
     rho = T(rho0); ux = T(ux0); uy = T(uy0); uz = T(uz0)
     usq = ux * ux + uy * uy + uz * uz
-    fs = ntuple(i -> feq_shifted(i, rho, ux, uy, uz, usq), Val(Q))
+    fs = equilibrium_q19(rho - one(T), rho, ux, uy, uz)        # the form of `rebuild` with no non-equilibrium
     for (l, Lv) in enumerate(st.mesh.levels)
         S = st.levels[l]
         ranges = chunk_ranges_min(Lv.nocts, nthreads(), 256)

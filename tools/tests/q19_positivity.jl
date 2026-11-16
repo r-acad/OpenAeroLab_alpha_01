@@ -31,24 +31,4 @@ end
     @test all(isapprox(G.macros_shifted(repaired)[i], G.macros_shifted(disturbed)[i]; atol=2f-7) for i in 1:4)
 end
 
-@testset "Q19 checkpoint repair" begin
-    spec = G.MeshSpec(domain=(4.0, 4.0, 4.0), periodic=(true, true, true), levels=1, dx_finest=1.0)
-    mesh = G.generate(G.Tri[], spec)
-    cfg = G.test_case_config(spec; nu_lattice=0.01)
-    st = G.State(mesh, cfg, Float32)
-    G.initialise_uniform!(st, 1.0, 0.0, 0.0, 0.0)
-    o = Int(st.levels[1].real_octs[1]); k = 1
-    for buffer in (st.levels[1].f, st.levels[1].g)
-        buffer[k, 1, o] = 0.16f0
-        buffer[k, 2, o] = -0.08f0
-        buffer[k, 3, o] = -0.08f0
-    end
-    before = ntuple(i -> st.levels[1].f[k,i,o], Val(G.Q))
-    repaired = G.repair_state_positivity!(st)
-    after = ntuple(i -> st.levels[1].f[k,i,o], Val(G.Q))
-    @test repaired == 2
-    @test all(st.levels[1].f[k,i,o] + Float32(G.WT[i]) > 0 for i in 1:G.Q)
-    @test all(st.levels[1].g[k,i,o] + Float32(G.WT[i]) > 0 for i in 1:G.Q)
-    @test all(isapprox(G.macros_shifted(after)[i], G.macros_shifted(before)[i]; atol=2f-7) for i in 1:4)
-end
 println("q19_positivity: all tests passed")

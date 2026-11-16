@@ -67,7 +67,12 @@ end
     @test distance≈.01
     @test all(iszero,S.f[k,:,o]) && all(iszero,S.g[k,:,o])
     @test S.rho[k,o]==1 && all(iszero,S.u[k,:,o])
-    @test_throws ErrorException G.refinement_wall_seed!(S,k,o,(7.5,8.5,8.5),1.,bvh,stack)
+    # Farther from the surface the same rest state is returned with its distance; the transfer records such cells as
+    # unresolved-pocket seeds instead of stopping (the 11 Nov 2026 C212 stage ended on that stop).
+    far=G.refinement_wall_seed!(S,k,o,(7.5,8.5,8.5),1.,bvh,stack)
+    @test far≈.3 && far>.25
+    @test S.rho[k,o]==1 && all(iszero,S.u[k,:,o])
+    @test haskey(report,"pocket_rest_seed_cells") && report["pocket_rest_seed_cells"]==0
 end
 
 @testset "refinement startup: visible donors near a closed body" begin
@@ -111,7 +116,7 @@ end
               reference_length_for_meshing: 1.0
               fluid: {density: 1.225, kinematic_viscosity: 0.001, speed_of_sound: 343.0}
               flow: {velocity: 1.0}
-              simulation: {build_only: false, steps: $steps, ramp_steps: 0, output_freq: 999, slice_output_freq: 999}
+              simulation: {build_only: false, steps: $steps, output_freq: 999, slice_output_freq: 999}
             advanced:
               domain: {upstream: 1.0, downstream: 1.0, lateral: 1.0, height: 1.0}
               refinement: {symmetric_analysis: false}
@@ -120,7 +125,7 @@ end
             octree_q19:
               precision: f64
               mesh: {levels: $levels, finest_dx_m: $dx, band_fine: 3, band: 3, wake: {length: 0.0}}
-              numerics: {collision: rr, sgs: none, u_lattice: 0.05}
+              numerics: {hrr_sigma: 1.0, sgs: none, u_lattice: 0.05}
               checkpoint: {every_minutes: 30, keep: 1}
               outputs: {surface_lbmp: false, surface_vtk: false}
             """

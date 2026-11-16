@@ -10,10 +10,9 @@ function check_refinement_start(src::State{T}, dst::State{T}) where T
     a.stl_sha == b.stl_sha && a.stl_scale == b.stl_scale || error("Refinement restart requires the same geometry")
     a.flow == b.flow || error("Refinement restart requires identical flow conditions")
     a.numerics == b.numerics && a.walls == b.walls || error("Refinement restart requires identical numerical and wall settings")
-    a.sponge_thickness == b.sponge_thickness && a.sponge_strength == b.sponge_strength || error("Refinement restart requires identical outlet sponge settings")
+    a.sponge_thickness == b.sponge_thickness && a.sponge_strength == b.sponge_strength || error("Refinement restart requires identical absorbing-layer settings")
     a.reference_length == b.reference_length && a.mass_control == b.mass_control || error("Refinement restart requires the same meshing reference length and mass-control setting")
     a.reference_chord == b.reference_chord && a.reference_area == b.reference_area && a.moment_center == b.moment_center || error("Refinement restart requires the same force reference dimensions")
-    b.outputs.ramp_steps == a.outputs.ramp_steps || error("Refinement restart requires the same inlet ramp")
     nlevels(dst.mesh) > nlevels(src.mesh) || error("The target must have additional refinement levels")
     src.mesh.levels[1].dx == dst.mesh.levels[1].dx || error("Refinement restart requires the same coarse cell size")
     src.scaling.velocity_scale == dst.scaling.velocity_scale || error("Refinement restart requires the same velocity scale")
@@ -49,10 +48,14 @@ end
     true
 end
 
-"Seed a newly exposed near-wall cell only when the real surface is sufficiently close."
+"""Start a newly exposed cell that has no visible source donor at rest, reference density, and return its distance to
+the real surface. Within a quarter of a target cell of the surface this is the no-slip wall state. Farther away the cell
+belongs to a pocket the coarser source mesh did not resolve as fluid (open or non-manifold geometry); the rest state is
+then the only available starting guess. The caller counts and records the two kinds separately and bounds their total.
+(Until 14 Nov 2026 the second kind stopped the run: the 9.6 mm C212 stage of 11 Nov ended that way.)"""
 function refinement_wall_seed!(S::LevelState{T},k::Int,o::Int,p::V3,dx::Float64,bvh::BVH,stack::Vector{Int32}) where T
     distance=nearest_distance(bvh,p,stack)
-    isfinite(distance) && distance <= 0.25dx || error("No visible source donor within eight cells, and target is not near a real surface: $p")
+    isfinite(distance) || error("No visible source donor within eight cells, and no surface distance at the target: $p")
     @inbounds begin
         for i in 1:Q;S.f[k,i,o]=zero(T);S.g[k,i,o]=zero(T);end
         for a in 1:3;S.u[k,a,o]=zero(T);S.v[k,a,o]=zero(T);end
@@ -79,6 +82,8 @@ function transfer_refined!(dst::State{T}, src::State{T}) where T
     fallback_distances = zeros(Float64,Threads.nthreads())
     wall_seed_points = [V3[] for _ in 1:Threads.nthreads()]
     wall_seed_distances = zeros(Float64,Threads.nthreads())
+    pocket_seed_points = [V3[] for _ in 1:Threads.nthreads()]
+    pocket_seed_distances = zeros(Float64,Threads.nthreads())
     for (l,L) in enumerate(dst.mesh.levels)
         S = dst.levels[l]
         @threads :static for t in eachindex(S.chunks)
@@ -114,8 +119,14 @@ function transfer_refined!(dst::State{T}, src::State{T}) where T
                             # at reference-density no-slip equilibrium. This is
                             # a recorded initial guess, not a measured pressure.
                             distance=refinement_wall_seed!(S,k,o,p,L.dx,bvh,stack)
-                            push!(wall_seed_points[t],p)
-                            wall_seed_distances[t]=max(wall_seed_distances[t],distance)
+                            if distance <= 0.25L.dx
+                                push!(wall_seed_points[t],p)
+                                wall_seed_distances[t]=max(wall_seed_distances[t],distance)
+                            else
+                                # an unresolved pocket of the source mesh: rest state, recorded separately
+                                push!(pocket_seed_points[t],p)
+                                pocket_seed_distances[t]=max(pocket_seed_distances[t],distance)
+                            end
                             continue
                         end
                         sl,ss,distance = donor
@@ -151,9 +162,9 @@ function transfer_refined!(dst::State{T}, src::State{T}) where T
             fallback_distances[t] = max(fallback_distances[t],local_max)
         end
     end
-    seeds=sum(length,wall_seed_points)
+    seeds=sum(length,wall_seed_points);pockets=sum(length,pocket_seed_points)
     seed_limit=max(64,ceil(Int,1e-4*dst.mesh.counts["fluid_total"]))
-    seeds <= seed_limit || error("Refinement would initialize $seeds cells without a donor, exceeding the limit $seed_limit")
+    seeds+pockets <= seed_limit || error("Refinement would initialize $(seeds+pockets) cells without a donor ($seeds at the wall, $pockets in unresolved pockets), exceeding the limit $seed_limit")
     nlevels(dst.mesh)>1 && couple_initial!(dst)
     dst.step=src.step; dst.u_inlet=src.u_inlet
     dst.mass0=total_mass(dst)
@@ -173,6 +184,9 @@ function transfer_refined!(dst::State{T}, src::State{T}) where T
         "visible_fallback_cells"=>sum(fallback_counts),"expanded_search_cells"=>sum(expanded_counts),"cross_surface_donors_rejected"=>sum(crossed_counts),"maximum_fallback_distance_m"=>maximum(fallback_distances),
         "wall_equilibrium_seed_cells"=>seeds,"wall_equilibrium_seed_max_surface_distance_m"=>maximum(wall_seed_distances),
         "wall_equilibrium_seed_positions_m"=>[collect(p) for points in wall_seed_points for p in points],
+        "pocket_rest_seed_cells"=>pockets,"pocket_rest_seed_max_surface_distance_m"=>maximum(pocket_seed_distances),
+        "pocket_rest_seed_positions_m"=>[collect(p) for points in pocket_seed_points for p in points],
+        "pocket_seed_note"=>"Cells with no visible donor within eight source cells and farther than one quarter of a target cell from the surface lie in pockets the source mesh did not resolve as fluid; they start at rest and reference density. Their coordinates are recorded; the total of both seed kinds is limited.",
         "rho_min"=>rmin,"rho_max"=>rmax,"u_max_lattice"=>umax,
         "note"=>"Startup transfer is not exactly conservative. Geometry voxelization changes fluid volume; no density correction was applied.",
         "history_note"=>"Both population buffers start from the current source state. Prior half-time history is not available on the new mesh; a restart transient is expected.",
@@ -184,7 +198,6 @@ function refinement_source_mesh(cfg::CaseConfig;role::AbstractString="source")
     for path in (joinpath(cfg.dir,"mesh.oct"),joinpath(dirname(cfg.dir),"mesh","mesh.oct"))
         isfile(path) || continue
         mesh=read_mesh(path)
-        _require_current_cavity_policy(cfg,mesh)
         mesh.config_sha == cfg.config_sha && mesh.stl_sha == cfg.stl_sha || continue
         return mesh,path
     end

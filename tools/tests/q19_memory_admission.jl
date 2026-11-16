@@ -9,7 +9,7 @@ function aircraft_request(dx=.0125;levels=7)
         "solver"=>"q19_octree", "surface_dx"=>dx,"levels"=>levels,
         "bounds"=>Dict("min"=>[0.,-10.,-3.],"max"=>[17.,10.,3.]),
         "surface_area_m2"=>420.,
-        "domain"=>Dict{String,Any}("boundary"=>"symmetry","symmetry_center_y"=>true,
+        "domain"=>Dict{String,Any}("boundary"=>"symmetry","symmetry_placement"=>"center",
             "upstream"=>29.9,"downstream"=>29.9,"lateral"=>15.6,"height"=>22.6),
         "octree"=>A._q19_settings(Dict{String,Any}()))
     case
@@ -35,10 +35,4 @@ end
     gpu=deepcopy(case);gpu["solver"]="main"
     @test !A._mesh_limits(gpu;available_ram_bytes=110e9)["valid"]
     @test !haskey(A._mesh_limits(gpu),"build_ram_budget_gb")
-    # Old symmetry meshes must be rebuilt before trusting their smaller RAM count.
-    @test_throws ArgumentError A._require_current_q19_mesh(case,Dict("octree"=>Dict()))
-    @test A._require_current_q19_mesh(case,Dict("octree"=>Dict("symmetry_boundary_refinement"=>1)))===nothing
-    @test A._require_current_q19_mesh(gpu,Dict())===nothing
-    free=deepcopy(case);free["domain"]["boundary"]="free_air"
-    @test A._require_current_q19_mesh(free,Dict())===nothing
 end

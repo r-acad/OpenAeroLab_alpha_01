@@ -14,21 +14,18 @@ Base.@kwdef struct FlowSpec
 end
 
 Base.@kwdef struct Numerics
-    collision::Symbol = :rr           # :rr | :hrr
-    hrr_sigma::Float64 = 0.98
+    hrr_sigma::Float64 = 0.98         # share of the measured second-order moments in the hybrid recursive-regularised collision; 1 = none from velocity gradients
     sgs::Symbol = :wale               # :wale | :smagorinsky | :vreman | :none
     c_wale::Float64 = 0.5
     c_smagorinsky::Float64 = 0.1
     u_lattice::Float64 = 0.08
-    temporal::Symbol = :linear        # :linear | :quadratic
     body_force::NTuple{3,Float64} = (0.0, 0.0, 0.0)   # uniform force per unit volume, lattice units of the finest level (channel tests)
 end
 
 Base.@kwdef struct WallSpec
-    scheme::Symbol = :bouzidi         # :bouzidi | :bounce_back
     wall_function::Bool = false
-    law::Symbol = :reichardt          # :reichardt | :spalding | :werner_wengle
     sampling::Symbol = :normal_1      # :cell | :normal_1 | :normal_2
+    filter_steps::Int = 50            # exponential time average of the wall-model outputs, in steps of the cell's level
     pressure_gradient::Bool = false
 end
 
@@ -40,7 +37,6 @@ end
 
 Base.@kwdef struct OutputSpec
     steps::Int = 1000                 # coarse steps
-    ramp_steps::Int = 100
     output_every::Int = 1000          # volume output cadence, coarse steps
     slice_every::Int = 100
     startup_slices::Bool = false     # optional step-zero initialized fields, never converged results
@@ -48,7 +44,6 @@ Base.@kwdef struct OutputSpec
     diagnostics_every::Int = 100
     planes::Vector{Plane} = Plane[]
     export_fields::Vector{String} = ["density", "pressure", "u", "v", "w", "velocity_magnitude", "vorticity"]
-    slice_png::Bool = false
     volume_vtk::Bool = false
     surface_lbmp::Bool = true
     wall_samples::Bool = true         # local wall-cell/facet samples; static geometry + pressure frames
@@ -66,8 +61,6 @@ struct CaseConfig
     stl_sha::String
     config_sha::String
     precision::DataType
-    threads::Int
-    pin_threads::Bool
     flow::FlowSpec
     reference_chord::Float64
     reference_area::Float64
@@ -77,7 +70,7 @@ struct CaseConfig
     offset::V3
     numerics::Numerics
     walls::WallSpec
-    sponge_thickness::Float64         # fraction of the reference length, at the outlet
+    sponge_thickness::Float64         # depth of the absorbing layers, as a fraction of the reference length
     sponge_strength::Float64
     mass_control::Bool
     outputs::OutputSpec
@@ -174,7 +167,7 @@ function _configuration_fingerprint(raw::AbstractDict)
     setup=deepcopy(raw)
     simulation=_get(setup,"basic","simulation")
     if simulation isa AbstractDict
-        for key in ("build_only","steps","output_freq","slice_output_freq","ramp_steps")
+        for key in ("build_only","steps","output_freq","slice_output_freq")
             delete!(simulation,key)
         end
     end
@@ -203,11 +196,11 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
     isfile(stl_path) || error("STL not found: $stl_path")
     stl_scale = _f(_get(raw, "basic", "stl_scale"), 1.0)
     lo, hi, ntri = stl_extent(stl_path, stl_scale)
-    # mesh resolution: octree_q19.mesh first, else the app's surface_resolution against the meshing reference length
     ref_len = _f(_get(raw, "basic", "reference_length_for_meshing"), hi[1] - lo[1])
-    levels = _i(_get(q, "mesh", "levels"), _i(_get(raw, "basic", "num_levels"), 4))
+    levels = _i(_get(q, "mesh", "levels"), 4)
     dxf = _get(q, "mesh", "finest_dx_m")
-    dx_finest = dxf === nothing ? ref_len / max(1, _i(_get(raw, "basic", "surface_resolution"), 64)) : Float64(dxf)
+    dxf === nothing && error("octree_q19.mesh.finest_dx_m is required")
+    dx_finest = Float64(dxf)
     1 <= levels <= 12 || error("levels must be in 1..12")
     dx_finest > 0 || error("finest dx must be positive")
     sym = _get(raw, "advanced", "refinement", "symmetric_analysis")
@@ -259,16 +252,16 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
                     sound=_f(_get(raw, "basic", "fluid", "speed_of_sound"), 343.0), velocity=_f(_get(raw, "basic", "flow", "velocity"), 30.0),
                     alpha_deg=_f(_get(raw, "basic", "alpha"), 0.0), beta_deg=_f(_get(raw, "basic", "beta"), 0.0))
     flow.velocity > 0 || error("basic.flow.velocity must be positive")
-    numerics = Numerics(collision=_sym(_get(q, "numerics", "collision"), :rr), hrr_sigma=_f(_get(q, "numerics", "hrr_sigma"), 0.98),
+    numerics = Numerics(hrr_sigma=_f(_get(q, "numerics", "hrr_sigma"), 0.98),
                         sgs=_sym(_get(q, "numerics", "sgs"), :wale), c_wale=_f(_get(q, "numerics", "c_wale"), 0.5), c_smagorinsky=_f(_get(q, "numerics", "c_smagorinsky"), 0.1),
-                        u_lattice=_f(_get(q, "numerics", "u_lattice"), _f(_get(raw, "advanced", "numerics", "u_lattice"), 0.08)),
-                        temporal=_sym(_get(q, "numerics", "temporal_interpolation"), :linear))
-    numerics.collision in (:rr, :hrr) || error("numerics.collision must be rr or hrr")
+                        u_lattice=_f(_get(q, "numerics", "u_lattice"), 0.08))
+    0.5 <= numerics.hrr_sigma <= 1 || error("numerics.hrr_sigma must be in [0.5, 1]")
     numerics.sgs in (:wale, :smagorinsky, :vreman, :none) || error("numerics.sgs must be wale, smagorinsky, vreman or none")
     0 < numerics.u_lattice <= 0.12 || error("numerics.u_lattice must be in (0, 0.12]")
     wf = _get(q, "walls", "wall_function"; default=Dict{String,Any}())
-    walls = WallSpec(scheme=_sym(_get(q, "walls", "scheme"), :bouzidi), wall_function=_b(_get(wf, "enabled"), false), law=_sym(_get(wf, "law"), :reichardt),
-                     sampling=_sym(_get(wf, "sampling"), :normal_1), pressure_gradient=_b(_get(wf, "pressure_gradient"), false))
+    walls = WallSpec(wall_function=_b(_get(wf, "enabled"), false), sampling=_sym(_get(wf, "sampling"), :normal_1), filter_steps=max(1, _i(_get(wf, "filter_steps"), 50)),
+                     pressure_gradient=_b(_get(wf, "pressure_gradient"), false))
+    walls.sampling in (:cell, :normal_1, :normal_2) || error("walls.wall_function.sampling must be cell, normal_1 or normal_2")
     steps = _i(_get(raw, "basic", "simulation", "steps"), 1000)
     planes = Plane[]
     for p in (_get(raw, "advanced", "slice", "planes"; default=Any[]))
@@ -284,12 +277,12 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
             push!(planes, Plane(axis, pos, "$(pl)_$(replace(@sprintf("%.6g", pos), "." => "p"))"))
         end
     end
-    outputs = OutputSpec(steps=steps, ramp_steps=_i(_get(raw, "basic", "simulation", "ramp_steps"), min(100, steps ÷ 10)),
+    outputs = OutputSpec(steps=steps,
                          output_every=_i(_get(raw, "basic", "simulation", "output_freq"), steps + 1), slice_every=_i(_get(raw, "basic", "simulation", "slice_output_freq"), max(1, steps ÷ 10)),
                          startup_slices=_b(_get(raw,"basic","simulation","output_startup_slices"),false),
                          forces_every=_i(_get(raw, "advanced", "forces", "output_freq"), 10), diagnostics_every=_i(_get(raw, "advanced", "diagnostics", "freq"), 100),
                          planes=planes, export_fields=String.(_get(raw, "advanced", "slice", "export_fields"; default=["density", "pressure", "u", "v", "w", "velocity_magnitude", "vorticity"])),
-                         slice_png=_b(_get(raw, "advanced", "slice", "png"), false), volume_vtk=_i(_get(raw, "basic", "simulation", "output_freq"), steps + 1) <= steps,
+                         volume_vtk=_i(_get(raw, "basic", "simulation", "output_freq"), steps + 1) <= steps,
                          surface_lbmp=_b(_get(q,"outputs","surface_lbmp"),true), wall_samples=_b(_get(q,"outputs","wall_samples"),true),
                          surface_vtk=_b(_get(q,"outputs","surface_vtk"),false),
                          averaging_start_ctu=_f(_get(q, "outputs", "averaging_start_ctu"), 0.0),
@@ -299,7 +292,7 @@ function load_case(dir::AbstractString; build_only::Union{Nothing,Bool}=nothing)
     precision = lowercase(String(something(_get(q, "precision"), "f32"))) == "f64" ? Float64 : Float32
     bo = build_only === nothing ? _b(_get(raw, "basic", "simulation", "build_only"), false) : build_only
     CaseConfig(String(dir), basename(normpath(dir)), stl_path, stl_scale, bytes2hex(sha256(read(stl_path))), config_sha,
-               precision, _i(_get(q, "threads"), 0), _b(_get(q, "pin_threads"), false), flow,
+               precision, flow,
                _f(_get(raw, "basic", "reference_chord"), ref_len), _f(_get(raw, "basic", "reference_area_of_full_model"), (hi[2] - lo[2]) * (hi[3] - lo[3])), ref_len, moment,
                mesh, offset, numerics, walls,
                _f(_get(raw, "advanced", "domain", "sponge_thickness"), 0.2), _f(_get(q, "sponge", "strength"), 0.05), _b(_get(q, "mass_control"), false),
@@ -310,15 +303,15 @@ end
 A configuration for tests and synthetic cases: the mesh spec, a lattice viscosity of the finest level (physical
 values are derived so that `lattice_scaling` returns it), numerics and walls.
 """
-function test_case_config(spec::MeshSpec; nu_lattice::Float64=0.01, u_lattice::Float64=0.08, velocity::Float64=1.0, collision::Symbol=:rr,
-                          sgs::Symbol=:none, walls::WallSpec=WallSpec(), steps::Int=100, ramp_steps::Int=0, precision::DataType=Float32, name::String="test",
+function test_case_config(spec::MeshSpec; nu_lattice::Float64=0.01, u_lattice::Float64=0.08, velocity::Float64=1.0, hrr_sigma::Float64=1.0,
+                          sgs::Symbol=:none, walls::WallSpec=WallSpec(), steps::Int=100, precision::DataType=Float32, name::String="test",
                           body_force::NTuple{3,Float64}=(0.0, 0.0, 0.0))
     nu_phys = nu_lattice * velocity * spec.dx_finest / u_lattice
     scratch=joinpath(get(ENV,"LUDWIG_PRIVATE_ROOT",normpath(joinpath(@__DIR__,"..","..","..","..","02_PRIVATE_PROJECT_DEVELOPMENT"))),"TEMP_DELETEABLE","q19_tests");mkpath(scratch)
-    CaseConfig(mktempdir(scratch), name, "", 1.0, "", "", precision, 0, false,
+    CaseConfig(mktempdir(scratch), name, "", 1.0, "", "", precision,
                FlowSpec(nu=nu_phys, velocity=velocity), spec.domain[1], spec.domain[2] * spec.domain[3], spec.domain[1], (0.0, 0.0, 0.0),
-               spec, (0.0, 0.0, 0.0), Numerics(collision=collision, sgs=sgs, u_lattice=u_lattice, body_force=body_force), walls, 0.0, 0.0, false,
-               OutputSpec(steps=steps, ramp_steps=ramp_steps), false, Dict{String,Any}())
+               spec, (0.0, 0.0, 0.0), Numerics(hrr_sigma=hrr_sigma, sgs=sgs, u_lattice=u_lattice, body_force=body_force), walls, 0.0, 0.0, false,
+               OutputSpec(steps=steps), false, Dict{String,Any}())
 end
 
 "Lattice scaling of the finest level: dt, velocity scale, viscosity and tau per level."

@@ -7,10 +7,10 @@ const G = OctreeQ19
 const ONLY = get(ENV, "Q19_TEST_ONLY", "")          # run only the testsets whose name contains this
 want(name) = isempty(ONLY) || occursin(ONLY, name)
 
-function periodic_box(n::Int; dx=1.0, nu=0.01, sgs=:none, precision=Float32, collision=:rr)
+function periodic_box(n::Int; dx=1.0, nu=0.01, sgs=:none, precision=Float32, sigma=1.0)
     spec = G.MeshSpec(domain=(n * dx, n * dx, n * dx), periodic=(true, true, true), levels=1, dx_finest=dx)
     mesh = G.generate(G.Tri[], spec)
-    cfg = G.test_case_config(spec; nu_lattice=nu, sgs=sgs, precision=precision, collision=collision)
+    cfg = G.test_case_config(spec; nu_lattice=nu, sgs=sgs, precision=precision, hrr_sigma=sigma)
     mesh, cfg, G.State(mesh, cfg, precision)
 end
 
@@ -38,8 +38,8 @@ want("G0.3") && @testset "G0.3 rest state" begin
 end
 
 want("G0.4") && @testset "G0.4 conservation, RR and HRR, FP32 and FP64" begin
-    for (precision, tol) in ((Float32, 2e-6), (Float64, 1e-12)), collision in (:rr, :hrr)
-        mesh, cfg, st = periodic_box(16; precision=precision, collision=collision)
+    for (precision, tol) in ((Float32, 2e-6), (Float64, 1e-12)), sigma in (1.0, 0.98)
+        mesh, cfg, st = periodic_box(16; precision=precision, sigma=sigma)
         G.initialise!(st, p -> (1.0 + 0.01 * sin(2π * p[1] / 16) * cos(2π * p[3] / 16), 0.03 * sin(2π * p[2] / 16), 0.02 * cos(2π * p[3] / 16), 0.01 * sin(2π * p[1] / 16)))
         m0 = G.total_mass(st); p0 = G.total_momentum(st)
         for _ in 1:100; G.advance!(st); end

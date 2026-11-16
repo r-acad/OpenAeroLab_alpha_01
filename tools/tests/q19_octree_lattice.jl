@@ -59,21 +59,21 @@ end
             @test sum(w[i] * c[i][a] * c[i][b] * c[i][cc] for i in 1:19) ≈ 0 atol=1e-15
         end
     end
-    # equilibrium moments: density and momentum exact, stress to second order
+    # equilibrium moments: density and momentum exact, no non-equilibrium stress (the solver's shifted populations)
     rho = 1.07; u = (0.05, -0.03, 0.02); usq = sum(abs2, u)
-    f = ntuple(i -> L.feq(i, rho, u..., usq), 19)
-    r, ux, uy, uz = L.macros(f)
-    @test r ≈ rho atol=1e-14
-    @test (ux, uy, uz) == (u...,) || all(isapprox.((ux, uy, uz), u; atol=1e-14))
-    p = L.pi_neq(f, rho, u...)
-    @test all(abs.(p) .< 1e-14)
-    # the regularised non-equilibrium of a pure a2 state reproduces a2 (G0.5 projection consistency)
+    f = ntuple(i -> L.feq(i, rho, u..., usq) - w[i], 19)
+    @test all(isapprox(f[i], L.equilibrium_q19(rho - 1, rho, u...)[i]; atol=1e-15) for i in 1:19)
+    drho, mx, my, mz, P = L.moments_q19(f)
+    @test drho ≈ rho - 1 atol=1e-14
+    @test all(isapprox.((mx, my, mz) ./ rho, u; atol=1e-14))
+    @test all(abs.(L.pineq_q19(drho, rho, u..., P)) .< 1e-14)
+    # the regularised non-equilibrium of a pure a2 state reproduces a2 (G0.5 projection consistency) and carries
+    # neither mass nor momentum
     a2 = (0.01, -0.004, -0.006, 0.003, -0.002, 0.001)
-    fneq = ntuple(i -> L.fneq_regularised(i, a2, 0.0, 0.0, 0.0), 19)
-    g = ntuple(i -> f[i] + fneq[i], 19)
-    p2 = L.pi_neq(g, rho, u...)
-    @test all(isapprox.(p2, a2; atol=1e-12))
-    @test sum(fneq) ≈ 0 atol=1e-15
-    @test all(abs(sum(fneq[i] * c[i][a] for i in 1:19)) < 1e-15 for a in 1:3)
+    g = L.populations_q19(rho - 1, rho, u..., a2, 1.0)
+    d2, m2x, m2y, m2z, P2 = L.moments_q19(g)
+    @test all(isapprox.(L.pineq_q19(d2, rho, u..., P2), a2; atol=1e-12))
+    @test d2 ≈ drho atol=1e-15
+    @test all(isapprox.((m2x, m2y, m2z), (mx, my, mz); atol=1e-15))
 end
 println("q19_octree_lattice: all tests passed")

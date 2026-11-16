@@ -86,8 +86,11 @@ carry the total and the `_v` columns are zero, and the header says so in the sol
 function write_forces!(h::Histories, st::State, F::Vector{Float64}, M::Vector{Float64}, coefficients::Vector{Float64})
     sc = st.scaling; L = nlevels(st.mesh)
     t_phys = st.step * sc.dt_finest * 2.0^(L - 1)
-    h.n_avg += 1; h.sums .+= coefficients[1:9]
-    means = h.sums ./ h.n_avg
+    # the running means start `averaging_start_ctu` chord flow times into the run (octree_q19.outputs)
+    if t_phys * st.cfg.flow.velocity / st.cfg.reference_chord >= st.cfg.outputs.averaging_start_ctu
+        h.n_avg += 1; h.sums .+= coefficients[1:9]
+    end
+    means = h.n_avg > 0 ? h.sums ./ h.n_avg : zeros(9)
     f(x) = @sprintf("%.9g", x)
     println(h.forces, join(vcat([string(st.step), f(t_phys), f(st.u_inlet * sc.velocity_scale)], f.(F), f.(F), f.(zeros(3)), f.(M), f.(coefficients), [string(h.n_avg)], f.(means)), ","))
     flush(h.forces)

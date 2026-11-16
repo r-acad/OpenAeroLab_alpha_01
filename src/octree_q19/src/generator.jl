@@ -818,7 +818,6 @@ function generate(tri_input::Vector{Tri}, spec::MeshSpec; offset::V3=(0.0, 0.0, 
     # ---- 6. counts
     counts = Dict{String,Any}("levels" => L, "dx" => dxs, "domain_m" => collect(domain), "requested_domain_m" => collect(spec.domain),
         "root_cells" => collect(n1), "triangles" => length(tri_orig), "triangles_with_periodic_copies" => length(tri), "band_fine" => spec.band_fine, "band" => spec.band,
-        "symmetry_boundary_refinement" => 1, "cavity_seal_policy_version" => 2,
         "surface_level" => spec.surface_level, "wake_length" => spec.wake_length, "wake_level" => wake_level,
         "distance_queries" => sum(nquery), "timings_s" => timings, "reports" => reports, "seconds" => time() - t_start)
     per = Dict{String,Any}[]

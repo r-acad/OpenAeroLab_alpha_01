@@ -26,7 +26,6 @@ kind_at(mesh,p) = (ls=G.locate_leaf(mesh,p); @assert ls[1]>0; mesh.levels[ls[1]]
     mesh=G.generate(PANELS,G.MeshSpec(domain=(4.,4.,4.),levels=1,dx_finest=.125,band_fine=4,band=3,seal_cavities=true))
     @test kind_at(mesh,P)==G.K_FLUID
     @test mesh.counts["reports"]["cavity_unbracketed_parity_cells"]>0
-    @test mesh.counts["cavity_seal_policy_version"]==2
 end
 
 @testset "Open cavity with independent enclosing surfaces remains sealed" begin

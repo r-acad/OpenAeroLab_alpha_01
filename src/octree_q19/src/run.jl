@@ -1,5 +1,5 @@
 # Command line, case dispatch and the time loop.
-#   julia --project=src/octree_q19 src/octree_q19/main.jl --case <dir> [--build-only] [--resume | --from-case <dir>] [--hrr-sigma <0..1>]
+#   julia --project=src/octree_q19 src/octree_q19/main.jl --case <dir> [--build-only] [--resume | --from-case <dir>]
 # The case directory holds config.yaml and the STL; outputs go to <dir>/RESULTS as for the existing solver.
 
 "Advance the state by one coarse step: the recursive step over all levels; forces in coarse-lattice units when collected."
@@ -57,13 +57,6 @@ function case_mesh(cfg::CaseConfig)
         isfile(candidate) || continue
         m = try read_mesh(candidate) catch e; println("[Run] $(candidate): $(sprint(showerror, e)); rebuilding"); nothing end
         m === nothing && continue
-        # Fail before any cache mismatch triggers a rebuild of the user's mesh.
-        _require_current_cavity_policy(cfg,m)
-        current_symmetry = !(:symmetry in cfg.mesh.faces) || get(m.counts,"symmetry_boundary_refinement",0)>=1
-        if !current_symmetry
-            println("[Run] mesh $(candidate) predates refinement at symmetry faces; rebuilding")
-            continue
-        end
         if m.config_sha == cfg.config_sha && m.stl_sha == cfg.stl_sha
             println("[Run] mesh $(candidate) matches the case (config and STL hashes)")
             return m
@@ -73,45 +66,16 @@ function case_mesh(cfg::CaseConfig)
     build_only_case(cfg)
 end
 
-"Do not run or overwrite a cavity-sealed mesh produced by an obsolete classifier."
-function _require_current_cavity_policy(cfg,mesh)
-    version = get(mesh.counts,"cavity_seal_policy_version",0)
-    if cfg.mesh.seal_cavities && !(version isa Integer && !(version isa Bool) && version >= 2)
-        error("This cavity-sealed mesh predates the corrected open-geometry classification. Create a new mesh before running; the existing mesh and checkpoints were not changed.")
-    end
-    nothing
-end
-
-"Reject advertised numerical settings that do not yet change the D3Q19 algorithm."
-function _require_implemented_numerics(cfg)
-    cfg.walls.wall_function && throw(ArgumentError("D3Q19 wall functions are not implemented in the time step; disable wall_function before running. The available wall boundary is resolved Bouzidi or bounce-back."))
-    cfg.numerics.temporal == :linear || throw(ArgumentError("D3Q19 currently implements only linear AMR temporal interpolation; select linear before running."))
-    nothing
-end
-
-"Explicitly recorded collision override for an existing mesh/checkpoint; all physical scaling remains identical."
-function runtime_hrr_case(cfg::CaseConfig, sigma::Real)
-    isfinite(sigma) && 0 <= sigma <= 1 || throw(ArgumentError("--hrr-sigma must be finite and in [0,1]"))
-    n = cfg.numerics
-    adjusted = Numerics(collision=:hrr, hrr_sigma=Float64(sigma), sgs=n.sgs,
-        c_wale=n.c_wale, c_smagorinsky=n.c_smagorinsky, u_lattice=n.u_lattice,
-        temporal=n.temporal, body_force=n.body_force)
-    CaseConfig(ntuple(i -> fieldname(CaseConfig,i) == :numerics ? adjusted : getfield(cfg,i),
-        fieldcount(CaseConfig))...)
-end
-
 """
-Run a case: the time loop over coarse steps with the inlet ramp, forces every `forces_every` steps, histories,
+Run a case: the time loop over coarse steps from a uniform freestream start, forces every `forces_every` steps, histories,
 field planes, surface and volume outputs, periodic checkpoints, and a final summary. `resume` restarts from the
 latest checkpoint of RESULTS/checkpoints. `from_case` starts on a separately
 built, finer mesh from another completed case's final checkpoint.
 """
-function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union{Nothing,Float64}=nothing, from_case::Union{Nothing,String}=nothing,
+function run_case(cfg::CaseConfig; resume::Bool=false, from_case::Union{Nothing,String}=nothing,
                   expected_checkpoint::Union{Nothing,String}=nothing, expected_checkpoint_bytes::Union{Nothing,Int}=nothing,
                   expected_checkpoint_mtime::Union{Nothing,Float64}=nothing)
-    _require_implemented_numerics(cfg)
     resume && from_case !== nothing && error("Choose either --resume or --from-case, not both")
-    hrr_sigma_override !== nothing && from_case !== nothing && error("A refinement restart cannot change collision settings")
     identity_count=count(!isnothing,(expected_checkpoint,expected_checkpoint_bytes,expected_checkpoint_mtime))
     identity_count in (0,3) || error("Checkpoint identity requires path, size and modification time together")
     identity_count == 0 || from_case !== nothing || error("Checkpoint identity requires --from-case")
@@ -130,8 +94,6 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
     # A refinement restart must never trigger case_mesh's automatic rebuild,
     # which could overwrite a user-supplied mesh before validation.
     mesh = from_case === nothing ? case_mesh(cfg) : first(refinement_source_mesh(cfg; role="target"))
-    source_collision = cfg.numerics.collision
-    hrr_sigma_override === nothing || (cfg = runtime_hrr_case(cfg, hrr_sigma_override))
     sc = lattice_scaling(cfg)
     L = nlevels(mesh)
     W = sum(p["fluid"] * 2^(p["level"] - 1) for p in mesh.counts["per_level"])
@@ -140,8 +102,7 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
     flush(stdout)
     if from_case === nothing
         st = State(mesh, cfg, cfg.precision)
-        at_rest = cfg.outputs.ramp_steps > 0
-        initialise_uniform!(st, 1.0, at_rest ? 0.0 : sc.u_lattice, 0.0, 0.0)
+        initialise_uniform!(st, 1.0, sc.u_lattice, 0.0, 0.0)
     else
         println("[Refinement] Loading the completed source stage and transferring its state; this startup is not exactly conservative.");flush(stdout)
         st,transfer_report = refinement_start(cfg,mesh,from_case;
@@ -156,20 +117,11 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
     if resume
         s = resume_checkpoint!(st, out, h)
         s === nothing ? println("[Run] no checkpoint to resume; starting from step 0") : println("[Run] resumed at step $s")
-        s === nothing || println("[Run] repaired $(repair_state_positivity!(st)) pre-existing non-positive checkpoint tuples")
-    end
-    if hrr_sigma_override !== nothing
-        receipt = joinpath(out, @sprintf("runtime_numerics_from_%09d.toml", st.step))
-        open(receipt, "w") do io
-            TOML.print(io, Dict("starting_step"=>st.step,"source_config_sha256"=>cfg.config_sha,
-                "source_collision"=>String(source_collision),"effective_collision"=>"hrr",
-                "hrr_sigma"=>hrr_sigma_override,"stl_sha256"=>cfg.stl_sha,
-                "note"=>"Runtime collision override only; mesh, checkpoint, physical scaling and output cadence unchanged."))
-        end
-        println("[Run] runtime collision override: HRR sigma=$(hrr_sigma_override); receipt $receipt")
-        flush(stdout)
     end
     sampler = field_sampler(st)
+    wm0 = wall_model_summary(st)
+    wm0 === nothing || println(@sprintf("[Walls] wall function on (Reichardt%s, sampling %s, filter %d steps): level %d has %d cut cells, %d with a model (%d sample away from the wall cell)",
+            cfg.walls.pressure_gradient ? " with the adverse-pressure-gradient term" : "", cfg.walls.sampling, cfg.walls.filter_steps, wm0.level, wm0.cut_cells, wm0.model_cells, wm0.sampled_away))
     steps = cfg.outputs.steps; o = cfg.outputs
     tri_factor = force_factor(st)
     F = zeros(3); M = zeros(3); coeffs = zeros(12)
@@ -181,7 +133,6 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
         flush(stdout)
     end
     while st.step < steps
-        ramp_inlet!(st)
         step = st.step + 1
         collect = step==1 || step % o.forces_every == 0 || step == steps
         advance!(st; collect=collect)
@@ -228,20 +179,20 @@ function run_case(cfg::CaseConfig; resume::Bool=false, hrr_sigma_override::Union
         "wall_seconds" => time() - t_start, "levels" => L, "fluid_cells" => mesh.counts["fluid_total"], "work_per_step" => W,
         "Cd" => coeffs[1], "Cl" => coeffs[2], "Cs" => coeffs[3], "Cd_mean" => h.n_avg > 0 ? h.sums[1] / h.n_avg : 0.0,
         "Cl_mean" => h.n_avg > 0 ? h.sums[2] / h.n_avg : 0.0, "written_utc" => Dates.format(Dates.now(Dates.UTC), "yyyy-mm-ddTHH:MM:SS") * "Z")
+    wm1 = wall_model_summary(st)
+    if wm1 !== nothing
+        summary["wall_function"] = Dict{String,Any}("law" => "reichardt", "pressure_gradient" => cfg.walls.pressure_gradient, "sampling" => String(cfg.walls.sampling), "filter_steps" => cfg.walls.filter_steps,
+            "level" => wm1.level, "cut_cells" => wm1.cut_cells, "model_cells" => wm1.model_cells, "friction_cells" => wm1.friction_cells,
+            "yplus_q10" => wm1.yplus_q10, "yplus_median" => wm1.yplus_median, "yplus_q90" => wm1.yplus_q90)
+        println(@sprintf("[Walls] finest wall cells at the end: y+ %.0f / %.0f / %.0f (10 %%, median, 90 %%) over %d cells with friction; %d without (at rest or separated)", wm1.yplus_q10, wm1.yplus_median, wm1.yplus_q90, wm1.friction_cells, wm1.model_cells - wm1.friction_cells))
+    end
     open(joinpath(out, "octree_run_summary.toml"), "w") do io; TOML.print(io, summary) end
     println(@sprintf("[Run] completed %d steps in %.0f s", st.step, time() - t_start)); flush(stdout)
     st
 end
 
-"Inlet ramp of the existing solver's default profile: a smooth half-cosine from 0 to the target over ramp_steps."
-function ramp_inlet!(st::State{T}) where T
-    n = st.cfg.outputs.ramp_steps
-    st.u_inlet = n <= 0 || st.step >= n ? st.u_target : st.u_target * T(0.5 * (1 - cos(pi * st.step / n)))
-    st
-end
-
 function main(args::Vector{String})
-    case = ""; build_only = nothing; resume = false; hrr_sigma_override = nothing; from_case = nothing
+    case = ""; build_only = nothing; resume = false; from_case = nothing
     expected_checkpoint=nothing;expected_checkpoint_bytes=nothing;expected_checkpoint_mtime=nothing
     i = 1
     while i <= length(args)
@@ -260,11 +211,8 @@ function main(args::Vector{String})
             i += 1; i <= length(args) || error("--source-checkpoint-bytes needs a value"); expected_checkpoint_bytes = parse(Int,args[i])
         elseif a == "--source-checkpoint-mtime"
             i += 1; i <= length(args) || error("--source-checkpoint-mtime needs a value"); expected_checkpoint_mtime = parse(Float64,args[i])
-        elseif a == "--hrr-sigma"
-            i += 1; i <= length(args) || error("--hrr-sigma needs a value")
-            hrr_sigma_override = parse(Float64, args[i])
         elseif a == "--help" || a == "-h"
-            println("usage: main.jl --case <dir> [--build-only] [--resume | --from-case <completed-source-dir>] [--hrr-sigma <0..1>]"); return 0
+            println("usage: main.jl --case <dir> [--build-only] [--resume | --from-case <completed-source-dir>]"); return 0
         else
             error("unknown argument $a")
         end
@@ -278,6 +226,6 @@ function main(args::Vector{String})
         build_only_case(cfg)
         return 0
     end
-    run_case(cfg; resume=resume, hrr_sigma_override, from_case, expected_checkpoint, expected_checkpoint_bytes, expected_checkpoint_mtime)
+    run_case(cfg; resume=resume, from_case, expected_checkpoint, expected_checkpoint_bytes, expected_checkpoint_mtime)
     0
 end
