@@ -112,6 +112,38 @@ end
     return Frho*S, Fmx*S, Fmy*S, FE*S
 end
 
+"""
+The 39-velocity half-range flux of `_fvflux_normal6` (on given face states, no reconstruction) with the lattice scaled to
+the face temperature T_f = (T_L + T_R)/2: discrete velocities sqrt(T_f) c_k + u_f, and each state's third-order Hermite
+equilibrium taken about T_f (peculiar velocity / sqrt(T_f), reduced temperature T/T_f - 1), as Particles on Demand scales
+its lattice with the local temperature. The fixed-reference flux expands about T = 1, so its equilibrium is positive only
+for 0.81 < T < 1.67 at zero peculiar velocity; here the bound applies to T/T_f, i.e. to the temperature ratio across one
+face (below about 1.47), at any absolute temperature. Equal states give the exact flux at any T. Global-frame velocities
+in, (Frho, Fmx, Fmy, FE) S out.
+"""
+@inline function _fvflux_lattice_tscaled(rL,uxL,uyL,TL, rR,uxR,uyR,TR, nx, ny, S, cx_arr, cy_arr, cz_arr, w_arr, drot)
+    CS2=_gas_cs2(typeof(rL))
+    unL = uxL*nx + uyL*ny; utL = -uxL*ny + uyL*nx
+    unR = uxR*nx + uyR*ny; utR = -uxR*ny + uyR*nx
+    rLf = max(rL, 1.0f-4); rRf = max(rR, 1.0f-4); TLf = max(TL, 1.0f-3); TRf = max(TR, 1.0f-3)
+    Tf = 0.5f0*(TLf + TRf); sq = sqrt(Tf); isq = 1/sq
+    ufn = 0.5f0*(unL + unR); uft = 0.5f0*(utL + utR); erc = 0.5f0*drot*CS2
+    Frho=zero(nx); Fmn=zero(nx); Fmt=zero(nx); FE=zero(nx)
+    @inbounds for k in 1:39
+        cxk=cx_arr[k]; cyk=cy_arr[k]; czk=cz_arr[k]; wk=w_arr[k]
+        vn = sq*cxk + ufn; vt = sq*cyk + uft; vz = sq*czk
+        if vn >= 0.0f0
+            fk = _feqT2(rLf, unL*isq, utL*isq, TLf/Tf, ufn*isq, uft*isq, cxk, cyk, czk, wk); Ts = TLf
+        else
+            fk = _feqT2(rRf, unR*isq, utR*isq, TRf/Tf, ufn*isq, uft*isq, cxk, cyk, czk, wk); Ts = TRf
+        end
+        ke = 0.5f0*(vn*vn + vt*vt + vz*vz) + erc*Ts
+        Frho += vn*fk; Fmn += vn*vn*fk; Fmt += vn*vt*fk; FE += vn*ke*fk
+    end
+    Fmx = nx*Fmn - ny*Fmt; Fmy = ny*Fmn + nx*Fmt
+    return Frho*S, Fmx*S, Fmy*S, FE*S
+end
+
 # Development switch (environment LUDWIG_KINETIC_FLUX at load) for the face flux of the airfoil reconstruction:
 #   convected  `_fvflux_convected` instead of `_fvflux_normal6`;
 #   lowmach    `_fvflux_normal6` on the face states of `_lowmach_face_states`;
@@ -119,11 +151,53 @@ end
 #   efm_lowmach `_fvflux_efm` on the face states of `_lowmach_face_states`;
 #   lowmach_shear `_fvflux_normal6` on the face states of `_lowmach_shear_face_states` (tangential jump scaled by the
 #              face-normal Mach number, with the floor LUDWIG_KINETIC_SHEAR_FLOOR times the local Mach number; floor 1
-#              is `lowmach`, floor 0 leaves no shear dissipation on faces along the flow and diverged on the airfoil).
+#              is `lowmach`, floor 0 leaves no shear dissipation on faces along the flow and diverged on the airfoil);
+#   roe        `_fvflux_roe` (Roe's approximate Riemann solver), a non-kinetic reference for flux comparisons;
+#   ausmup     `_fvflux_ausmup` (AUSM+-up of Liou 2006, reference Mach number LUDWIG_AUSM_MINF), likewise;
+#   roe_shear  `_fvflux_roe` with the shear floor LUDWIG_KINETIC_SHEAR_FLOOR on its shear wave (`_shear_floor_speed`:
+#              on a face along the flow the same shear dissipation as `lowmach_shear` with that floor);
+#   roe_lowmach_shear  as roe_shear, on face states whose normal velocity jump is scaled by the local Mach number
+#              (`_lowmach_normal_face_states`, the normal half of `_lowmach_shear_face_states`): both of
+#              `lowmach_shear`'s corrections on Roe's flux;
+#   ausmup_shear  `_fvflux_ausmup` with the same shear floor on its tangential momentum flux (AUSM+-up keeps its own
+#              low-Mach scaling, LUDWIG_AUSM_MINF);
+#   roe_lowmach_shear_entropy  as roe_lowmach_shear, with the entropy wave floored at LUDWIG_ROE_ENTROPY_FLOOR (default 1)
+#              times the speed at which the 39-velocity flux diffuses an entropy jump on a face with no normal velocity:
+#              Roe's flux with all the dissipation `lowmach_shear` keeps on faces along the flow;
+#   ausmup_shear_entropy  ausmup_shear with the same entropy floor (also LUDWIG_ROE_ENTROPY_FLOOR);
+#   lowmach_shear_tscaled  `_fvflux_lattice_tscaled` (the 39-velocity flux with its lattice scaled to the face
+#              temperature) on the face states of `_lowmach_shear_face_states`: `lowmach_shear`
+#              without its fixed temperature window.
 # Unset: the half-range flux as before. A constant, so the default code is unchanged.
 const KINETIC_FLUX_VARIANT = (v = get(ENV, "LUDWIG_KINETIC_FLUX", "");
-    v == "convected" ? 1 : v == "lowmach" ? 2 : v == "efm" ? 3 : v == "efm_lowmach" ? 4 : v == "lowmach_shear" ? 5 : 0)
+    v == "convected" ? 1 : v == "lowmach" ? 2 : v == "efm" ? 3 : v == "efm_lowmach" ? 4 : v == "lowmach_shear" ? 5 :
+    v == "roe" ? 6 : v == "ausmup" ? 7 : v == "roe_shear" ? 8 : v == "roe_lowmach_shear" ? 9 : v == "ausmup_shear" ? 10 :
+    v == "roe_lowmach_shear_entropy" ? 11 : v == "ausmup_shear_entropy" ? 12 : v == "lowmach_shear_tscaled" ? 13 : 0)
+const ROE_ENTROPY_FLOOR = clamp(something(tryparse(Float64, get(ENV, "LUDWIG_ROE_ENTROPY_FLOOR", "1.0")), 1.0), 0.0, 2.0)
 const KINETIC_SHEAR_FLOOR = clamp(something(tryparse(Float64, get(ENV, "LUDWIG_KINETIC_SHEAR_FLOOR", "0.3")), 0.3), 0.0, 1.0)
+# Optional floor per level of the Newton march's mesh sequencing (17 Nov 2026), environment LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS
+# at load, one value per level in the order the levels are marched, e.g. "1,1,0.15" for levels (4,2,1): `newton_cold_run`
+# and `newton_pair_cold_run` set the floor of each level before building it (`_set_level_shear_floor!`). The coarse levels
+# only provide the start of the next one, so they can take a larger floor, which converges them in fewer steps; the finest
+# level's value sets the answer. Unset (default): `_kinetic_shear_floor()` folds to the constant above, so the code is
+# unchanged. Set, the face flux reads a global Ref: CPU kernels only. Invalid entries are refused at load.
+const KINETIC_SHEAR_FLOOR_LEVELS = let v = strip(get(ENV, "LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS", ""))
+    isempty(v) ? Float64[] : [(x = parse(Float64, strip(t)); 0 <= x <= 1 ||
+        throw(ArgumentError("LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS: each floor must lie in [0, 1], got $x")); x) for t in split(v, ',')]
+end
+const KINETIC_SHEAR_FLOOR_SCHEDULED = !isempty(KINETIC_SHEAR_FLOOR_LEVELS)
+const KINETIC_SHEAR_FLOOR_NOW = Ref(KINETIC_SHEAR_FLOOR)
+@inline _kinetic_shear_floor() = KINETIC_SHEAR_FLOOR_SCHEDULED ? KINETIC_SHEAR_FLOOR_NOW[] : KINETIC_SHEAR_FLOOR
+"Set the shear floor of level number `k` of `nlevels` from LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS; no-op when it is unset."
+function _set_level_shear_floor!(k::Integer, nlevels::Integer)
+    KINETIC_SHEAR_FLOOR_SCHEDULED || return KINETIC_SHEAR_FLOOR
+    length(KINETIC_SHEAR_FLOOR_LEVELS) == nlevels || throw(ArgumentError(
+        "LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS has $(length(KINETIC_SHEAR_FLOOR_LEVELS)) values for $nlevels levels"))
+    KINETIC_SHEAR_FLOOR_NOW[] = KINETIC_SHEAR_FLOOR_LEVELS[k]
+end
+# Squared reference (freestream) Mach number of the `ausmup` variant's low-Mach scaling, from LUDWIG_AUSM_MINF. Unset
+# or invalid: 0, which `_fvflux_mix_face` takes as acoustic scaling on every face (fa = 1, no low-Mach scaling).
+const AUSM_MINF2 = (m = something(tryparse(Float64, get(ENV, "LUDWIG_AUSM_MINF", "")), 0.0); isfinite(m) && m > 0 ? m*m : 0.0)
 
 # Development switch (environment LUDWIG_SST_VARIANT at load) for the implicit SST of the Newton march
 # (cmesh_steady_newton_sst_ka.jl, cmesh_steady_newton_pair_ka.jl) and the explicit plain-SST sweep of
@@ -173,6 +247,133 @@ with the face; this one needs neither.
 end
 
 """
+Roe's approximate Riemann solver (Roe 1981) for the same perfect gas as the kinetic fluxes (p = rho CS2 T, gamma - 1 =
+1/(3/2 + drot/2)), a non-kinetic reference for flux comparisons: the four waves of the Roe-averaged state, with Harten's
+entropy fix of width 0.1 times the averaged sound speed on the two acoustic waves only. The entropy and shear waves keep
+|u_n| with no fix, so a shear jump across a face along the flow is not diffused. Global-frame velocities in,
+(Frho, Fmx, Fmy, FE) S out; equal states give the exact flux, and faces supersonic from one side give that side's flux.
+With a shear floor `cf` > 0 (variants roe_shear, roe_lowmach_shear) the shear wave's speed is sqrt(u_n^2 + s^2) with
+s = `_shear_floor_speed`; the entropy wave keeps |u_n|. With an entropy floor `ce` > 0 (variant roe_lowmach_shear_entropy)
+the entropy wave's speed is sqrt(u_n^2 + (ce k_e c)^2), k_e = (103/540) sqrt(3/(2 gamma)) = 0.197 at gamma 1.4: with
+ce = 1 the speed at which the 39-velocity half-range flux diffuses an entropy jump (density and temperature at equal
+pressure) across a face with no normal velocity (the sum over its velocities with c_x > 0 of w c_x (1 - (|c|^2/cs2 - 3)/2)
+is 103/1080 at T = 1), which `lowmach_shear` leaves unscaled. `cf` = `ce` = 0 (the defaults) is the unchanged flux.
+"""
+@inline function _fvflux_roe(rL,uxL,uyL,TL, rR,uxR,uyR,TR, nx, ny, S, drot, cf=0, ce=0)
+    CS2=_gas_cs2(typeof(rL))
+    eint = 1.5f0 + 0.5f0*drot; gm1 = 1/eint                       # gamma - 1
+    unL = uxL*nx + uyL*ny; utL = -uxL*ny + uyL*nx
+    unR = uxR*nx + uyR*ny; utR = -uxR*ny + uyR*nx
+    rLf = max(rL, 1.0f-4); rRf = max(rR, 1.0f-4); TLf = max(TL, 1.0f-3); TRf = max(TR, 1.0f-3)
+    pL = rLf*CS2*TLf; pR = rRf*CS2*TRf
+    HL = (eint + 1)*CS2*TLf + 0.5f0*(unL*unL + utL*utL); HR = (eint + 1)*CS2*TRf + 0.5f0*(unR*unR + utR*utR)
+    sL = sqrt(rLf); sR = sqrt(rRf); ws = 1/(sL + sR)
+    un = (sL*unL + sR*unR)*ws; ut = (sL*utL + sR*utR)*ws; H = (sL*HL + sR*HR)*ws; rr = sL*sR
+    q2 = un*un + ut*ut
+    c2 = max(gm1*(H - 0.5f0*q2), oftype(H, 1e-12)); c = sqrt(c2)
+    dp = pR - pL; dun = unR - unL
+    a1 = (dp - rr*c*dun)/(2*c2); a2 = (rRf - rLf) - dp/c2; a3 = rr*(utR - utL); a4 = (dp + rr*c*dun)/(2*c2)
+    del = oftype(c, 0.1)*c
+    l1 = abs(un - c); l1 = l1 < del ? (l1*l1 + del*del)/(2*del) : l1
+    l4 = abs(un + c); l4 = l4 < del ? (l4*l4 + del*del)/(2*del) : l4
+    l2 = abs(un)
+    l3 = l2
+    if cf > 0
+        sf = _shear_floor_speed(cf, c, gm1, unL, utL, unR, utR)
+        l3 = sqrt(un*un + sf*sf)
+    end
+    if ce > 0
+        se = oftype(c, ce)*(oftype(c, 103)/540)*sqrt(3/(2*(1 + gm1)))*c
+        l2 = sqrt(un*un + se*se)
+    end
+    d1 = l1*a1; d2 = l2*a2; d3 = l3*a3; d4 = l4*a4
+    Dr = d1 + d2 + d4
+    Dn = d1*(un - c) + d2*un + d4*(un + c)
+    Dt = Dr*ut + d3
+    DE = d1*(H - un*c) + d2*0.5f0*q2 + d3*ut + d4*(H + un*c)
+    mL = rLf*unL; mR = rRf*unR
+    Frho = 0.5f0*(mL + mR - Dr)
+    Fmn  = 0.5f0*(mL*unL + pL + mR*unR + pR - Dn)
+    Fmt  = 0.5f0*(mL*utL + mR*utR - Dt)
+    FE   = 0.5f0*(mL*HL + mR*HR - DE)
+    Fmx = nx*Fmn - ny*Fmt; Fmy = ny*Fmn + nx*Fmt
+    return Frho*S, Fmx*S, Fmy*S, FE*S
+end
+
+"""
+AUSM+-up (Liou, J. Comput. Phys. 214, 2006) for the same perfect gas, a non-kinetic reference for flux comparisons: the
+split of `_fvflux_mix_face` (Kp 0.25, Ku 0.75, sigma 1, beta 1/8, the low-Mach scaling with the squared reference Mach
+number `minf2`, by default LUDWIG_AUSM_MINF squared) on the pressure p = rho CS2 T and the sound speed sqrt(gamma CS2 T)
+of each face state. Global-frame velocities in, (Frho, Fmx, Fmy, FE) S out.
+AUSM+-up convects the tangential velocity with the mass flux from its upwind side, a shear dissipation |mdot| that
+vanishes on faces along the flow. With a shear floor `cf` > 0 (variant ausmup_shear) that coefficient becomes
+sqrt(mdot^2 + (rho_m s)^2), s = `_shear_floor_speed` and rho_m the mean face density, and the energy flux takes the
+work of the added shear stress at the mean tangential velocity (as the shear wave of Roe's flux). With an entropy floor
+`ce` > 0 (variant ausmup_shear_entropy) an entropy jump a2 = drho - dp/a^2 is also diffused as by a wave of speed
+sqrt(u^2 + (ce k_e a)^2), u = mdot/rho_m, k_e as in `_fvflux_roe`: only the excess over AUSM+-up's own upwind dissipation
+|u| is added, along the entropy eigenvector (1, u_n, u_t, |u|^2/2) at the mean face velocity. `cf` = `ce` = 0 (the
+defaults) is the unchanged flux.
+"""
+@inline function _fvflux_ausmup(rL,uxL,uyL,TL, rR,uxR,uyR,TR, nx, ny, S, drot, minf2=AUSM_MINF2, cf=0, ce=0)
+    CS2=_gas_cs2(typeof(rL))
+    eint = 1.5f0 + 0.5f0*drot
+    unL = uxL*nx + uyL*ny; utL = -uxL*ny + uyL*nx
+    unR = uxR*nx + uyR*ny; utR = -uxR*ny + uyR*nx
+    rLf = max(rL, 1.0f-4); rRf = max(rR, 1.0f-4); TLf = max(TL, 1.0f-3); TRf = max(TR, 1.0f-3)
+    gcs2 = (1 + 1/eint)*CS2
+    F = _fvflux_mix_face(rLf, unL, utL, TLf, rLf*CS2*TLf, rRf, unR, utR, TRf, rRf*CS2*TRf,
+                         sqrt(gcs2*TLf), sqrt(gcs2*TRf), eint*CS2, oftype(rL, minf2), nx, ny, S)
+    (cf > 0 || ce > 0) || return F
+    af = 0.5f0*(sqrt(gcs2*TLf) + sqrt(gcs2*TRf))
+    rm = 0.5f0*(rLf + rRf); mdot = F[1]/S
+    dFr = zero(af); dFn = zero(af); dFt = zero(af); dFE = zero(af)
+    if cf > 0
+        sf = _shear_floor_speed(cf, af, 1/eint, unL, utL, unR, utR)
+        dFt = -0.5f0*(sqrt(mdot*mdot + (rm*sf)*(rm*sf)) - abs(mdot))*(utR - utL)   # added tangential momentum flux
+        dFE = 0.5f0*(utL + utR)*dFt
+    end
+    if ce > 0
+        un = mdot/rm; unm = 0.5f0*(unL + unR); utm = 0.5f0*(utL + utR)
+        se = oftype(af, ce)*(oftype(af, 103)/540)*sqrt(3/(2*(1 + 1/eint)))*af
+        a2 = (rRf - rLf) - (rRf*CS2*TRf - rLf*CS2*TLf)/(af*af)
+        d2 = -0.5f0*(sqrt(un*un + se*se) - abs(un))*a2                               # added entropy-wave flux
+        dFr += d2; dFn += d2*unm; dFt += d2*utm; dFE += d2*0.5f0*(unm*unm + utm*utm)
+    end
+    return (F[1] + dFr*S, F[2] + (nx*dFn - ny*dFt)*S, F[3] + (ny*dFn + nx*dFt)*S, F[4] + dFE*S)
+end
+
+"""
+The speed of the shear floor of the Roe and AUSM+-up variants: s = k cf min(c, max(|u_L|, |u_R|)), with c a face sound
+speed, gm1 = gamma - 1 and k = (5/18) sqrt(6/gamma) (0.575 at gamma 1.4). On a face with no normal velocity the
+39-velocity half-range flux `_fvflux_normal6` at T = 1 diffuses a tangential velocity jump as a shear wave of speed k c
+(the sum over its velocities with c_x > 0 of w c_x c_y^2 / cs2 is 5/18; the continuous half-range Maxwellian gives
+sqrt(2/(pi gamma)) c = 0.674 c, a ratio of (5/18) sqrt(3 pi) = 0.853), and `lowmach_shear` scales that jump by about
+cf z, z = min(1, max M_L, M_R). A shear wave of speed s therefore gives Roe's and AUSM+-up's fluxes the shear dissipation
+of `lowmach_shear` on faces along the flow, and |u_n| where the flow crosses the face.
+"""
+@inline function _shear_floor_speed(cf, c, gm1, unL, utL, unR, utR)
+    q = sqrt(max(unL*unL + utL*utL, unR*unR + utR*utR))
+    oftype(c, cf)*(oftype(c, 5)/18)*sqrt(6/(1 + gm1))*min(c, q)
+end
+
+"""
+The two face states (rho, ux, uy, T) with the jump of the face-normal velocity scaled by z = min(1, max(M_L, M_R))
+about its mean, the tangential velocity, density and temperature unchanged: the normal half of
+`_lowmach_shear_face_states` (Thornber et al. 2008), used with Roe's flux in the variant roe_lowmach_shear, whose shear
+wave carries the floor instead of a scaled tangential jump.
+"""
+@inline function _lowmach_normal_face_states(l, r, drot, nx, ny)
+    CS2=_gas_cs2(typeof(l[1]))
+    gcs2 = (1 + 1/(1.5f0 + 0.5f0*drot))*CS2
+    m2 = max((l[2]*l[2] + l[3]*l[3])/(gcs2*l[4]), (r[2]*r[2] + r[3]*r[3])/(gcs2*r[4]))
+    z = min(one(m2), sqrt(m2 + oftype(m2, 1.0f-12)))
+    unL = l[2]*nx + l[3]*ny; unR = r[2]*nx + r[3]*ny
+    utL = -l[2]*ny + l[3]*nx; utR = -r[2]*ny + r[3]*nx
+    unm = 0.5f0*(unL+unR); dn = 0.5f0*z*(unR-unL); unl = unm-dn; unr = unm+dn
+    (l[1], unl*nx - utL*ny, unl*ny + utL*nx, l[4]), (r[1], unr*nx - utR*ny, unr*ny + utR*nx, r[4])
+end
+
+"""
 The two face states (rho, ux, uy, T) with their velocity difference scaled by the local Mach number,
 z = min(1, max(M_L, M_R)), about their mean (Thornber et al., J. Comput. Phys. 227, 2008). The half-range kinetic
 flux diffuses a velocity difference across a face at the thermal speed whatever the flow speed; with the scaled
@@ -191,8 +392,8 @@ end
 """
 As `_lowmach_face_states`, but the jump of the velocity component along the face (unit normal (nx, ny)) is scaled by
 the face-normal Mach number with a floor, zt = min(z, sqrt(max(Mn_L^2, Mn_R^2) + (c z)^2 + 1e-6)), c = the floor
-(`KINETIC_SHEAR_FLOOR` unless given), while the normal component keeps z. With `_lowmach_face_states` the shear of a
-boundary layer is still diffused at about 0.68 of the flow speed |u| across the wall-parallel faces; here at about
+(unless given, `KINETIC_SHEAR_FLOOR`, or the current level's value of LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS), while the
+normal component keeps z. With `_lowmach_face_states` the shear of a boundary layer is still diffused at about 0.68 of the flow speed |u| across the wall-parallel faces; here at about
 0.68 max(|u_n|, c |u|) (the shear-wave dissipation of a Roe flux is |u_n| with an entropy-fix floor). c = 1 is
 `_lowmach_face_states`; c = 0 left the Newton linear solves at their cap and the residuals growing on NACA 0012 at
 15 deg (15 Nov 2026). Both components are unchanged where the face-normal Mach number is at least 1; the normal one is
@@ -200,7 +401,7 @@ unchanged wherever the flow is at or above Mach 1, while the tangential jump of 
 still scaled (as the Roe shear wave, whose speed is |u_n| at any Mach number). Density and temperature are not changed;
 the means of both velocity components are kept, so equal states are returned unchanged.
 """
-@inline function _lowmach_shear_face_states(l, r, drot, nx, ny, c=KINETIC_SHEAR_FLOOR)
+@inline function _lowmach_shear_face_states(l, r, drot, nx, ny, c=_kinetic_shear_floor())
     CS2=_gas_cs2(typeof(l[1]))
     gcs2 = (1 + 1/(1.5f0 + 0.5f0*drot))*CS2
     m2 = max((l[2]*l[2] + l[3]*l[3])/(gcs2*l[4]), (r[2]*r[2] + r[3]*r[3])/(gcs2*r[4]))

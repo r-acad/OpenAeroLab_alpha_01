@@ -743,6 +743,7 @@ function newton_pair_cold_run(nodes,make_c,make_h;levels=(4,2,1),nsteps=(120,120
         on_row=nothing)
     prev=nothing;pf=0;t00=time();out=nothing;summary=Dict{String,Any}();lv=Any[]
     for (k,f) in enumerate(levels)
+        _set_level_shear_floor!(k,length(levels))           # LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS, if set (cmesh_flux_core.jl)
         t0=time()
         cn=newton_coarsen_nodes((X=nodes.X,Y=nodes.Y,NIW=nodes.NIW,NIF=nodes.NIF,NI=nodes.NI,NJ=nodes.NJ),f)
         st=nodes.strip;(st.NI%f==0&&st.NJ%f==0)||throw(ArgumentError("strip not divisible by $f"))

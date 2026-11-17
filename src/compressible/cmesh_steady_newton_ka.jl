@@ -92,10 +92,14 @@ end
 """March with a geometric CFL ramp. Loads every step; the six residuals every `every` steps.
 Stops when CL and CD have stayed within `load_tol` (relative to max(|CL|,0.1), max(|CD|,0.001)) over the last
 `window` steps and at least `min_steps` were taken. CSV rows per diagnostic if `csv` is given. `on_row(row)`, if given,
-is called with every diagnostic row (a caller's progress report; it must not change the state)."""
+is called with every diagnostic row (a caller's progress report; it must not change the state).
+`res_tol` (default Inf: the loads test alone, as before): when finite, settled loads stop the march only if the largest of
+the four flow residuals, divided by `ref` (the cold values; absolute without `ref`), is also below `res_tol`. The loads test
+alone cannot tell a converged state from a march held at a small CFL number or one with a growing far-wake mode
+(17 Nov 2026)."""
 function newton_rans_march!(s::KSol,m::NewtonRANS;nsteps=100,cflmax=1e3,growth=1.5,budget=Inf,every=5,csv=nothing,
         label="",ref=nothing,window=20,load_tol=1e-4,min_steps=window,quiet=false,rre=nothing,vortex_relax=0.0,
-        on_row=nothing,kwargs...)
+        on_row=nothing,res_tol=Inf,kwargs...)
     t0=time();io=csv===nothing ? nothing : open(csv,"w")
     io===nothing||println(io,"step,seconds,cfl,its,rho,mx,my,E,k,omega,dk,dw,mass,CL,CD")
     loads=Tuple{Float64,Float64}[];converged=false;nlocal=0
@@ -121,6 +125,11 @@ function newton_rans_march!(s::KSol,m::NewtonRANS;nsteps=100,cflmax=1e3,growth=1
                 cls=first.(loads);cds=last.(loads)
                 converged=(maximum(cls)-minimum(cls))/max(abs(r.cl),0.1)<load_tol&&
                           (maximum(cds)-minimum(cds))/max(abs(r.cd),0.001)<load_tol
+                if converged&&isfinite(res_tol)
+                    dq=steady_airfoil_diagnostics_ka(s;corrected_wall_metric=true)
+                    fl=ref===nothing ? collect(dq.flow_l2) : collect(dq.flow_l2)./ref[1:4]
+                    converged=maximum(fl)<res_tol
+                end
             end
             if n%every==0||n==1||converged||n==nsteps
                 d=steady_airfoil_diagnostics_ka(s;corrected_wall_metric=true)
@@ -242,9 +251,11 @@ end
 # `on_row(k, f, row)`, if given, receives every diagnostic row of level number k (coarsening f).
 function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),cflmax=(1e3,1e3,1e3),
         load_tol=(1e-3,3e-4,1e-4),window=(10,15,20),rre=(3,8),blocks=:roe,delta=0.3,outdir=nothing,every=10,
-        lintol=0.05,maxit=40,quiet=false,vortex_relax=0.0,growth=1.5,on_row=nothing)
+        lintol=0.05,maxit=40,quiet=false,vortex_relax=0.0,growth=1.5,on_row=nothing,res_tol=Inf)
     prev=nothing;pf=0;t00=time();out=nothing;summary=Dict{String,Any}();lv=Any[]
+    rtol=res_tol isa Tuple ? res_tol : ntuple(_->res_tol,length(levels))   # per level, or one value for all
     for (k,f) in enumerate(levels)
+        _set_level_shear_floor!(k,length(levels))           # LUDWIG_KINETIC_SHEAR_FLOOR_LEVELS, if set (cmesh_flux_core.jl)
         t0=time();nd=newton_coarsen_nodes(nodes,f)
         s=make_solver(nd)
         d=steady_airfoil_diagnostics_ka(s;corrected_wall_metric=true)
@@ -254,7 +265,7 @@ function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),c
         setup=time()-t0
         quiet||Printf.@printf("LEVEL 1/%d: %d x %d = %d cells, setup %.1fs\n",f,nd.NI,nd.NJ,nd.NI*nd.NJ,setup)
         r=newton_rans_march!(s,m;nsteps=nsteps[k],cflmax=cflmax[k],growth,every,vortex_relax,label="L$f ",ref,quiet,
-            load_tol=load_tol[k],window=window[k],rre,blocks,delta,lintol,maxit,
+            load_tol=load_tol[k],window=window[k],rre,blocks,delta,lintol,maxit,res_tol=rtol[k],
             on_row=on_row===nothing ? nothing : row->on_row(k,f,row),
             csv=outdir===nothing ? nothing : joinpath(outdir,"history_L$f.csv"))
         cl,cd=loads_ka(s)
