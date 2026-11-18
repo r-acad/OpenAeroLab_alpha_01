@@ -240,8 +240,22 @@ function newton_scalar_solve!(s::KSol,q::NewtonScalar,phi0;tol=1e-3,maxit=60,swe
 end
 
 "Implicit SST step with the line-relaxation solver (same equations as newton_sst_implicit!)."
+# BDF dual-time terms of one scalar SST system (18 Nov 2026): diagonal + a0, right-hand side + a1 phi^n + a2 phi^(n-1),
+# on every row except the Dirichlet wall rows of omega.
+@kernel function _k_newton_sst_bdf!(cP,rhs,@Const(phin),@Const(phim),a0,a1,a2,isk::Int32,NI::Int32,NJ::Int32,NIW::Int32,NIF::Int32)
+    i,j=@index(Global,NTuple)
+    @inbounds if i<=NI&&j<=NJ
+        if !(isk==Int32(0)&&j<=2&&NIW<i<=NIW+NIF)
+            cP[i,j]+=a0;rhs[i,j]+=a1*phin[i,j]+a2*phim[i,j]
+        end
+    end
+end
+
+"""Implicit SST step with line relaxation. `bdf` (default nothing: the steady step, unchanged): a NamedTuple
+(a0, a1, a2, kn, km, wn, wm) of BDF dual-time coefficients and the interior k and omega at the two previous physical time
+levels (`newton_time_sst_terms`), whose terms are added to both scalar systems."""
 function newton_sst_implicit_lines!(s::KSol,c::NewtonSST,q::NewtonScalar,invdt;relax=1.0,nut_relax=1.0,tol=1e-3,
-        corrected_wall_metric::Bool=true)
+        corrected_wall_metric::Bool=true,bdf=nothing)
     s.sst&&s.keps==0&&s.lag==Int32(0)&&s.earsm==Int32(0)||throw(ArgumentError("implicit SST prototype: plain SST only"))
     NI,NJ,NIW,NIF,g=s.NI,s.NJ,s.NIW,s.NIF,s.g;bk=s.backend
     _newton_sst_bc!(s)
@@ -254,9 +268,13 @@ function newton_sst_implicit_lines!(s::KSol,c::NewtonSST,q::NewtonScalar,invdt;r
     system!(aW,aE,aS,aN,D,S,phi,far,isk)=_k_newton_sst_system!(bk)(q.cW,q.cE,q.cS,q.cN,q.cP,q.rhs,aW,aE,aS,aN,D,S,phi,invdt,
         s.rho,s.T,s.wdist,eltype(q.cP)(far),Int32(isk),s.nu_lam,s.rho_inf,s.suth,s.air_sutherland,
         Int32(NI),Int32(NJ),Int32(NIW),Int32(NIF),Int32(g);ndrange=(NI,NJ))
+    addbdf!(phin,phim,isk)=bdf===nothing||_k_newton_sst_bdf!(bk)(q.cP,q.rhs,phin,phim,eltype(q.cP)(bdf.a0),eltype(q.cP)(bdf.a1),
+        eltype(q.cP)(bdf.a2),Int32(isk),Int32(NI),Int32(NJ),Int32(NIW),Int32(NIF);ndrange=(NI,NJ))
     system!(c.akW,c.akE,c.akS,c.akN,c.dk,c.sk,s.tk,s.k_inf,1)
+    bdf===nothing||addbdf!(bdf.kn,bdf.km,1)
     knew,kits,klin=newton_scalar_solve!(s,q,kold;tol)
     system!(c.awW,c.awE,c.awS,c.awN,c.dw,c.sw,s.tom,s.w_inf,0)
+    bdf===nothing||addbdf!(bdf.wn,bdf.wm,0)
     wnew,wits,wlin=newton_scalar_solve!(s,q,wold;tol)
     knew.=clamp.(kold.+relax.*(knew.-kold),1e-12,1.0);wnew.=max.(wold.+relax.*(wnew.-wold),1e-6)
     dkmax=maximum(abs.(knew.-kold)./max.(abs.(kold),Float64(s.k_inf),1e-12))

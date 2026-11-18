@@ -42,8 +42,14 @@ function newton_rans_init(s::KSol;cfl=20.,agg=(4,4))
         similar(s.dtf),similar(s.dtf),map(copy,(s.rho,s.ux,s.uy,s.T)),ntuple(_->similar(s.dtf),4),cfl,0,Any[],div(typemax(Int),2),NaN)
 end
 
-"Flow Newton step at pseudo-CFL m.cfl with frozen eddy viscosity. The preconditioner is rebuilt when the CFL changed or every `lag` steps."
-function newton_flow_step!(s::KSol,m::NewtonRANS;lintol=0.05,maxit=40,fraction=0.2,lag=3,pre=1,post=1,blocks=:kinetic,delta=0.3)
+"""Flow Newton step at pseudo-CFL m.cfl with frozen eddy viscosity. The preconditioner is rebuilt when the CFL changed or every `lag` steps.
+`dual` (default nothing: the steady step, unchanged): a `NewtonTime` (cmesh_unsteady_newton_ka.jl) for one inner iteration of
+BDF dual time stepping. The residual (the flux balance, V dU/dt = -R) becomes R + V (a0 U - a1 U^n - a2 U^(n-1)) and a0 V is added
+to the Newton diagonal, so the
+finite-difference Jacobian product and both preconditioner builds act on the unsteady system; the result then also carries
+`l2t`, the scaled norms of the unsteady residual (18 Nov 2026)."""
+function newton_flow_step!(s::KSol,m::NewtonRANS;lintol=0.05,maxit=40,fraction=0.2,lag=3,pre=1,post=1,blocks=:kinetic,delta=0.3,
+        dual=nothing)
     NI,NJ=s.NI,s.NJ;state=(s.rho,s.ux,s.uy,s.T);F4(v)=newton_fields(v,NI,NJ)
     t0=time()
     _raw_residual_ka!(s,Int32(2),Int32(1))
@@ -51,6 +57,8 @@ function newton_flow_step!(s::KSol,m::NewtonRANS;lintol=0.05,maxit=40,fraction=0
     for (b,r) in zip(m.base,_airfoil_residual(s));copyto!(b,r);end
     l2=newton_flow_l2(s)
     newton_d0!(m.d0,s,m.cfl)
+    # dual time: R* is the right-hand side only; m.base stays the raw residual, the base of the finite-difference product
+    rhs,l2t=dual===nothing ? (m.base,nothing) : newton_time_rhs!(m.d0,m.base,s,dual)
     if m.since_build>=lag||m.built_cfl!=m.cfl
         blocks===:roe ? newton_roe_build!(s,m.kw,m.d0;delta) : _airfoil_kinetic_build!(s,m.kw,m.d0)
         newton_lines_factor!(m.L,s,m.kw)
@@ -59,7 +67,7 @@ function newton_flow_step!(s::KSol,m::NewtonRANS;lintol=0.05,maxit=40,fraction=0
     end
     m.since_build+=1
     tbuild=time()-t0;t0=time()
-    b=vcat(map(vec,m.base)...)
+    b=vcat(map(vec,rhs)...)
     A!(y,x)=(newton_fd_jv_fwd!(F4(y),F4(x),s,m.backup,m.base,m.d0);y)
     P!(z,v)=(m.coarse===nothing ? newton_line_precond!(F4(z),F4(v),s,m.kw,m.L;sweeps=pre+post) :
         newton_twogrid_precond!(F4(z),F4(v),s,m.kw,m.L,m.coarse;pre,post);z)
@@ -72,17 +80,27 @@ function newton_flow_step!(s::KSol,m::NewtonRANS;lintol=0.05,maxit=40,fraction=0
         alpha/=2
     end
     ok||for (d,bk) in zip(state,m.backup);copyto!(d,bk);end
-    (;l2,its,lin=hist[end],alpha,ok,tbuild,tlin)
+    dual===nothing && return (;l2,its,lin=hist[end],alpha,ok,tbuild,tlin)
+    (;l2,its,lin=hist[end],alpha,ok,tbuild,tlin,l2t)
 end
 
-"One coupled iteration: flow Newton step, then `sst_inner` implicit SST steps at pseudo-time dt_flow*turb_ratio."
+"""One coupled iteration: flow Newton step, then `sst_inner` implicit SST steps at pseudo-time dt_flow*turb_ratio.
+`dual` (default nothing): a `NewtonTime` for one inner iteration of BDF dual time stepping; the SST step then takes its
+pseudo-time from the pseudo-time part of the diagonal only and the BDF terms of its own equations."""
 function newton_rans_step!(s::KSol,m::NewtonRANS;turb_ratio=1.0,sst_inner=1,sst_relax=1.0,nut_relax=1.0,
-        sst_tol=1e-3,kwargs...)
-    r=newton_flow_step!(s,m;kwargs...)
-    @. m.invdt=m.d0/s.vol/turb_ratio
+        sst_tol=1e-3,dual=nothing,kwargs...)
+    r=newton_flow_step!(s,m;dual,kwargs...)
+    if dual===nothing
+        @. m.invdt=m.d0/s.vol/turb_ratio
+    else
+        a0=newton_time_coeffs(dual)[1];@. m.invdt=(m.d0-a0*s.vol)/s.vol/turb_ratio
+    end
     t0=time();t=nothing
-    for _ in 1:sst_inner
-        t=newton_sst_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol)
+    # laminar solver (no SST; 18 Nov 2026): no turbulence step
+    s.sst||(t=(;dkmax=0.0,dwmax=0.0))
+    for _ in 1:(s.sst ? sst_inner : 0)
+        t=dual===nothing ? newton_sst_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol) :
+            newton_sst_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol,bdf=newton_time_sst_terms(dual))
     end
     m.it+=1
     cl,cd=loads_ka(s)
@@ -287,4 +305,6 @@ function newton_cold_run(nodes,make_solver;levels=(4,2,1),nsteps=(120,120,160),c
     (;s=out.s,m=out.m,ref=out.ref,summary)
 end
 
+include(joinpath(@__DIR__, "cmesh_unsteady_newton_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_newton_pair_ka.jl"))
+include(joinpath(@__DIR__, "cmesh_unsteady_newton_pair_ka.jl"))

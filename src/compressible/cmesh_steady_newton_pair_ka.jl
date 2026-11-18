@@ -364,14 +364,21 @@ function _newton_pair_scalar_solve!(p::NewtonPair,m::NewtonPairState,phic,phih;t
     phic.+Rc(e),phih.+Rh(e),its,hist[end]
 end
 
-"Implicit SST step on both blocks at the local pseudo-time 1/invdt (set by the caller in m.invdtc, m.invdth)."
-function newton_pair_sst_step!(p::NewtonPair,m::NewtonPairState;relax=1.0,nut_relax=1.0,tol=1e-3)
+"""Implicit SST step on both blocks at the local pseudo-time 1/invdt (set by the caller in m.invdtc, m.invdth).
+`bdf` (default nothing: the steady step, unchanged): a pair (C, strip) of `newton_time_sst_terms` for BDF dual time stepping
+(cmesh_unsteady_newton_pair_ka.jl); the terms enter every row but the prescribed omega rows."""
+function newton_pair_sst_step!(p::NewtonPair,m::NewtonPairState;relax=1.0,nut_relax=1.0,tol=1e-3,bdf=nothing)
     c,h=p.c,p.h
     newton_pair_sst_bc!(p);newton_pair_sst_coeffs!(c,m.sstc,p.gc);newton_pair_sst_coeffs!(h,m.ssth,p.gh)
     int(s,a)=Array(view(a,s.g+1:s.g+s.NI,s.g+1:s.g+s.NJ))
     kc,kh,wc,wh=int(c,c.tk),int(h,h.tk),int(c,c.tom),int(h,h.tom)
-    _newton_pair_sst_systems!(p,m,1,m.invdtc,m.invdth);kcn,khn,kits,klin=_newton_pair_scalar_solve!(p,m,kc,kh;tol)
-    _newton_pair_sst_systems!(p,m,0,m.invdtc,m.invdth);wcn,whn,wits,wlin=_newton_pair_scalar_solve!(p,m,wc,wh;tol)
+    addbdf!(isk)=bdf===nothing||for (s,q,b) in ((c,m.scalarc,bdf[1]),(h,m.scalarh,bdf[2]))
+        T=eltype(q.cP);pn,pm=isk==1 ? (b.kn,b.km) : (b.wn,b.wm)
+        _k_newton_sst_bdf!(s.backend)(q.cP,q.rhs,pn,pm,T(b.a0),T(b.a1),T(b.a2),Int32(isk),Int32(s.NI),Int32(s.NJ),
+            Int32(s.NIW),Int32(s.NIF);ndrange=(s.NI,s.NJ))
+    end
+    _newton_pair_sst_systems!(p,m,1,m.invdtc,m.invdth);addbdf!(1);kcn,khn,kits,klin=_newton_pair_scalar_solve!(p,m,kc,kh;tol)
+    _newton_pair_sst_systems!(p,m,0,m.invdtc,m.invdth);addbdf!(0);wcn,whn,wits,wlin=_newton_pair_scalar_solve!(p,m,wc,wh;tol)
     dkmax=0.0;dwmax=0.0
     for (s,cf,ko,kn,wo,wn) in ((c,m.sstc,kc,kcn,wc,wcn),(h,m.ssth,kh,khn,wh,whn))
         kn.=clamp.(ko.+relax.*(kn.-ko),1e-12,1.0);wn.=max.(wo.+relax.*(wn.-wo),1e-6)
@@ -626,8 +633,11 @@ function _newton_pair_precond!(z,v,p::NewtonPair,m::NewtonPairState;pre=1,post=1
     z
 end
 
-"Flow Newton step of the pair at pseudo-CFL m.cfl with frozen eddy viscosity."
-function newton_pair_flow_step!(p::NewtonPair,m::NewtonPairState;lintol=0.05,maxit=40,fraction=0.2,lag=3,pre=1,post=1,delta=0.3)
+"""Flow Newton step of the pair at pseudo-CFL m.cfl with frozen eddy viscosity. `dual` (default nothing: the steady step,
+unchanged): a pair (C, strip) of `NewtonTime` for one inner iteration of BDF dual time stepping (as `newton_flow_step!`);
+the record then carries `l2t`, the larger of the two blocks' scaled norms of the unsteady residual per equation."""
+function newton_pair_flow_step!(p::NewtonPair,m::NewtonPairState;lintol=0.05,maxit=40,fraction=0.2,lag=3,pre=1,post=1,delta=0.3,
+        dual=nothing)
     c,h=p.c,p.h;t0=time()
     newton_pair_residual!(p)
     for (s,bk,base) in ((c,m.backupc,m.basec),(h,m.backuph,m.baseh))
@@ -636,12 +646,18 @@ function newton_pair_flow_step!(p::NewtonPair,m::NewtonPairState;lintol=0.05,max
     end
     l2=newton_pair_flow_l2(p)
     newton_d0!(m.d0c,c,m.cfl);newton_d0!(m.d0h,h,m.cfl)
+    # dual time: R* is the right-hand side only; m.basec/m.baseh stay the raw residuals (the finite-difference base)
+    if dual===nothing
+        rhsc,rhsh,l2t=m.basec,m.baseh,nothing
+    else
+        rhsc,nc=newton_time_rhs!(m.d0c,m.basec,c,dual[1]);rhsh,nh=newton_time_rhs!(m.d0h,m.baseh,h,dual[2]);l2t=max.(nc,nh)
+    end
     if m.since_build>=lag||m.built_cfl!=m.cfl
         _newton_pair_precond_build!(p,m;delta);m.since_build=0;m.built_cfl=m.cfl
     end
     m.since_build+=1
     tbuild=time()-t0;t0=time()
-    b=vcat(map(vec,m.basec)...,map(vec,m.baseh)...)
+    b=vcat(map(vec,rhsc)...,map(vec,rhsh)...)
     A!(y,x)=_newton_pair_fd_jv!(y,x,p,m);P!(z,v)=_newton_pair_precond!(z,v,p,m;pre,post)
     x,its,hist=newton_gmres(A!,P!,b;tol=lintol,restart=maxit,maxit)
     dc,dh=_newton_pair_split(x,p);tlin=time()-t0
@@ -655,15 +671,24 @@ function newton_pair_flow_step!(p::NewtonPair,m::NewtonPairState;lintol=0.05,max
         for (s,bk) in ((c,m.backupc),(h,m.backuph)),(d,b0) in zip((s.rho,s.ux,s.uy,s.T),bk);copyto!(d,b0);end
         newton_pair_bc!(p)
     end
-    (;l2,its,lin=hist[end],alpha,ok,tbuild,tlin)
+    dual===nothing&&return (;l2,its,lin=hist[end],alpha,ok,tbuild,tlin)
+    (;l2,its,lin=hist[end],alpha,ok,tbuild,tlin,l2t)
 end
 
-"One coupled iteration of the pair: flow Newton step, then an implicit SST step at the same local pseudo-time."
-function newton_pair_step!(p::NewtonPair,m::NewtonPairState;turb_ratio=1.0,sst_relax=1.0,nut_relax=1.0,sst_tol=1e-3,kwargs...)
-    r=newton_pair_flow_step!(p,m;kwargs...)
-    @. m.invdtc=m.d0c/p.c.vol/turb_ratio
-    @. m.invdth=m.d0h/p.h.vol/turb_ratio
-    t0=time();t=newton_pair_sst_step!(p,m;relax=sst_relax,nut_relax,tol=sst_tol)
+"""One coupled iteration of the pair: flow Newton step, then an implicit SST step at the same local pseudo-time.
+`dual` (default nothing): a pair (C, strip) of `NewtonTime` for one inner iteration of BDF dual time stepping."""
+function newton_pair_step!(p::NewtonPair,m::NewtonPairState;turb_ratio=1.0,sst_relax=1.0,nut_relax=1.0,sst_tol=1e-3,dual=nothing,kwargs...)
+    r=newton_pair_flow_step!(p,m;dual,kwargs...)
+    if dual===nothing
+        @. m.invdtc=m.d0c/p.c.vol/turb_ratio
+        @. m.invdth=m.d0h/p.h.vol/turb_ratio
+    else                                     # the pseudo-time part only; the BDF terms enter the SST systems themselves
+        a0=newton_time_coeffs(dual[1])[1]
+        @. m.invdtc=(m.d0c-a0*p.c.vol)/p.c.vol/turb_ratio
+        @. m.invdth=(m.d0h-a0*p.h.vol)/p.h.vol/turb_ratio
+    end
+    bdf=dual===nothing ? nothing : (newton_time_sst_terms(dual[1]),newton_time_sst_terms(dual[2]))
+    t0=time();t=newton_pair_sst_step!(p,m;relax=sst_relax,nut_relax,tol=sst_tol,bdf)
     m.it+=1;cl,cd=newton_pair_loads(p)
     merge(r,(;it=m.it,cfl=m.cfl,dk=t.dkmax,dw=t.dwmax,kits=t.kits,wits=t.wits,tsst=time()-t0,cl,cd))
 end
