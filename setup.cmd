@@ -47,7 +47,7 @@ if defined OA_OFFLINE goto missing_julia
 if defined OA_DRY_RUN goto missing_julia
 if "%OA_INSTALL_PREF%"=="yes" goto download_julia
 if "%OA_INSTALL_PREF%"=="no" goto missing_julia
-choice /C YN /M "Julia %OA_VERSION% is missing. Download and install it automatically"
+choice /C YN /M "No Julia %OA_MIN_VERSION% or later was found. Download and install Julia %OA_VERSION% automatically"
 if errorlevel 2 goto declined_julia
 if errorlevel 1 goto download_julia
 goto declined_julia
@@ -58,10 +58,10 @@ goto fail
 echo Offline Julia installation requires LUDWIG_JULIA_ARCHIVE pointing to the official Windows ZIP. 1>&2
 goto fail
 :missing_julia
-echo Julia %OA_VERSION% is missing. Install it manually, or rerun setup.cmd with --install-julia. 1>&2
+echo No Julia %OA_MIN_VERSION% or later was found. Install one manually, or rerun setup.cmd with --install-julia. 1>&2
 goto fail
 :declined_julia
-echo Install Julia %OA_VERSION% manually, then rerun setup.cmd. 1>&2
+echo Install Julia %OA_MIN_VERSION% or later manually, then rerun setup.cmd. 1>&2
 goto fail
 :download_julia
 if defined OA_OFFLINE (call "%~dp0tools\install\install_julia.cmd" --offline) else call "%~dp0tools\install\install_julia.cmd"
@@ -74,15 +74,17 @@ echo Starting package setup. The first Julia startup with an empty depot can tak
 set "SETUP_EXIT=%ERRORLEVEL%"
 goto finish
 :help
+set "OA_MIN_VERSION="
+for /f "usebackq delims=" %%V in ("%~dp0tools\install\julia_min_version.txt") do if not defined OA_MIN_VERSION set "OA_MIN_VERSION=%%V"
 echo OpenAeroLab Windows setup: setup.cmd [options]
-echo   If Julia is missing, setup asks before downloading the verified archive.
+echo   Any Julia %OA_MIN_VERSION% or later is used. If none is found, setup asks before downloading the verified archive.
 echo   --install-julia     Download Julia automatically, without a prompt
 echo   --no-install-julia  Require Julia to be installed already
 echo   --offline           Use only existing Julia, packages and artifacts
 echo   --dry-run           Show the setup plan without installing anything
 echo   --no-precompile     Skip explicit package precompilation
 echo   --no-verify         Skip runtime and application checks
-echo   LUDWIG_JULIA may point to an approved existing Julia executable.
+echo   LUDWIG_JULIA may point to an approved existing Julia %OA_MIN_VERSION% or later executable.
 echo   LUDWIG_JULIA_ARCHIVE may point to the official Julia ZIP for offline installation.
 echo   HTTPS_PROXY or LUDWIG_PROXY may specify a proxy; TLS remains verified.
 set "SETUP_EXIT=0"

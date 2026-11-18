@@ -1,8 +1,8 @@
 # Linux
 
 1. Extract the complete GitHub ZIP to a writable folder and open a terminal there.
-2. Run **`bash setup.sh`**. Julia 1.13.2 is detected or downloaded automatically
-   for x86-64 or ARM64. Setup downloads, precompiles and verifies the required
+2. Run **`bash setup.sh`**. Any Julia 1.13 or later is used; if none is found,
+   Julia 1.13.2 is downloaded automatically for x86-64 or ARM64. Setup downloads, precompiles and verifies the required
    packages. Wait for **Setup complete**.
 3. Run **`bash "__Start here!__/Linux/OpenAeroLab.sh"`** from the repository root.
    Keep the terminal open. `xdg-open` opens your default browser; if unavailable,

@@ -1,8 +1,8 @@
 # Mac
 
 1. Extract the complete GitHub ZIP to a writable folder and open Terminal there.
-2. Run **`bash setup.command`**. Julia 1.13.2 is detected or downloaded automatically
-   for Apple Silicon or Intel. Setup installs and checks the workbenches, JXfoil
+2. Run **`bash setup.command`**. Any Julia 1.13 or later is used; if none is found,
+   Julia 1.13.2 is downloaded automatically for Apple Silicon or Intel. Setup installs and checks the workbenches, JXfoil
    and Makie. Wait for **Setup complete**.
 3. Run **`bash "__Start here!__/Mac/OpenAeroLab.command"`**. Your default browser
    opens when the local server is ready. Keep Terminal open while working.

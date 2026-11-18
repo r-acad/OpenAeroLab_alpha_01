@@ -15,7 +15,7 @@ function fixture_repo(name)
     install = joinpath(dest, "tools", "install")
     mkpath(install)
     cp(joinpath(REPO, "setup.cmd"), joinpath(dest, "setup.cmd"))
-    for file in ("resolve_julia.cmd", "julia_version.txt", "runtimes.tsv", "install_julia.cmd", "promote_runtime.jl")
+    for file in ("resolve_julia.cmd", "julia_version.txt", "julia_min_version.txt", "runtimes.tsv", "install_julia.cmd", "promote_runtime.jl")
         source=joinpath(REPO,"tools","install",file)
         isfile(source) && cp(source,joinpath(install,file))
     end
@@ -73,12 +73,34 @@ function main()
         @test code!=0
         code,output=invoke_setup(repo,["--no-install-julia","--dry-run"];env=["LUDWIG_JULIA"=>known])
         @test code==0
-        @test occursin("INSTALL_TEST_JULIA=$EXPECTED",output)
+        @test occursin("INSTALL_TEST_JULIA=$(VERSION)",output)
         @test occursin("INSTALL_TEST_ARGS=--dry-run",output)
         @test !isdir(joinpath(SCRATCH,"private runtime (spaces)","runtime"))
         code,output=invoke_setup(repo,["--install-julia"];env=["LUDWIG_JULIA"=>joinpath(SCRATCH,"missing julia.exe")])
         @test code!=0
         @test !occursin("Downloading Julia",output)
+    end
+    @testset "Any Julia from the minimum release on is accepted" begin
+        # The running Julia against several minimum releases, in a fixture whose julia_min_version.txt is rewritten.
+        gate=fixture_repo("minimum release gate")
+        minimum=joinpath(gate,"tools","install","julia_min_version.txt")
+        for (floor,accepted) in (("1.0",true), ("$(VERSION.major).$(VERSION.minor)",true),
+                                 ("$(VERSION.major).$(VERSION.minor+1)",false), ("$(VERSION.major+1).0",false))
+            write(minimum,floor*"\n")
+            code,output=invoke_setup(gate,["--no-install-julia","--dry-run"];env=["LUDWIG_JULIA"=>known])
+            @test (code==0)==accepted
+            @test occursin("INSTALL_TEST_JULIA=$(VERSION)",output)==accepted
+            accepted || @test occursin("Julia $floor or later",output)
+        end
+        # A Julia found on PATH (not the recommended release's folder) is used when it is recent enough.
+        write(minimum,"$(VERSION.major).$(VERSION.minor)\n")
+        code,output=invoke_setup(gate,["--no-install-julia","--dry-run"];env=["PATH"=>Sys.BINDIR*";"*joinpath(ENV["SystemRoot"],"System32")])
+        @test code==0
+        @test occursin("INSTALL_TEST_JULIA=$(VERSION)",output)
+        write(minimum,"$(VERSION.major).$(VERSION.minor+1)\n")
+        code,output=invoke_setup(gate,["--no-install-julia","--dry-run"];env=["PATH"=>Sys.BINDIR*";"*joinpath(ENV["SystemRoot"],"System32")])
+        @test code!=0
+        @test !occursin("INSTALL_TEST_JULIA=",output)
     end
     @testset "Offline runtime rejection preserves existing files" begin
         helper=joinpath(repo,"tools","install","install_julia.cmd")

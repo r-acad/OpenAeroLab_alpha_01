@@ -1,10 +1,10 @@
 # Windows
 
 1. Extract the complete GitHub ZIP to a writable folder. Do not run inside the ZIP.
-2. Double-click **`setup.cmd`** at the repository root. If Julia 1.13.2 is missing,
-   setup asks whether to download and install it automatically. Choose **Y** to
-   install the verified Julia runtime privately, or **N** to install Julia 1.13.2
-   yourself and rerun setup. Setup then downloads, precompiles and checks the
+2. Double-click **`setup.cmd`** at the repository root. Any Julia 1.13 or later is used.
+   If none is found, setup asks whether to download and install Julia 1.13.2
+   automatically. Choose **Y** to install the verified Julia runtime privately, or
+   **N** to install Julia 1.13 or later yourself and rerun setup. Setup then downloads, precompiles and checks the
    required web, solver and reporting packages. Wait for **Setup complete**.
 3. Double-click **`OpenAeroLab.cmd`** in this folder. The default browser opens
    when the local server is ready. Keep its console open while working.
@@ -25,7 +25,7 @@ error, you have an older ZIP: download the latest repository ZIP, extract it,
 and run its root `setup.cmd`. No execution-policy change is needed. Automated
 Julia installation uses the built-in Windows `curl.exe`, `certutil.exe` and
 `tar.exe` tools and verifies the archive SHA-256 before extracting it.
-You can also set `LUDWIG_JULIA` to an IT-approved Julia 1.13.2 executable, or set
+You can also set `LUDWIG_JULIA` to an IT-approved Julia 1.13 or later executable, or set
 `LUDWIG_JULIA_ARCHIVE` to a downloaded official Windows ZIP. The archive is always
 checksum verified. No download is required for that runtime when a local ZIP is
 provided. See the advanced guide for a fully offline package depot.

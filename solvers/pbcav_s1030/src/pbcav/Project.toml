@@ -9,7 +9,7 @@ CUDA = "=5.10.0"
 KernelAbstractions = "=0.9.40"
 PrecompileTools = "=1.2.1"
 StaticArrays = "=1.9.16"
-julia = "=1.13.2"
+julia = "1.13"
 
 [deps]
 Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"

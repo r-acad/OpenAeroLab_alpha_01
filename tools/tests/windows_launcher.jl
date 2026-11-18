@@ -25,7 +25,7 @@ if Sys.iswindows()
     @testset "Native launcher forwarding and durable error log" begin
         fixture=joinpath(SCRATCH,"repository (with spaces)")
         install=joinpath(fixture,"tools","install");mkpath(install)
-        for file in ("launch_windows.cmd","launch_windows.jl","resolve_julia.cmd","julia_version.txt")
+        for file in ("launch_windows.cmd","launch_windows.jl","resolve_julia.cmd","julia_version.txt","julia_min_version.txt")
             cp(joinpath(REPO,"tools","install",file),joinpath(install,file))
         end
         entry=joinpath(fixture,"apps","ludwig_web","run.jl");mkpath(dirname(entry))

@@ -22,7 +22,7 @@ set "OA_EXIT=%ERRORLEVEL%"
 if not "%OA_EXIT%"=="0" echo OpenAeroLab exited with code %OA_EXIT%. Run setup.cmd if dependencies are missing.
 goto finish
 :missing_julia
-echo Julia %OA_VERSION% is missing. Run setup.cmd at the repository root first. 1>&2
+echo No Julia %OA_MIN_VERSION% or later was found. Run setup.cmd at the repository root first. 1>&2
 goto failed
 :bad_app
 echo Unknown OpenAeroLab Windows app. 1>&2

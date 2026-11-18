@@ -42,8 +42,8 @@ Pass these to `setup.cmd`, `bash setup.sh` or `bash setup.command`:
 - `--no-verify`: skip import/application checks. Combine with `--no-precompile` for download-only setup.
 - Windows only: `--install-julia` allows the verified Julia download without a prompt;
   `--no-install-julia` requires an existing Julia. When neither is passed,
-  `setup.cmd` asks if the pinned Julia is missing. Choosing no stops setup until
-  Julia 1.13.2 is installed manually. `--offline` and `--dry-run` never download Julia.
+  `setup.cmd` asks when no Julia 1.13 or later is found. Choosing no stops setup until
+  such a Julia is installed manually. `--offline` and `--dry-run` never download Julia.
   `--install-julia --offline` requires `LUDWIG_JULIA_ARCHIVE`.
 
 Unknown options fail with a nonzero exit status. Failed runs keep their logs
@@ -51,9 +51,13 @@ and downloaded caches; rerun to resume. A setup lock prevents two installers
 from modifying environments concurrently.
 
 Set `LUDWIG_JULIA` to a Julia **executable path** to override discovery.
-`AIRFOIL_JULIA` remains a compatible alias. The version must be 1.13.2 because
-the pinned pressure environment requires that exact version. Setup does not
-replace another Julia on PATH. Download URLs and SHA-256 values are recorded in
+`AIRFOIL_JULIA` remains a compatible alias. Any Julia from the release in
+`julia_min_version.txt` (1.13) on is accepted: 1.13.0, 1.13.5, 1.14 and later.
+`julia_version.txt` (1.13.2) names the release that setup downloads when none is
+found, and the release the package manifests were recorded with. On a newer
+minor release, setup installs the recorded package versions, and resolves them
+again for that release only if installing them fails. Setup does not replace
+another Julia on PATH. Download URLs and SHA-256 values are recorded in
 `runtimes.tsv`, from the official
 [Julia release index](https://julialang-s3.julialang.org/bin/versions.json).
 Unverified archives are never executed. Runtime downloads use HTTPS.
@@ -128,8 +132,9 @@ an approved Julia installation. Do not disable endpoint protection.
 
 ## Company networks and IT-managed installations
 
-The OpenJFEM approach remains available: install Julia **1.13.2** using the
-organization's approved installer, then point OpenAeroLab to it. In Command Prompt:
+The OpenJFEM approach remains available: install Julia **1.13 or later** (1.13.2
+is the tested release) using the organization's approved installer, then point
+OpenAeroLab to it. In Command Prompt:
 
 ```bat
 set "LUDWIG_JULIA=C:\ApprovedApps\Julia-1.13.2\bin\julia.exe"

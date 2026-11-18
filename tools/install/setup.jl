@@ -7,7 +7,21 @@ using Pkg, TOML, Dates, SHA, UUIDs
 using FileWatching: Pidfile
 
 const ROOT = normpath(joinpath(@__DIR__, "..", ".."))
-const VERSION_REQUIRED = VersionNumber(strip(read(joinpath(@__DIR__, "julia_version.txt"), String)))
+# Any Julia from the minimum release on is accepted (julia_min_version.txt, "1.13": 1.13.0, 1.13.5, 1.14, 2.0 ...).
+# The recommended release is the one setup downloads when none is found, and the one the manifests were resolved with.
+const VERSION_MINIMUM = VersionNumber(strip(read(joinpath(@__DIR__, "julia_min_version.txt"), String)))
+const VERSION_RECOMMENDED = VersionNumber(strip(read(joinpath(@__DIR__, "julia_version.txt"), String)))
+"True for every release at or above the minimum's major.minor (pre-releases of a newer minor included)."
+julia_supported(v::VersionNumber=VERSION) = (v.major, v.minor) >= (VERSION_MINIMUM.major, VERSION_MINIMUM.minor)
+minimum_label() = "$(VERSION_MINIMUM.major).$(VERSION_MINIMUM.minor)"
+"The Julia version a checked-in manifest was resolved with, or nothing."
+function manifest_julia(project; root=ROOT)
+    file=joinpath(root,project,"Manifest.toml")
+    isfile(file) || return nothing
+    v=get(TOML.parsefile(file),"julia_version",nothing)
+    v===nothing ? nothing : VersionNumber(v)
+end
+same_minor(a::VersionNumber, b::VersionNumber) = (a.major, a.minor) == (b.major, b.minor)
 const PROJECTS = [
     (name="Web workbenches and JXfoil", path="third_party/JXfoil", cuda=false),
     (name="CPU octree D3Q19 solver (experimental)", path="src/octree_q19", cuda=false),
@@ -118,6 +132,7 @@ end
 function install_projects!(selected; opts=Set{String}(), root=ROOT, private=private_root(), console=stdout,
     activate=(path,log)->Pkg.activate(path;io=log),
     instantiate=log->Pkg.instantiate(;verbose=true,allow_autoprecomp=false,io=log),
+    resolve=log->Pkg.resolve(;io=log),
     precompile=log->Pkg.precompile(;io=log,strict=true), verify=(project,log)->verify_project(project,log;root), sleepfn=sleep)
     # Logs and progress are useful diagnostics, so they must survive clearing scratch data.
     runtime=joinpath(private,"runtime");mkpath(runtime)
@@ -144,7 +159,20 @@ function install_projects!(selected; opts=Set{String}(), root=ROOT, private=priv
                     validate_manifest(p.path;root)
                     progress["stage"]="download";save_progress()
                     activate(joinpath(root,p.path),log)
-                    instantiate_with_retry(()->instantiate(log);offline="--offline" in opts,log,console,sleepfn)
+                    recorded=manifest_julia(p.path;root)
+                    try
+                        instantiate_with_retry(()->instantiate(log);offline="--offline" in opts,log,console,sleepfn)
+                    catch err
+                        # A newer Julia minor release can need the recorded versions re-resolved (stdlib changes).
+                        (err isa InterruptException || recorded===nothing || same_minor(recorded,VERSION)) && rethrow()
+                        println(log,"Installing the versions recorded with Julia $recorded failed on Julia $VERSION: ",safe_error(err),
+                            "\nResolving the environment again for Julia $VERSION.");flush(log)
+                        println(console,"  The recorded package versions were resolved with Julia $recorded; resolving them again for Julia $VERSION…");flush(console)
+                        progress["stage"]="resolve";save_progress()
+                        resolve(log)
+                        progress["stage"]="download";save_progress()
+                        instantiate_with_retry(()->instantiate(log);offline="--offline" in opts,log,console,sleepfn)
+                    end
                     if !("--no-precompile" in opts)
                         progress["stage"]="precompile";save_progress()
                         println(console,"  Precompiling; this can take several minutes. Details: $logpath");flush(console)
@@ -195,11 +223,14 @@ function main(args=ARGS)
           --offline        Use cached packages/artifacts only (no Julia download)
         Default: instantiate all supported environments, precompile, verify.
         Run setup again after updating the repository. No Pkg.update is performed.
-        Julia $(VERSION_REQUIRED) is required by the pinned pressure solver.
+        Julia $(minimum_label()) or later is required; the platform launcher downloads Julia $(VERSION_RECOMMENDED) if none is found.
         """)
         return
     end
-    VERSION == VERSION_REQUIRED || error("Use Julia $VERSION_REQUIRED; detected $VERSION. Run the platform setup launcher.")
+    julia_supported() || error("Use Julia $(minimum_label()) or later; detected $VERSION. Run the platform setup launcher.")
+    if !same_minor(VERSION, VERSION_RECOMMENDED)
+        println("Note: the package versions were recorded with Julia $(VERSION_RECOMMENDED); Julia $VERSION is accepted, and setup resolves them again if this release needs it.")
+    end
     selected=selected_projects()
     println("OpenAeroLab · Julia $VERSION · $(Sys.KERNEL) / $(Sys.ARCH)")
     println("Repository: $ROOT\nPrivate data: $(private_root())\nPackage cache: $(first(DEPOT_PATH))")

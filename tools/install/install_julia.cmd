@@ -109,7 +109,7 @@ echo A staging-name collision occurred. Rerun setup; existing files were preserv
 exit /b 1
 :missing_tools
 echo Windows tar.exe and certutil.exe are required; downloading also needs Windows curl.exe. 1>&2
-echo Install Julia %OA_VERSION%, set LUDWIG_JULIA to its executable, and rerun setup. 1>&2
+echo Install Julia %OA_VERSION% or any later release, set LUDWIG_JULIA to its executable, and rerun setup. 1>&2
 exit /b 1
 :missing_record
 echo The pinned Windows Julia version or archive record is missing. Download a complete repository ZIP. 1>&2
