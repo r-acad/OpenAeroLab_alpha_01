@@ -99,7 +99,10 @@ function newton_rans_step!(s::KSol,m::NewtonRANS;turb_ratio=1.0,sst_inner=1,sst_
     # laminar solver (no SST; 18 Nov 2026): no turbulence step
     s.sst||(t=(;dkmax=0.0,dwmax=0.0))
     for _ in 1:(s.sst ? sst_inner : 0)
-        t=dual===nothing ? newton_sst_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol) :
+        # Spalart-Allmaras instead of SST when the solver was registered by set_newton_sa! (19 Nov 2026, opt-in)
+        t=newton_sa_on(s) ? newton_sa_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol,
+                bdf=dual===nothing ? nothing : newton_time_sst_terms(dual)) :
+          dual===nothing ? newton_sst_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol) :
             newton_sst_implicit_lines!(s,m.sst,m.scalar,m.invdt;relax=sst_relax,nut_relax,tol=sst_tol,bdf=newton_time_sst_terms(dual))
     end
     m.it+=1
@@ -198,6 +201,7 @@ function newton_state_set!(s::KSol,x)
     view(s.rho,ir,jr).=r;view(s.ux,ir,jr).=u;view(s.uy,ir,jr).=v;view(s.T,ir,jr).=T
     view(s.tk,ir,jr).=clamp.(exp.(F(5)),1e-12,1.0);view(s.tom,ir,jr).=max.(exp.(F(6)),1e-6)
     view(s.nut,ir,jr).=min.(exp.(F(7)),0.15)
+    newton_sa_on(s)&&fill!(s.tom,s.w_inf)          # SA: omega is only the far-field reference (exp(log) is not exact)
     applyBC_ka!(s,Int32(2));_newton_sst_bc!(s)
     true
 end
@@ -252,13 +256,15 @@ function newton_prolong!(sf,sc,f::Int)
                 Ic=clamp(round(Int,xi),NIWc+1,NIWc+NIFc)
                 q=clamp(Float64(df[i,j])/max(Float64(dc[Ic,1]),1e-30),0.0,1.0)
                 row=(1-tx)*P[I0+1,2]+tx*P[I0+2,2]
-                v=mode===:vel ? row*q : mode===:logw ? row-2log(max(q,1e-6)) : mode===:logk ? row+2log(max(q,1e-6)) :
+                # (SA: nt grows linearly from the wall, k quadratically)
+                v=mode===:vel ? row*q : mode===:logw ? row-2log(max(q,1e-6)) : mode===:logk ? row+(newton_sa_on(sf) ? 1 : 2)*log(max(q,1e-6)) :
                   mode===:lognut ? row+4log(max(q,1e-6)) : row
             end
             F[i+g,j+g]=logmode ? exp(v) : v
         end
         copyto!(getproperty(sf,name),F)
     end
+    newton_sa_on(sf)&&fill!(sf.tom,sf.w_inf)      # SA: omega is not a field, only the far-field reference
     applyBC_ka!(sf,Int32(2));_newton_sst_bc!(sf)
     sf
 end
@@ -307,4 +313,5 @@ end
 
 include(joinpath(@__DIR__, "cmesh_unsteady_newton_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_steady_newton_pair_ka.jl"))
+include(joinpath(@__DIR__, "cmesh_steady_newton_sa_ka.jl"))
 include(joinpath(@__DIR__, "cmesh_unsteady_newton_pair_ka.jl"))

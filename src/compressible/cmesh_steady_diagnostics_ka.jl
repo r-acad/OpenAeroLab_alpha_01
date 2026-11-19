@@ -47,7 +47,11 @@ function steady_airfoil_diagnostics_ka(s::KSol;probe_sst::Bool=true,
     wallomega=NaN;allomega=NaN
     omega_wall_cells=s.keps==0.0f0 ? min(2,s.NJ)*s.NIF : 0
     omega_transport_cells=n-omega_wall_cells
-    if probe_sst && s.sst
+    if probe_sst && s.sst && newton_sa_on(s)
+        # Spalart-Allmaras solver of the Newton march (opt-in, 19 Nov 2026): its equation residual in the k entries,
+        # 0 for omega; the SST probe would read nt as k.
+        keq=newton_sa_equation_l2(s);weq=0.0;keqmax=NaN;weqmax=0.0;wallomega=0.0;allomega=0.0
+    elseif probe_sst && s.sst
         names=(:tk,:tom,:nut,:tnl,:pvort,:exx,:exy,:eyy,:dtf)
         saved=map(name->copy(getproperty(s,name)),names)
         ir=(s.g+1):(s.g+s.NI);jr=(s.g+1):(s.g+s.NJ)

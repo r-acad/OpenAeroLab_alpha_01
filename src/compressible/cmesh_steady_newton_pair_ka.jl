@@ -397,6 +397,7 @@ function newton_pair_sst_step!(p::NewtonPair,m::NewtonPairState;relax=1.0,nut_re
 end
 "RMS of the steady k and omega equation residuals over both blocks (no pseudo-time term; prescribed omega cells left out)."
 function newton_pair_sst_equation_l2(p::NewtonPair,m::NewtonPairState)
+    newton_sa_on(p.c)&&return newton_pair_sa_equation_l2(p,m)   # SA (opt-in): its equation and 0 for omega
     c,h=p.c,p.h
     newton_pair_sst_bc!(p);newton_pair_sst_coeffs!(c,m.sstc,p.gc);newton_pair_sst_coeffs!(h,m.ssth,p.gh)
     int(s,a)=Array(view(a,s.g+1:s.g+s.NI,s.g+1:s.g+s.NJ));zc=fill!(similar(c.dtf),0);zh=fill!(similar(h.dtf),0)
@@ -688,7 +689,10 @@ function newton_pair_step!(p::NewtonPair,m::NewtonPairState;turb_ratio=1.0,sst_r
         @. m.invdth=(m.d0h-a0*p.h.vol)/p.h.vol/turb_ratio
     end
     bdf=dual===nothing ? nothing : (newton_time_sst_terms(dual[1]),newton_time_sst_terms(dual[2]))
-    t0=time();t=newton_pair_sst_step!(p,m;relax=sst_relax,nut_relax,tol=sst_tol,bdf)
+    t0=time()
+    # Spalart-Allmaras instead of SST when the blocks were registered by set_newton_sa! (19 Nov 2026, opt-in)
+    t=newton_sa_on(p.c) ? newton_pair_sa_step!(p,m;relax=sst_relax,nut_relax,tol=sst_tol,bdf) :
+        newton_pair_sst_step!(p,m;relax=sst_relax,nut_relax,tol=sst_tol,bdf)
     m.it+=1;cl,cd=newton_pair_loads(p)
     merge(r,(;it=m.it,cfl=m.cfl,dk=t.dkmax,dw=t.dwmax,kits=t.kits,wits=t.wits,tsst=time()-t0,cl,cd))
 end
