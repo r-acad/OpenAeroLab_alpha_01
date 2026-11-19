@@ -76,9 +76,15 @@ end
 
 """One physical time step: inner coupled Newton iterations (`newton_rans_step!` with `dual = tm`) at pseudo-CFL `cfl` until
 the largest scaled norm of the unsteady flow residual has fallen by `inner_tol` from its first inner value or below
-`inner_abs`, or `inner_max` iterations are reached; then the history advances. Returns the step's record."""
+`inner_abs`, or `inner_max` iterations are reached; then the history advances. Returns the step's record (`cfl`: the inner
+CFL at the end of the step).
+`cfl_adapt` (default false: the inner CFL stays `cfl`, as before): after each inner iteration the inner CFL follows the
+steady march's rule, capped at `cfl`: times `cfl_growth` after a full update, times max(0.5, alpha) after a limited one,
+times 0.25 after a rejected one, never below `cfl_min`. Each step starts again at `cfl`, so restarts stay exact. Without
+it, a start far from a solution (an impulsive supersonic start, an unsettled steady start) repeats the same rejected
+update at every inner iteration, and the state stays frozen while the clock advances (19 Nov 2026)."""
 function newton_time_step!(s::KSol,m::NewtonRANS,tm::NewtonTime;cfl=1e4,inner_max=20,inner_tol=1e-3,inner_abs=0.0,
-        blocks=:roe,delta=0.3,lintol=0.05,maxit=40,lag=3,fraction=0.2,kwargs...)
+        blocks=:roe,delta=0.3,lintol=0.05,maxit=40,lag=3,fraction=0.2,cfl_adapt=false,cfl_min=1.0,cfl_growth=1.5,kwargs...)
     m.cfl=cfl;m.since_build=div(typemax(Int),2)               # rebuild the preconditioner with this step's diagonal
     first=NaN;last=NaN;its=0;lin=0;k=0;ok=true
     for kk in 1:inner_max
@@ -87,6 +93,7 @@ function newton_time_step!(s::KSol,m::NewtonRANS,tm::NewtonTime;cfl=1e4,inner_ma
         lt=maximum(r.l2t);its+=r.its;ok&=r.ok
         kk==1&&(first=lt);last=lt
         (lt<=inner_tol*first||lt<=inner_abs)&&kk>1&&break
+        cfl_adapt&&(m.cfl=newton_time_next_cfl(m.cfl,r,cfl,cfl_min,cfl_growth))
     end
     # residual of the final state (the loop's norms are those before each update)
     _raw_residual_ka!(s,Int32(2),Int32(1))
@@ -94,8 +101,11 @@ function newton_time_step!(s::KSol,m::NewtonRANS,tm::NewtonTime;cfl=1e4,inner_ma
     newton_d0!(m.d0,s,m.cfl);final=maximum(newton_time_rhs!(m.d0,m.base,s,tm)[2])
     newton_time_advance!(tm,s)
     cl,cd=loads_ka(s)
-    (;step=tm.step,t=tm.t,cl=Float64(cl),cd=Float64(cd),inner=k,gmres=its,first,final,drop=final/first,ok)
+    (;step=tm.step,t=tm.t,cl=Float64(cl),cd=Float64(cd),inner=k,gmres=its,first,final,drop=final/first,ok,cfl=m.cfl)
 end
+
+"Inner CFL after an inner iteration with record `r` under `cfl_adapt` (the steady march's rule, capped at `cmax`)."
+newton_time_next_cfl(c,r,cmax,cmin,growth)=r.ok&&r.alpha>=0.99 ? min(cmax,c*growth) : max(cmin,c*(r.ok ? max(0.5,r.alpha) : 0.25))
 
 """March `nsteps` physical steps (`newton_time_step!`), writing a CSV row per step (`csv`) and calling `on_step(record)`.
 `checkpoint` (path) and `every_checkpoint`: write a restart file (`newton_time_save`) every so many steps and at the end."""

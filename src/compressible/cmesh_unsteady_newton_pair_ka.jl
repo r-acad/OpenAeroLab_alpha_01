@@ -15,7 +15,7 @@ newton_pair_time_init(p::NewtonPair;dt,t0=0.0)=NewtonPairTime(newton_time_init(p
 the largest scaled norm of the unsteady flow residual (over both blocks) has fallen by `inner_tol` from its first inner value
 or below `inner_abs`, or `inner_max` iterations are reached; then both histories advance. Returns the step's record."""
 function newton_pair_time_step!(p::NewtonPair,m::NewtonPairState,tm::NewtonPairTime;cfl=1e4,inner_max=20,inner_tol=1e-3,
-        inner_abs=0.0,delta=0.3,lintol=0.05,maxit=40,lag=3,fraction=0.2,kwargs...)
+        inner_abs=0.0,delta=0.3,lintol=0.05,maxit=40,lag=3,fraction=0.2,cfl_adapt=false,cfl_min=1.0,cfl_growth=1.5,kwargs...)
     m.cfl=cfl;m.since_build=div(typemax(Int),2)               # rebuild the preconditioner with this step's diagonal
     dual=(tm.c,tm.h);first=NaN;its=0;k=0;ok=true
     for kk in 1:inner_max
@@ -24,6 +24,8 @@ function newton_pair_time_step!(p::NewtonPair,m::NewtonPairState,tm::NewtonPairT
         lt=maximum(r.l2t);its+=r.its;ok&=r.ok
         kk==1&&(first=lt)
         (lt<=inner_tol*first||lt<=inner_abs)&&kk>1&&break
+        # opt-in inner CFL control, as newton_time_step! (19 Nov 2026; default off: the inner CFL stays `cfl`)
+        cfl_adapt&&(m.cfl=newton_time_next_cfl(m.cfl,r,cfl,cfl_min,cfl_growth))
     end
     # residual of the final state (the loop's norms are those before each update)
     newton_pair_residual!(p)
@@ -32,7 +34,7 @@ function newton_pair_time_step!(p::NewtonPair,m::NewtonPairState,tm::NewtonPairT
     final=maximum(max.(newton_time_rhs!(m.d0c,m.basec,p.c,tm.c)[2],newton_time_rhs!(m.d0h,m.baseh,p.h,tm.h)[2]))
     newton_time_advance!(tm.c,p.c);newton_time_advance!(tm.h,p.h)
     cl,cd=newton_pair_loads(p)
-    (;step=tm.c.step,t=tm.c.t,cl=Float64(cl),cd=Float64(cd),inner=k,gmres=its,first,final,drop=final/first,ok)
+    (;step=tm.c.step,t=tm.c.t,cl=Float64(cl),cd=Float64(cd),inner=k,gmres=its,first,final,drop=final/first,ok,cfl=m.cfl)
 end
 
 """March `nsteps` physical steps of the pair (`newton_pair_time_step!`), as `newton_time_march!`: a CSV row per step

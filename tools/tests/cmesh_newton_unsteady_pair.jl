@@ -121,3 +121,15 @@ rms(h, ref, f) = sqrt(sum(abs2, f.(h) .- f.(ref)) / length(h))
     @test 3.5 < rd < 6.5
     @test abs(first(ref[end]) - first(ref[1])) > 1e-2      # a real transient over the compared window, not a steady state
 end
+
+@testset "pair inner CFL control (cfl_adapt, 19 Nov 2026)" begin
+    # On this transient every inner update is full, so the control keeps the requested CFL and the march is the default one bit
+    # for bit. (Its back-off on rejected updates is tested on the single block in tools/tests/cmesh_newton_cfl_adapt.jl.)
+    kw = (quiet=true, cfl=1e4, inner_max=10, inner_tol=1e-6, KW...)
+    a = from_steady(4.0); ma = M.newton_pair_init(a; cfl=50.0, agg=(4, 4)); ta = M.newton_pair_time_init(a; dt=0.1)
+    ra = M.newton_pair_time_march!(a, ma, ta; nsteps=3, kw...)
+    b = from_steady(4.0); mb = M.newton_pair_init(b; cfl=50.0, agg=(4, 4)); tb = M.newton_pair_time_init(b; dt=0.1)
+    rb = M.newton_pair_time_march!(b, mb, tb; nsteps=3, cfl_adapt=true, kw...)
+    @test all(r -> r.cfl == 1e4, ra.records) && all(r -> r.cfl == 1e4, rb.records)
+    @test statevec(b) == statevec(a)
+end
